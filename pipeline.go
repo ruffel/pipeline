@@ -11,7 +11,7 @@ type Pipeline struct {
 type Stage struct {
 	ID    string
 	Name  string
-	Group string // TODO: UI labelling or parallel execution.
+	Group string // UI labelling or parallel execution.
 	Steps []Step
 }
 

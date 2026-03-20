@@ -28,8 +28,9 @@ func NewLocation(pipeline string, stage string, step string) Location {
 }
 
 type BaseEvent struct {
-	Timestamp time.Time `json:"timestamp"`
 	Location
+
+	Timestamp time.Time `json:"timestamp"`
 }
 
 func NewBaseEvent(location Location) BaseEvent {
@@ -63,6 +64,7 @@ func NewPipelinePassedEvent(pipeline string) PipelinePassedEvent {
 
 type PipelineFailedEvent struct {
 	BaseEvent
+
 	Error error `json:"error"`
 }
 
@@ -95,6 +97,7 @@ func NewStagePassedEvent(location Location) StagePassedEvent {
 
 type StageFailedEvent struct {
 	BaseEvent
+
 	Error error `json:"error"`
 }
 
@@ -127,6 +130,7 @@ func NewStepPassedEvent(location Location) StepPassedEvent {
 
 type StepFailedEvent struct {
 	BaseEvent
+
 	Error error `json:"error"`
 }
 
