@@ -5,138 +5,37 @@ import (
 	"time"
 )
 
+// Observer receives events emitted during pipeline execution. OnEvent is called
+// synchronously from within the executor.
 type Observer interface {
 	OnEvent(ctx context.Context, event Event)
 }
 
+// Event is a sealed interface. All events embed BaseEvent and are emitted by
+// the executor or by steps via the Emitter helpers.
 type Event interface {
-	event() // Sealed interface
+	event() // unexported method seals the interface to this package
 }
 
+// Location identifies where in the pipeline hierarchy an event was emitted.
 type Location struct {
 	Pipeline string `json:"pipeline,omitempty"`
 	Stage    string `json:"stage,omitempty"`
 	Step     string `json:"step,omitempty"`
 }
 
-func NewLocation(pipeline string, stage string, step string) Location {
-	return Location{
-		Pipeline: pipeline,
-		Stage:    stage,
-		Step:     step,
-	}
-}
-
+// BaseEvent carries the fields common to every event.
 type BaseEvent struct {
 	Location
 
 	Timestamp time.Time `json:"timestamp"`
 }
 
-func NewBaseEvent(location Location) BaseEvent {
-	return BaseEvent{
-		Timestamp: time.Now(),
-		Location:  location,
-	}
+// newBaseEvent constructs a BaseEvent using the provided clock. Passing
+// time.Now() at the call site keeps the clock injectable for tests.
+func newBaseEvent(loc Location, now time.Time) BaseEvent {
+	return BaseEvent{Location: loc, Timestamp: now}
 }
 
+// event implements the sealed Event interface.
 func (b BaseEvent) event() {}
-
-type PipelineStartedEvent struct {
-	BaseEvent
-}
-
-func NewPipelineStartedEvent(pipeline string) PipelineStartedEvent {
-	return PipelineStartedEvent{
-		BaseEvent: NewBaseEvent(NewLocation(pipeline, "", "")),
-	}
-}
-
-type PipelinePassedEvent struct {
-	BaseEvent
-}
-
-func NewPipelinePassedEvent(pipeline string) PipelinePassedEvent {
-	return PipelinePassedEvent{
-		BaseEvent: NewBaseEvent(NewLocation(pipeline, "", "")),
-	}
-}
-
-type PipelineFailedEvent struct {
-	BaseEvent
-
-	Error error `json:"error"`
-}
-
-func NewPipelineFailedEvent(pipeline string, err error) PipelineFailedEvent {
-	return PipelineFailedEvent{
-		BaseEvent: NewBaseEvent(NewLocation(pipeline, "", "")),
-		Error:     err,
-	}
-}
-
-type StageStartedEvent struct {
-	BaseEvent
-}
-
-func NewStageStartedEvent(location Location) StageStartedEvent {
-	return StageStartedEvent{
-		BaseEvent: NewBaseEvent(location),
-	}
-}
-
-type StagePassedEvent struct {
-	BaseEvent
-}
-
-func NewStagePassedEvent(location Location) StagePassedEvent {
-	return StagePassedEvent{
-		BaseEvent: NewBaseEvent(location),
-	}
-}
-
-type StageFailedEvent struct {
-	BaseEvent
-
-	Error error `json:"error"`
-}
-
-func NewStageFailedEvent(location Location, err error) StageFailedEvent {
-	return StageFailedEvent{
-		BaseEvent: NewBaseEvent(location),
-		Error:     err,
-	}
-}
-
-type StepStartedEvent struct {
-	BaseEvent
-}
-
-func NewStepStartedEvent(location Location) StepStartedEvent {
-	return StepStartedEvent{
-		BaseEvent: NewBaseEvent(location),
-	}
-}
-
-type StepPassedEvent struct {
-	BaseEvent
-}
-
-func NewStepPassedEvent(location Location) StepPassedEvent {
-	return StepPassedEvent{
-		BaseEvent: NewBaseEvent(location),
-	}
-}
-
-type StepFailedEvent struct {
-	BaseEvent
-
-	Error error `json:"error"`
-}
-
-func NewStepFailedEvent(location Location, err error) StepFailedEvent {
-	return StepFailedEvent{
-		BaseEvent: NewBaseEvent(location),
-		Error:     err,
-	}
-}

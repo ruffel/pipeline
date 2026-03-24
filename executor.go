@@ -4,16 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
+// Executor runs a Pipeline, emitting events to its registered observers.
+// Observer calls are serialised with a mutex so observers do not need their
+// own synchronisation.
 type Executor struct {
 	observers []Observer
 }
 
+// NewExecutor returns an Executor that broadcasts events to the given observers.
 func NewExecutor(observers ...Observer) *Executor {
 	return &Executor{observers: observers}
 }
 
+// Run validates and executes the pipeline. It returns the first error
+// encountered, or nil if all stages pass.
 func (e *Executor) Run(ctx context.Context, p Pipeline) error {
 	if err := e.validate(p); err != nil {
 		return err
@@ -23,51 +30,69 @@ func (e *Executor) Run(ctx context.Context, p Pipeline) error {
 }
 
 func (e *Executor) runPipeline(ctx context.Context, p Pipeline) error {
-	e.emit(ctx, NewPipelineStartedEvent(p.Name))
+	now := time.Now()
+
+	e.emit(ctx, newPipelineStartedEvent(p, now))
 
 	for _, stage := range p.Stages {
-		location := NewLocation(p.Name, stage.Name, "")
+		loc := Location{Pipeline: p.Name, Stage: stage.Name}
 
-		if err := e.runStage(ctx, location, stage); err != nil {
-			e.emit(ctx, NewPipelineFailedEvent(p.Name, err))
+		if err := e.runStage(ctx, loc, stage); err != nil {
+			e.emit(ctx, newPipelineFailedEvent(p.Name, err, time.Now()))
 
 			return err
 		}
 	}
 
-	e.emit(ctx, NewPipelinePassedEvent(p.Name))
+	e.emit(ctx, newPipelinePassedEvent(p.Name, time.Now()))
 
 	return nil
 }
 
-func (e *Executor) runStage(ctx context.Context, l Location, s Stage) error {
-	e.emit(ctx, NewStageStartedEvent(l))
+func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
+	if s.Condition != nil {
+		if reason := s.Condition(ctx); reason != "" {
+			e.emit(ctx, newStageSkippedEvent(loc, reason, time.Now()))
+
+			return nil
+		}
+	}
+
+	e.emit(ctx, newStageStartedEvent(loc, time.Now()))
 
 	for _, step := range s.Steps {
-		if err := e.runStep(ctx, l, step); err != nil {
-			e.emit(ctx, NewStageFailedEvent(l, err))
+		stepLoc := Location{Pipeline: loc.Pipeline, Stage: loc.Stage, Step: step.Name}
+
+		if err := e.runStep(ctx, stepLoc, step); err != nil {
+			e.emit(ctx, newStageFailedEvent(loc, err, time.Now()))
 
 			return err
 		}
 	}
 
-	e.emit(ctx, NewStagePassedEvent(l))
+	e.emit(ctx, newStagePassedEvent(loc, time.Now()))
 
 	return nil
 }
 
-func (e *Executor) runStep(ctx context.Context, l Location, s Step) error {
-	location := NewLocation(l.Pipeline, l.Stage, s.Name)
+func (e *Executor) runStep(ctx context.Context, loc Location, s Step) error {
+	if s.Condition != nil {
+		if reason := s.Condition(ctx); reason != "" {
+			e.emit(ctx, newStepSkippedEvent(loc, reason, time.Now()))
 
-	e.emit(ctx, NewStepStartedEvent(location))
+			return nil
+		}
+	}
+
+	e.emit(ctx, newStepStartedEvent(loc, time.Now()))
 
 	if err := s.Run(ctx); err != nil {
-		e.emit(ctx, NewStepFailedEvent(location, err))
+		e.emit(ctx, newStepFailedEvent(loc, err, time.Now()))
 
 		return err
 	}
 
-	e.emit(ctx, NewStepPassedEvent(location))
+	e.emit(ctx, newStepPassedEvent(loc, time.Now()))
 
 	return nil
 }
@@ -79,29 +104,29 @@ func (e *Executor) emit(ctx context.Context, event Event) {
 }
 
 var (
-	ErrPipelineNameEmpty = errors.New("pipeline name cannot be empty")
-	ErrStageNameEmpty    = errors.New("stage name cannot be empty")
-	ErrStepNameEmpty     = errors.New("step name cannot be empty")
-	ErrStepRunNil        = errors.New("step run cannot be nil")
+	errPipelineNameEmpty = errors.New("pipeline name cannot be empty")
+	errStageNameEmpty    = errors.New("stage name cannot be empty")
+	errStepNameEmpty     = errors.New("step name cannot be empty")
+	errStepRunNil        = errors.New("step run cannot be nil")
 )
 
 func (e *Executor) validate(p Pipeline) error {
 	if p.Name == "" {
-		return ErrPipelineNameEmpty
+		return errPipelineNameEmpty
 	}
 
 	for i, s := range p.Stages {
 		if s.Name == "" {
-			return fmt.Errorf("invalid stage[%d]: %w", i, ErrStageNameEmpty)
+			return fmt.Errorf("stage[%d]: %w", i, errStageNameEmpty)
 		}
 
 		for ii, t := range s.Steps {
 			if t.Name == "" {
-				return fmt.Errorf("invalid step[%d]: %w", ii, ErrStepNameEmpty)
+				return fmt.Errorf("stage %q step[%d]: %w", s.Name, ii, errStepNameEmpty)
 			}
 
 			if t.Run == nil {
-				return fmt.Errorf("invalid step[%d]: %w", ii, ErrStepRunNil)
+				return fmt.Errorf("stage %q step %q: %w", s.Name, t.Name, errStepRunNil)
 			}
 		}
 	}
