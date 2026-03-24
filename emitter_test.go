@@ -9,15 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// recordingObserver captures all events for test assertions.
-type recordingObserver struct {
-	events []pipeline.Event
-}
-
-func (r *recordingObserver) OnEvent(_ context.Context, event pipeline.Event) {
-	r.events = append(r.events, event)
-}
-
 // -----------------------------------------------------------------------------
 // Context round-trip
 // -----------------------------------------------------------------------------

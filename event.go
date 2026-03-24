@@ -24,6 +24,13 @@ type Location struct {
 	Step     string `json:"step,omitempty"`
 }
 
+// WithStep returns a copy of l with the Step field set.
+func (l Location) WithStep(name string) Location {
+	l.Step = name
+
+	return l
+}
+
 // BaseEvent carries the fields common to every event.
 type BaseEvent struct {
 	Location

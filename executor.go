@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Executor runs a Pipeline, emitting events to its registered observers.
-// Observer calls are serialised with a mutex so observers do not need their
-// own synchronisation.
 type Executor struct {
+	mu        sync.Mutex
 	observers []Observer
 }
 
@@ -19,8 +22,9 @@ func NewExecutor(observers ...Observer) *Executor {
 	return &Executor{observers: observers}
 }
 
-// Run validates and executes the pipeline. It returns the first error
-// encountered, or nil if all stages pass.
+// Run validates and executes the pipeline. It returns nil on success, including
+// when ErrSkipPipeline is returned by a step. Any other error from a step is
+// returned directly. TODO: Is this wise, should we bundle and aggregate errors?
 func (e *Executor) Run(ctx context.Context, p Pipeline) error {
 	if err := e.validate(p); err != nil {
 		return err
@@ -30,21 +34,35 @@ func (e *Executor) Run(ctx context.Context, p Pipeline) error {
 }
 
 func (e *Executor) runPipeline(ctx context.Context, p Pipeline) error {
-	now := time.Now()
+	e.emit(ctx, newPipelineStartedEvent(p, time.Now()))
 
-	e.emit(ctx, newPipelineStartedEvent(p, now))
+	if err := e.executeStages(ctx, p); err != nil {
+		e.emit(ctx, newPipelineFailedEvent(p.Name, err, time.Now()))
 
+		return err
+	}
+
+	e.emit(ctx, newPipelinePassedEvent(p.Name, time.Now()))
+
+	return nil
+}
+
+func (e *Executor) executeStages(ctx context.Context, p Pipeline) error {
 	for _, stage := range p.Stages {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		loc := Location{Pipeline: p.Name, Stage: stage.Name}
 
 		if err := e.runStage(ctx, loc, stage); err != nil {
-			e.emit(ctx, newPipelineFailedEvent(p.Name, err, time.Now()))
+			if errors.Is(err, ErrSkipPipeline) {
+				return nil
+			}
 
 			return err
 		}
 	}
-
-	e.emit(ctx, newPipelinePassedEvent(p.Name, time.Now()))
 
 	return nil
 }
@@ -60,14 +78,20 @@ func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
 
 	e.emit(ctx, newStageStartedEvent(loc, time.Now()))
 
-	for _, step := range s.Steps {
-		stepLoc := Location{Pipeline: loc.Pipeline, Stage: loc.Stage, Step: step.Name}
-
-		if err := e.runStep(ctx, stepLoc, step); err != nil {
-			e.emit(ctx, newStageFailedEvent(loc, err, time.Now()))
-
-			return err
+	// TODO: Bit of a smell this? We're wrapping the runner in a function so
+	// the calling code is a bit cleaner?
+	runner := func() error {
+		if s.Parallel {
+			return e.runStepsParallel(ctx, loc, s)
 		}
+
+		return e.runStepsSequential(ctx, loc, s)
+	}
+
+	if err := runner(); err != nil {
+		e.emit(ctx, newStageFailedEvent(loc, err, time.Now()))
+
+		return err
 	}
 
 	e.emit(ctx, newStagePassedEvent(loc, time.Now()))
@@ -75,7 +99,75 @@ func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
 	return nil
 }
 
-func (e *Executor) runStep(ctx context.Context, loc Location, s Step) error {
+func (e *Executor) runStepsSequential(ctx context.Context, loc Location, s Stage) error {
+	for _, step := range s.Steps {
+		if err := e.runStep(e.stepCtx(ctx, loc, step), loc.WithStep(step.Name), step); err != nil {
+			if errors.Is(err, ErrSkipStage) {
+				return nil
+			}
+
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (e *Executor) runStepsParallel(ctx context.Context, loc Location, s Stage) error {
+	if s.ContinueOnError {
+		return e.runStepsBestEffort(ctx, loc, s)
+	}
+
+	return e.runStepsFailFast(ctx, loc, s)
+}
+
+func (e *Executor) runStepsFailFast(ctx context.Context, loc Location, s Stage) error {
+	g, gctx := errgroup.WithContext(ctx)
+
+	for _, step := range s.Steps {
+		stepCtx := e.stepCtx(gctx, loc, step)
+		stepLoc := loc.WithStep(step.Name)
+
+		g.Go(func() error {
+			return e.runStep(stepCtx, stepLoc, step)
+		})
+	}
+
+	return g.Wait()
+}
+
+func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage) error {
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+
+	for _, step := range s.Steps {
+		wg.Add(1)
+
+		stepCtx := e.stepCtx(ctx, loc, step)
+		stepLoc := loc.WithStep(step.Name)
+
+		go func() {
+			defer wg.Done()
+
+			if err := e.runStep(stepCtx, stepLoc, step); err != nil {
+				mu.Lock()
+
+				errs = append(errs, err)
+
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	return errors.Join(errs...)
+}
+
+func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr error) {
 	if s.Condition != nil {
 		if reason := s.Condition(ctx); reason != "" {
 			e.emit(ctx, newStepSkippedEvent(loc, reason, time.Now()))
@@ -86,7 +178,21 @@ func (e *Executor) runStep(ctx context.Context, loc Location, s Step) error {
 
 	e.emit(ctx, newStepStartedEvent(loc, time.Now()))
 
+	defer func() {
+		if r := recover(); r != nil {
+			stack := string(debug.Stack())
+			stepErr = fmt.Errorf("panic in step %q: %v\n%s", s.Name, r, stack)
+			e.emit(ctx, newStepFailedEvent(loc, stepErr, time.Now()))
+		}
+	}()
+
 	if err := s.Run(ctx); err != nil {
+		if errors.Is(err, ErrSkipStep) {
+			e.emit(ctx, newStepSkippedEvent(loc, err.Error(), time.Now()))
+
+			return nil
+		}
+
 		e.emit(ctx, newStepFailedEvent(loc, err, time.Now()))
 
 		return err
@@ -97,39 +203,42 @@ func (e *Executor) runStep(ctx context.Context, loc Location, s Step) error {
 	return nil
 }
 
+// stepCtx creates a child context with the emitter wired for the given step.
+func (e *Executor) stepCtx(ctx context.Context, loc Location, s Step) context.Context {
+	return WithEmitter(ctx, NewEmitter(e.observers, loc.WithStep(s.Name)))
+}
+
 func (e *Executor) emit(ctx context.Context, event Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	for _, o := range e.observers {
 		o.OnEvent(ctx, event)
 	}
 }
 
-var (
-	errPipelineNameEmpty = errors.New("pipeline name cannot be empty")
-	errStageNameEmpty    = errors.New("stage name cannot be empty")
-	errStepNameEmpty     = errors.New("step name cannot be empty")
-	errStepRunNil        = errors.New("step run cannot be nil")
-)
-
 func (e *Executor) validate(p Pipeline) error {
+	var errs []error
+
 	if p.Name == "" {
-		return errPipelineNameEmpty
+		errs = append(errs, errors.New("pipeline name cannot be empty"))
 	}
 
 	for i, s := range p.Stages {
 		if s.Name == "" {
-			return fmt.Errorf("stage[%d]: %w", i, errStageNameEmpty)
+			errs = append(errs, fmt.Errorf("stage[%d]: name cannot be empty", i))
 		}
 
-		for ii, t := range s.Steps {
+		for j, t := range s.Steps {
 			if t.Name == "" {
-				return fmt.Errorf("stage %q step[%d]: %w", s.Name, ii, errStepNameEmpty)
+				errs = append(errs, fmt.Errorf("stage[%d] step[%d]: name cannot be empty", i, j))
 			}
 
 			if t.Run == nil {
-				return fmt.Errorf("stage %q step %q: %w", s.Name, t.Name, errStepRunNil)
+				errs = append(errs, fmt.Errorf("stage[%d] step[%d] %q: run function cannot be nil", i, j, t.Name))
 			}
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
