@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          check-latest: true
+
+      - uses: extractions/setup-just@v2
+
+      - name: Run Tests
+        run: just test
+
+  tag-submodules:
+    name: Tag Submodules
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Tag submodules
+        env:
+          MODULES: observers/terminal
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          echo "Release version: ${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          for mod in ${MODULES}; do
+            TAG="${mod}/${VERSION}"
+            echo "Creating tag: ${TAG}"
+            git tag "${TAG}" "${GITHUB_SHA}"
+            git push origin "${TAG}"
+          done
+

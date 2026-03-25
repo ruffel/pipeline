@@ -45,3 +45,33 @@ jobs:
       - name: Run Unit Tests (Common)
         run: just test
 
+  api-compatibility:
+    name: API Compatibility
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          check-latest: true
+
+      - name: Install gorelease
+        run: go install golang.org/x/exp/cmd/gorelease@latest
+
+      - name: Check API compatibility (root module)
+        run: gorelease
+        continue-on-error: true
+
+      - name: Check API compatibility (observers/terminal)
+        working-directory: observers/terminal
+        run: gorelease
+        continue-on-error: true
+
