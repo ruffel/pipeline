@@ -78,17 +78,14 @@ func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
 
 	e.emit(ctx, newStageStartedEvent(loc, time.Now()))
 
-	// TODO: Bit of a smell this? We're wrapping the runner in a function so
-	// the calling code is a bit cleaner?
-	runner := func() error {
-		if s.Parallel {
-			return e.runStepsParallel(ctx, loc, s)
-		}
-
-		return e.runStepsSequential(ctx, loc, s)
+	var err error
+	if s.Parallel {
+		err = e.runStepsParallel(ctx, loc, s)
+	} else {
+		err = e.runStepsSequential(ctx, loc, s)
 	}
 
-	if err := runner(); err != nil {
+	if err != nil {
 		e.emit(ctx, newStageFailedEvent(loc, err, time.Now()))
 
 		return err
