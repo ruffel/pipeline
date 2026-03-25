@@ -1,0 +1,17 @@
+# Auto-detect text files and normalise line endings
+* text=auto
+
+# Go source
+*.go text diff=golang
+go.mod text diff=golang
+go.sum text diff=golang
+go.work text diff=golang
+go.work.sum text diff=golang
+
+# Documentation
+*.md text diff=markdown
+
+# Shell / Config
+Justfile text
+*.yml text
+*.yaml text
