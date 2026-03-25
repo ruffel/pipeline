@@ -26,3 +26,11 @@ tidy:
 # Check for clean git state after running fmt and tidy
 check-clean: fmt tidy
     git diff --exit-code
+
+# Run the demo with terminal output
+demo:
+    cd examples/demo && go run .
+
+# Run the demo with JSON output
+demo-json:
+    cd examples/demo && go run . -format json
