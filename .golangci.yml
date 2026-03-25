@@ -123,6 +123,18 @@ linters:
   - wrapcheck                  # Checks that errors returned from external packages are wrapped.
   - zerologlint                # Detects the wrong usage of `zerolog` that a user forgets to dispatch with `Send` or `Msg`. [Don't use]
 
+  exclusions:
+    rules:
+    - path: 'examples/'
+      linters:
+        - forbidigo         # It's a CLI example, we want to print to STDOUT.
+        - gochecknoglobals  # CLI flags and styles are pragmatic globals here
+    - path: '(.+)_test\.go'
+      linters:
+        - forcetypeassert
+        - funlen
+        - wrapcheck
+
   settings:
     funlen:
       lines: 80
@@ -174,10 +186,6 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - funlen
 
 formatters:
   enable:
