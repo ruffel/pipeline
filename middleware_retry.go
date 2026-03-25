@@ -32,10 +32,14 @@ func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
 
 			EmitWarnf(ctx, "attempt %d/%d failed: %v, retrying", attempt+1, maxAttempts, err)
 
+			timer := time.NewTimer(backoff)
+
 			select {
 			case <-ctx.Done():
+				timer.Stop()
+
 				return ctx.Err()
-			case <-time.After(backoff):
+			case <-timer.C:
 			}
 		}
 
