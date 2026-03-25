@@ -103,6 +103,7 @@ type Options struct {
 	FormatMessage       func(ctx context.Context, e pipeline.MessageEvent, s State, p Palette) string
 	FormatProgress      func(ctx context.Context, e pipeline.ProgressEvent, s State, p Palette) string
 	FormatOutput        func(ctx context.Context, e pipeline.OutputEvent, s State, p Palette) string
+	FormatCustom        func(ctx context.Context, e pipeline.CustomEvent, s State, p Palette) string
 }
 
 func (o *Options) applyDefaults() {
@@ -158,5 +159,9 @@ func (o *Options) applyDefaults() {
 
 	if o.FormatOutput == nil {
 		o.FormatOutput = defaults.FormatOutput
+	}
+
+	if o.FormatCustom == nil {
+		o.FormatCustom = defaults.FormatCustom
 	}
 }
