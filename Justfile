@@ -1,15 +1,17 @@
 # Justfile for pipeline
 
+MODULES := "observers/terminal"
+
 # Default recipe
 default: test lint
 
 # Run all tests with race detection
 test:
-    go test -race ./...
+    go test -race ./... $(for mod in {{MODULES}}; do echo "./$mod/..."; done)
 
 # Run linters
 lint:
-    golangci-lint run ./...
+    golangci-lint run ./... $(for mod in {{MODULES}}; do echo "./$mod/..."; done)
 
 # Clean build artifacts
 clean:
@@ -18,10 +20,16 @@ clean:
 # Run go fmt
 fmt:
     go fmt ./...
+    for mod in {{MODULES}}; do \
+        (cd $mod && go fmt ./...); \
+    done
 
 # Run go mod tidy
 tidy:
     go mod tidy
+    for mod in {{MODULES}}; do \
+        (cd $mod && go mod tidy); \
+    done
 
 # Check for clean git state after running fmt and tidy
 check-clean: fmt tidy
