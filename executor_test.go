@@ -532,6 +532,11 @@ func TestExecutor_Validation(t *testing.T) {
 			wantErr: "pipeline name cannot be empty",
 		},
 		{
+			name:    "no stages",
+			p:       pipeline.Pipeline{Name: "p"},
+			wantErr: "pipeline must have at least one stage",
+		},
+		{
 			name: "empty stage name",
 			p: pipeline.Pipeline{
 				Name:   "p",
@@ -554,6 +559,38 @@ func TestExecutor_Validation(t *testing.T) {
 				Stages: []pipeline.Stage{{Name: "s", Steps: []pipeline.Step{{Name: "step"}}}},
 			},
 			wantErr: "run function cannot be nil",
+		},
+		{
+			name: "no steps",
+			p: pipeline.Pipeline{
+				Name:   "p",
+				Stages: []pipeline.Stage{{Name: "empty"}},
+			},
+			wantErr: "must have at least one step",
+		},
+		{
+			name: "duplicate stage name",
+			p: pipeline.Pipeline{
+				Name: "p",
+				Stages: []pipeline.Stage{
+					{Name: "build", Steps: []pipeline.Step{{Name: "a", Run: noop}}},
+					{Name: "build", Steps: []pipeline.Step{{Name: "b", Run: noop}}},
+				},
+			},
+			wantErr: `duplicate stage name "build"`,
+		},
+		{
+			name: "duplicate step name",
+			p: pipeline.Pipeline{
+				Name: "p",
+				Stages: []pipeline.Stage{
+					{Name: "s", Steps: []pipeline.Step{
+						{Name: "compile", Run: noop},
+						{Name: "compile", Run: noop},
+					}},
+				},
+			},
+			wantErr: `duplicate step name "compile"`,
 		},
 		{
 			name: "multiple errors aggregated",

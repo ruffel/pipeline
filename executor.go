@@ -221,14 +221,34 @@ func (e *Executor) validate(p Pipeline) error {
 		errs = append(errs, errors.New("pipeline name cannot be empty"))
 	}
 
+	if len(p.Stages) == 0 {
+		errs = append(errs, errors.New("pipeline must have at least one stage"))
+	}
+
+	stageNames := make(map[string]bool, len(p.Stages))
+
 	for i, s := range p.Stages {
 		if s.Name == "" {
 			errs = append(errs, fmt.Errorf("stage[%d]: name cannot be empty", i))
+		} else if stageNames[s.Name] {
+			errs = append(errs, fmt.Errorf("stage[%d]: duplicate stage name %q", i, s.Name))
+		} else {
+			stageNames[s.Name] = true
 		}
+
+		if len(s.Steps) == 0 {
+			errs = append(errs, fmt.Errorf("stage[%d] %q: must have at least one step", i, s.Name))
+		}
+
+		stepNames := make(map[string]bool, len(s.Steps))
 
 		for j, t := range s.Steps {
 			if t.Name == "" {
 				errs = append(errs, fmt.Errorf("stage[%d] step[%d]: name cannot be empty", i, j))
+			} else if stepNames[t.Name] {
+				errs = append(errs, fmt.Errorf("stage[%d] step[%d]: duplicate step name %q", i, j, t.Name))
+			} else {
+				stepNames[t.Name] = true
 			}
 
 			if t.Run == nil {
