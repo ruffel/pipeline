@@ -99,6 +99,9 @@ func (o *Observer) OnEvent(ctx context.Context, ev pipeline.Event) {
 
 	case pipeline.OutputEvent:
 		output = o.opts.FormatOutput(ctx, e, o.state, o.opts.Palette)
+
+	case pipeline.CustomEvent:
+		output = o.opts.FormatCustom(ctx, e, o.state, o.opts.Palette)
 	}
 
 	if output != "" {

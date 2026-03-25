@@ -48,6 +48,7 @@ func DefaultOptions() Options {
 		FormatMessage:       formatMessage,
 		FormatProgress:      formatProgress,
 		FormatOutput:        formatOutput,
+		FormatCustom:        formatCustom,
 	}
 }
 
@@ -283,4 +284,10 @@ func formatOutput(_ context.Context, e pipeline.OutputEvent, s State, p Palette)
 	}
 
 	return line
+}
+
+// formatCustom is a no-op — custom events are domain-specific and best
+// handled by a user-supplied formatter via Options.
+func formatCustom(_ context.Context, _ pipeline.CustomEvent, _ State, _ Palette) string {
+	return ""
 }

@@ -64,3 +64,49 @@ func TestObserver_StageSkipped(t *testing.T) {
 	assert.Contains(t, out, "not needed")
 	assert.Contains(t, out, "Pipeline Complete")
 }
+
+func TestObserver_CustomEvent_DefaultNoOp(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := termobs.New(&buf)
+
+	obs.OnEvent(t.Context(), pipeline.PipelineStartedEvent{
+		Definition: pipeline.Pipeline{Name: "p"},
+	})
+
+	before := buf.Len()
+
+	obs.OnEvent(t.Context(), pipeline.CustomEvent{
+		Type: "deploy.url-ready",
+		Data: "https://example.com",
+	})
+
+	// Default formatter is a no-op — no new output should be written.
+	assert.Equal(t, before, buf.Len())
+}
+
+func TestObserver_CustomEvent_WithOverride(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	opts := termobs.DefaultOptions()
+	opts.FormatCustom = func(_ context.Context, e pipeline.CustomEvent, _ termobs.State, _ termobs.Palette) string {
+		return "[" + e.Type + "] " + e.Data.(string)
+	}
+
+	obs := termobs.NewWithOptions(&buf, opts)
+
+	obs.OnEvent(t.Context(), pipeline.PipelineStartedEvent{
+		Definition: pipeline.Pipeline{Name: "p"},
+	})
+	obs.OnEvent(t.Context(), pipeline.CustomEvent{
+		Type: "deploy.url-ready",
+		Data: "https://example.com",
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "[deploy.url-ready] https://example.com")
+}
