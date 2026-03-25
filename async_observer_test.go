@@ -2,6 +2,7 @@ package pipeline_test
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,4 +125,30 @@ func TestAsyncObserver_OnEventAfterCloseDrops(t *testing.T) {
 
 	assert.Equal(t, int64(1), async.Dropped())
 	assert.Equal(t, int32(0), received.Load())
+}
+
+func TestAsyncObserver_ConcurrentOnEventAndClose(t *testing.T) {
+	t.Parallel()
+
+	next := pipeline.ObserverFunc(func(_ context.Context, _ pipeline.Event) {})
+	async := pipeline.NewAsyncObserver(next, 10)
+
+	// Hammer OnEvent from multiple goroutines while closing concurrently.
+	var wg sync.WaitGroup
+
+	for range 10 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for range 100 {
+				async.OnEvent(t.Context(), pipeline.PipelineStartedEvent{})
+			}
+		}()
+	}
+
+	// Close while senders are still active — must not panic.
+	async.Close()
+	wg.Wait()
 }
