@@ -39,6 +39,9 @@ func DefaultOptions() Options {
 		FormatPipelineStart: formatPipelineStart,
 		FormatPipelineEnd:   formatPipelineEnd,
 		FormatStageStart:    formatStageStart,
+		FormatStagePass:     formatStagePass,
+		FormatStageFail:     formatStageFail,
+		FormatStageSkip:     formatStageSkip,
 		FormatStepPass:      formatStepPass,
 		FormatStepFail:      formatStepFail,
 		FormatStepSkip:      formatStepSkip,
@@ -166,6 +169,23 @@ func formatStageStart(_ context.Context, e pipeline.StageStartedEvent, _ State, 
 		Padding(0, 1)
 
 	return border.Render("Stage: " + e.Stage)
+}
+
+// formatStagePass is a no-op — step-level results already show the outcome.
+func formatStagePass(_ context.Context, _ pipeline.StagePassedEvent, _ time.Duration, _ State, _ Palette) string {
+	return ""
+}
+
+// formatStageFail is a no-op — step failures and the pipeline-end summary cover it.
+func formatStageFail(_ context.Context, _ pipeline.StageFailedEvent, _ time.Duration, _ State, _ Palette) string {
+	return ""
+}
+
+func formatStageSkip(_ context.Context, e pipeline.StageSkippedEvent, _ State, p Palette) string {
+	r := render{p: p}
+	icon := r.muted(p.SkipIcon)
+
+	return fmt.Sprintf("%s Stage: %s — %s", icon, e.Stage, r.muted(e.Reason))
 }
 
 func formatStepPass(_ context.Context, e pipeline.StepPassedEvent, d time.Duration, s State, p Palette) string {

@@ -62,7 +62,19 @@ func (o *Observer) OnEvent(ctx context.Context, ev pipeline.Event) {
 		output = o.opts.FormatPipelineEnd(ctx, e, dur, o.state, o.opts.Palette)
 
 	case pipeline.StageStartedEvent:
+		o.state.stageTimes[e.Stage] = e.Timestamp
 		output = o.opts.FormatStageStart(ctx, e, o.state, o.opts.Palette)
+
+	case pipeline.StagePassedEvent:
+		dur := e.Timestamp.Sub(o.state.stageTimes[e.Stage])
+		output = o.opts.FormatStagePass(ctx, e, dur, o.state, o.opts.Palette)
+
+	case pipeline.StageFailedEvent:
+		dur := e.Timestamp.Sub(o.state.stageTimes[e.Stage])
+		output = o.opts.FormatStageFail(ctx, e, dur, o.state, o.opts.Palette)
+
+	case pipeline.StageSkippedEvent:
+		output = o.opts.FormatStageSkip(ctx, e, o.state, o.opts.Palette)
 
 	case pipeline.StepStartedEvent:
 		o.state.stepTimes[e.Step] = e.Timestamp

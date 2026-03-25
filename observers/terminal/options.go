@@ -52,6 +52,9 @@ type State struct {
 	// startTime is the pipeline start timestamp (unexported, used by Observer).
 	startTime time.Time
 
+	// stageTimes tracks per-stage start timestamps (unexported, used by Observer).
+	stageTimes map[string]time.Time
+
 	// stepTimes tracks per-step start timestamps (unexported, used by Observer).
 	stepTimes map[string]time.Time
 }
@@ -60,6 +63,7 @@ type State struct {
 func newState(def pipeline.Pipeline) State {
 	s := State{
 		StageParallel: make(map[string]bool, len(def.Stages)),
+		stageTimes:    make(map[string]time.Time),
 		stepTimes:     make(map[string]time.Time),
 	}
 
@@ -90,6 +94,9 @@ type Options struct {
 	FormatPipelineStart func(ctx context.Context, e pipeline.PipelineStartedEvent, s State, p Palette) string
 	FormatPipelineEnd   func(ctx context.Context, e pipeline.Event, duration time.Duration, s State, p Palette) string
 	FormatStageStart    func(ctx context.Context, e pipeline.StageStartedEvent, s State, p Palette) string
+	FormatStagePass     func(ctx context.Context, e pipeline.StagePassedEvent, d time.Duration, s State, p Palette) string
+	FormatStageFail     func(ctx context.Context, e pipeline.StageFailedEvent, d time.Duration, s State, p Palette) string
+	FormatStageSkip     func(ctx context.Context, e pipeline.StageSkippedEvent, s State, p Palette) string
 	FormatStepPass      func(ctx context.Context, e pipeline.StepPassedEvent, d time.Duration, s State, p Palette) string
 	FormatStepFail      func(ctx context.Context, e pipeline.StepFailedEvent, d time.Duration, s State, p Palette) string
 	FormatStepSkip      func(ctx context.Context, e pipeline.StepSkippedEvent, s State, p Palette) string
@@ -115,6 +122,18 @@ func (o *Options) applyDefaults() {
 
 	if o.FormatStageStart == nil {
 		o.FormatStageStart = defaults.FormatStageStart
+	}
+
+	if o.FormatStagePass == nil {
+		o.FormatStagePass = defaults.FormatStagePass
+	}
+
+	if o.FormatStageFail == nil {
+		o.FormatStageFail = defaults.FormatStageFail
+	}
+
+	if o.FormatStageSkip == nil {
+		o.FormatStageSkip = defaults.FormatStageSkip
 	}
 
 	if o.FormatStepPass == nil {
