@@ -47,9 +47,7 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) { //nolint:c
 		clear(o.starts)
 		o.err = nil
 		o.starts[e.Location] = e.Timestamp
-		o.write("PipelineStarted", e.Location, e.Timestamp, 0, fields{
-			"definition": e.Definition,
-		})
+		o.write("PipelineStarted", e.Location, e.Timestamp, 0, nil)
 
 	case pipeline.PipelinePassedEvent:
 		o.write("PipelinePassed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), nil)
