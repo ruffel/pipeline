@@ -11,6 +11,16 @@ type Observer interface {
 	OnEvent(ctx context.Context, event Event)
 }
 
+// ObserverFunc is an adapter that allows ordinary functions to be used as
+// [Observer] values. If f is a function with the appropriate signature,
+// ObserverFunc(f) is an Observer that calls f.
+type ObserverFunc func(ctx context.Context, event Event)
+
+// OnEvent implements [Observer] by calling f.
+func (f ObserverFunc) OnEvent(ctx context.Context, event Event) {
+	f(ctx, event)
+}
+
 // Event is a sealed interface. All events embed BaseEvent and are emitted by
 // the executor or by steps via the Emitter helpers.
 type Event interface {

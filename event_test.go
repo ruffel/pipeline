@@ -1,6 +1,7 @@
 package pipeline_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -110,3 +111,27 @@ func TestNewCustomEvent(t *testing.T) {
 	assert.Equal(t, "deploy.url-ready", e.Type)
 	assert.Equal(t, data, e.Data)
 }
+
+func TestObserverFunc(t *testing.T) {
+	t.Parallel()
+
+	var received pipeline.Event
+
+	obs := pipeline.ObserverFunc(func(_ context.Context, e pipeline.Event) {
+		received = e
+	})
+
+	event := pipeline.StepPassedEvent{
+		BaseEvent: pipeline.BaseEvent{
+			Location:  pipeline.Location{Pipeline: "p", Stage: "s", Step: "step"},
+			Timestamp: time.Now(),
+		},
+	}
+
+	obs.OnEvent(t.Context(), event)
+
+	assert.Equal(t, event, received)
+}
+
+// Compile-time interface check.
+var _ pipeline.Observer = pipeline.ObserverFunc(nil)
