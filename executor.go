@@ -24,7 +24,7 @@ func NewExecutor(observers ...Observer) *Executor {
 
 // Run validates and executes the pipeline. It returns nil on success, including
 // when ErrSkipPipeline is returned by a step. Any other error from a step is
-// returned directly. TODO: Is this wise, should we bundle and aggregate errors?
+// wrapped with its location context for diagnostics.
 func (e *Executor) Run(ctx context.Context, p Pipeline) error {
 	if err := e.validate(p); err != nil {
 		return err
@@ -192,7 +192,7 @@ func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr e
 
 		e.emit(ctx, newStepFailedEvent(loc, err, time.Now()))
 
-		return err
+		return fmt.Errorf("stage %q step %q: %w", loc.Stage, loc.Step, err)
 	}
 
 	e.emit(ctx, newStepPassedEvent(loc, time.Now()))
