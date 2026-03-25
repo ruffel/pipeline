@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 )
 
@@ -12,10 +13,12 @@ import (
 // If the internal buffer fills up, new events are dropped to prevent stalling
 // the pipeline. The number of dropped events can be checked via [Dropped].
 type AsyncObserver struct {
-	next    Observer
-	events  chan asyncEvent
-	dropped atomic.Int64
-	done    chan struct{}
+	next      Observer
+	events    chan asyncEvent
+	dropped   atomic.Int64
+	done      chan struct{}
+	closeOnce sync.Once
+	closed    atomic.Bool
 }
 
 type asyncEvent struct {
@@ -43,6 +46,12 @@ func NewAsyncObserver(next Observer, bufferSize int) *AsyncObserver {
 // OnEvent implements [Observer]. It queues the event for background processing.
 // If the queue is full, the event is dropped and the dropped counter is incremented.
 func (a *AsyncObserver) OnEvent(ctx context.Context, event Event) {
+	if a.closed.Load() {
+		a.dropped.Add(1)
+
+		return
+	}
+
 	select {
 	case a.events <- asyncEvent{ctx: ctx, event: event}:
 	default:
@@ -58,8 +67,13 @@ func (a *AsyncObserver) Dropped() int64 {
 
 // Close stops accepting new events, waits for all queued events to be
 // processed by the wrapped observer, and releases the background goroutine.
+// Close is safe to call multiple times.
 func (a *AsyncObserver) Close() {
-	close(a.events)
+	a.closeOnce.Do(func() {
+		a.closed.Store(true)
+		close(a.events)
+	})
+
 	<-a.done
 }
 

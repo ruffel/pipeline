@@ -92,3 +92,36 @@ func TestAsyncObserver_CloseWaitsForDrain(t *testing.T) {
 
 	assert.Equal(t, int32(3), received.Load())
 }
+
+func TestAsyncObserver_DoubleCloseIsSafe(t *testing.T) {
+	t.Parallel()
+
+	next := pipeline.ObserverFunc(func(_ context.Context, _ pipeline.Event) {})
+	async := pipeline.NewAsyncObserver(next, 10)
+
+	assert.NotPanics(t, func() {
+		async.Close()
+		async.Close()
+	})
+}
+
+func TestAsyncObserver_OnEventAfterCloseDrops(t *testing.T) {
+	t.Parallel()
+
+	var received atomic.Int32
+
+	next := pipeline.ObserverFunc(func(_ context.Context, _ pipeline.Event) {
+		received.Add(1)
+	})
+
+	async := pipeline.NewAsyncObserver(next, 10)
+	async.Close()
+
+	// Should not panic — events are dropped after close.
+	assert.NotPanics(t, func() {
+		async.OnEvent(t.Context(), pipeline.PipelineStartedEvent{})
+	})
+
+	assert.Equal(t, int64(1), async.Dropped())
+	assert.Equal(t, int32(0), received.Load())
+}
