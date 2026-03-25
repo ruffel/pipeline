@@ -27,14 +27,6 @@ tidy:
 check-clean: fmt tidy
     git diff --exit-code
 
-# Run the demo with terminal output
-demo:
-    cd examples/demo && go run .
-
-# Run the demo with JSON output
-demo-json:
-    cd examples/demo && go run . -format json
-
-# Run the demo with plain output
-demo-plain:
-    cd examples/demo && go run . -format plain
+# Run the demo (formats: terminal, plain, json)
+demo format="terminal":
+    cd examples/demo && go run . -format {{ format }}
