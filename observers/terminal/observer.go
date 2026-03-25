@@ -1,137 +1,95 @@
-// Package terminal provides a plain-text observer that writes pipeline
-// execution progress to an [io.Writer].
-//
-// Output is designed to be human-readable in a terminal emulator. Each event
-// is rendered as a single line with indentation reflecting hierarchy:
-//
-//	▶ Pipeline: deploy
-//	  ▶ Stage: build
-//	    ✓ compile (1.2s)
-//	    ✗ lint — exit status 1 (0.4s)
-//	  ✗ Stage: build — exit status 1 (1.6s)
-//	✗ Pipeline: deploy — exit status 1 (1.6s)
+// Package terminal provides a richly-styled, line-based terminal observer
+// built on [github.com/charmbracelet/lipgloss]. It renders boxes, colored
+// status markers, and aligned step prefixes while remaining stream-friendly
+// (no screen rewriting).
 package terminal
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"time"
+	"sync"
 
 	"github.com/ruffel/pipeline"
 )
 
-// Observer writes plain-text event output to an [io.Writer].
+// Observer is a richly-styled, line-based terminal observer. It provides
+// boxes, checkmarks, color, and aligned step prefixes while remaining
+// stream-friendly (no screen rewriting).
 type Observer struct {
-	w io.Writer
+	w    io.Writer
+	opts Options
+	mu   sync.Mutex
 
-	// starts tracks event timestamps for duration calculation.
-	starts map[pipeline.Location]time.Time
+	// Pipeline-scoped state, reset on each PipelineStartedEvent.
+	state State
 }
 
-// New creates a terminal observer that writes to w.
+// New creates a new terminal observer with default formatting.
 func New(w io.Writer) *Observer {
+	return NewWithOptions(w, DefaultOptions())
+}
+
+// NewWithOptions creates a new terminal observer with custom formatting overrides.
+func NewWithOptions(w io.Writer, opts Options) *Observer {
+	opts.applyDefaults()
+
 	return &Observer{
-		w:      w,
-		starts: make(map[pipeline.Location]time.Time),
+		w:    w,
+		opts: opts,
 	}
 }
 
 // OnEvent implements [pipeline.Observer].
-//
-//nolint:cyclop
-func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) {
-	switch e := event.(type) {
-	// -------------------------------------------------------------------------
-	// Pipeline
-	// -------------------------------------------------------------------------
+func (o *Observer) OnEvent(ctx context.Context, ev pipeline.Event) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	var output string
+
+	switch e := ev.(type) {
 	case pipeline.PipelineStartedEvent:
-		clear(o.starts)
-		o.starts[e.Location] = e.Timestamp
-		o.writef("▶ Pipeline: %s\n", e.Pipeline)
+		o.state = newState(e.Definition)
+		o.state.startTime = e.Timestamp
+		output = o.opts.FormatPipelineStart(ctx, e, o.state, o.opts.Palette)
 
 	case pipeline.PipelinePassedEvent:
-		o.writef("✓ Pipeline: %s%s\n", e.Pipeline, o.elapsed(e.Location, e.Timestamp))
+		dur := e.Timestamp.Sub(o.state.startTime)
+		output = o.opts.FormatPipelineEnd(ctx, e, dur, o.state, o.opts.Palette)
 
 	case pipeline.PipelineFailedEvent:
-		o.writef("✗ Pipeline: %s — %s%s\n", e.Pipeline, e.Err, o.elapsed(e.Location, e.Timestamp))
+		dur := e.Timestamp.Sub(o.state.startTime)
+		output = o.opts.FormatPipelineEnd(ctx, e, dur, o.state, o.opts.Palette)
 
-	// -------------------------------------------------------------------------
-	// Stage
-	// -------------------------------------------------------------------------
 	case pipeline.StageStartedEvent:
-		o.starts[e.Location] = e.Timestamp
-		o.writef("  ▶ Stage: %s\n", e.Stage)
+		output = o.opts.FormatStageStart(ctx, e, o.state, o.opts.Palette)
 
-	case pipeline.StagePassedEvent:
-		o.writef("  ✓ Stage: %s%s\n", e.Stage, o.elapsed(e.Location, e.Timestamp))
-
-	case pipeline.StageFailedEvent:
-		o.writef("  ✗ Stage: %s — %s%s\n", e.Stage, e.Err, o.elapsed(e.Location, e.Timestamp))
-
-	case pipeline.StageSkippedEvent:
-		o.writef("  ⊘ Stage: %s — %s\n", e.Stage, e.Reason)
-
-	// -------------------------------------------------------------------------
-	// Step
-	// -------------------------------------------------------------------------
 	case pipeline.StepStartedEvent:
-		o.starts[e.Location] = e.Timestamp
+		o.state.stepTimes[e.Step] = e.Timestamp
 
 	case pipeline.StepPassedEvent:
-		o.writef("    ✓ %s%s\n", e.Step, o.elapsed(e.Location, e.Timestamp))
+		dur := e.Timestamp.Sub(o.state.stepTimes[e.Step])
+		output = o.opts.FormatStepPass(ctx, e, dur, o.state, o.opts.Palette)
 
 	case pipeline.StepFailedEvent:
-		o.writef("    ✗ %s — %s%s\n", e.Step, e.Err, o.elapsed(e.Location, e.Timestamp))
+		dur := e.Timestamp.Sub(o.state.stepTimes[e.Step])
+		o.state.FailedSteps = append(o.state.FailedSteps, e.Step+" - "+e.Err.Error())
+		output = o.opts.FormatStepFail(ctx, e, dur, o.state, o.opts.Palette)
 
 	case pipeline.StepSkippedEvent:
-		o.writef("    ⊘ %s — %s\n", e.Step, e.Reason)
+		output = o.opts.FormatStepSkip(ctx, e, o.state, o.opts.Palette)
 
-	// -------------------------------------------------------------------------
-	// In-flight
-	// -------------------------------------------------------------------------
 	case pipeline.MessageEvent:
-		o.writef("    │ [%s] %s\n", levelLabel(e.Level), e.Message)
-
-	case pipeline.OutputEvent:
-		o.writef("    │ %s\n", e.Line)
+		output = o.opts.FormatMessage(ctx, e, o.state, o.opts.Palette)
 
 	case pipeline.ProgressEvent:
-		if e.Total > 0 {
-			o.writef("    │ %s (%d/%d)\n", e.Message, e.Current, e.Total)
-		} else {
-			o.writef("    │ %s\n", e.Message)
-		}
+		output = o.opts.FormatProgress(ctx, e, o.state, o.opts.Palette)
 
-	case pipeline.CustomEvent:
-		o.writef("    │ [%s] %v\n", e.Type, e.Data)
-	}
-}
-
-func (o *Observer) writef(format string, args ...any) {
-	_, _ = fmt.Fprintf(o.w, format, args...)
-}
-
-func (o *Observer) elapsed(loc pipeline.Location, now time.Time) string {
-	start, ok := o.starts[loc]
-	if !ok {
-		return ""
+	case pipeline.OutputEvent:
+		output = o.opts.FormatOutput(ctx, e, o.state, o.opts.Palette)
 	}
 
-	delete(o.starts, loc)
-
-	return fmt.Sprintf(" (%s)", now.Sub(start).Truncate(time.Millisecond))
-}
-
-func levelLabel(l pipeline.MessageLevel) string {
-	switch l {
-	case pipeline.LevelInfo:
-		return "INFO"
-	case pipeline.LevelWarn:
-		return "WARN"
-	case pipeline.LevelDebug:
-		return "DBUG"
-	default:
-		return "INFO"
+	if output != "" {
+		_, _ = fmt.Fprintln(o.w, output)
 	}
 }

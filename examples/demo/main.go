@@ -1,8 +1,8 @@
-// Command demo runs a simulated deployment pipeline...
+// Command demo runs a simulated deployment pipeline.
 //
 // Usage:
 //
-//	go run . [-format terminal|json]
+//	go run . [-format terminal|plain|json]
 package main
 
 import (
@@ -14,11 +14,12 @@ import (
 
 	"github.com/ruffel/pipeline"
 	jsonobs "github.com/ruffel/pipeline/observers/json"
+	plainobs "github.com/ruffel/pipeline/observers/plain"
 	termobs "github.com/ruffel/pipeline/observers/terminal"
 )
 
 func main() {
-	format := flag.String("format", "terminal", "observer format: terminal or json")
+	format := flag.String("format", "terminal", "observer format: terminal, plain or json")
 	flag.Parse()
 
 	ex := pipeline.NewExecutor(buildObserver(*format))
@@ -26,8 +27,10 @@ func main() {
 	p := pipeline.NewPipeline("deploy",
 		preflight(),
 		build(),
-		test(),
+		dbMigrate(),
+		deploy(),
 		release(),
+		test(),
 	)
 
 	if err := ex.Run(context.Background(), p); err != nil {
@@ -39,6 +42,8 @@ func buildObserver(format string) pipeline.Observer {
 	switch format {
 	case "json":
 		return jsonobs.New(os.Stdout)
+	case "plain":
+		return plainobs.New(os.Stdout)
 	default:
 		return termobs.New(os.Stdout)
 	}
@@ -74,6 +79,32 @@ func build() pipeline.Stage {
 }
 
 var flakyAttempts int
+
+func dbMigrate() pipeline.Stage {
+	return pipeline.NewStage("db-migrate",
+		pipeline.NewStep("apply-schema", func(ctx context.Context) error {
+			out := pipeline.OutputWriter(ctx, pipeline.Stdout)
+			errOut := pipeline.OutputWriter(ctx, pipeline.Stderr)
+
+			pipeline.EmitInfo(ctx, "starting database migrations...")
+			sleep()
+
+			fmt.Fprintln(out, "--> applying 001_initial_schema.sql")
+			sleep()
+			fmt.Fprintln(out, "--> applying 002_add_user_indexes.sql")
+			sleep()
+			fmt.Fprintln(errOut, "WARNING: index 'idx_email' already exists, skipping")
+			sleep()
+			fmt.Fprintln(out, "--> applying 003_drop_legacy_tables.sql")
+
+			out.Close()
+			errOut.Close()
+
+			pipeline.EmitInfo(ctx, "database migrations complete")
+			return nil
+		}),
+	)
+}
 
 func test() pipeline.Stage {
 	return pipeline.NewParallelStage("test",
@@ -131,6 +162,23 @@ func release() pipeline.Stage {
 			pipeline.EmitCustom(ctx, "deploy.image-pushed", map[string]string{
 				"image": "registry.example.com/app:v1.2.3",
 			})
+
+			return nil
+		}),
+	)
+}
+
+func deploy() pipeline.Stage {
+	return pipeline.NewStage("deploy",
+		pipeline.NewStep("push-image", func(ctx context.Context) error {
+			total := 5
+
+			for i := 1; i <= total; i++ {
+				pipeline.EmitProgress(ctx, "push", "pushing image layers", i, total)
+				sleep()
+			}
+
+			pipeline.EmitInfo(ctx, "image pushed to registry.example.com/app:v1.2.3")
 
 			return nil
 		}),

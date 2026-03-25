@@ -45,4 +45,4 @@ See the [demo](./examples/demo/main.go) for a larger example showing:
 - Flow control (`ErrSkipStep`)
 - Subprocess output streaming (`OutputWriter`)
 - Middlewares (`WithTimeout`, `WithRetry`)
-- Multiple observers (Terminal UI, JSON)
+- Multiple observers (Styled Terminal, Plain, JSON)

@@ -34,3 +34,7 @@ demo:
 # Run the demo with JSON output
 demo-json:
     cd examples/demo && go run . -format json
+
+# Run the demo with plain output
+demo-plain:
+    cd examples/demo && go run . -format plain
