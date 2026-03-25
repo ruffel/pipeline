@@ -37,3 +37,30 @@ func TestObserver_Integration(t *testing.T) {
 	assert.Contains(t, out, "api") // step name
 	assert.Contains(t, out, "Pipeline Complete")
 }
+
+func TestObserver_StageSkipped(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := termobs.New(&buf)
+	ex := pipeline.NewExecutor(obs)
+
+	p := pipeline.NewPipeline("deploy",
+		pipeline.NewStage("optional",
+			pipeline.NewStep("noop", func(_ context.Context) error { return nil }),
+		).WithCondition(func(_ context.Context) string { return "not needed" }),
+		pipeline.NewStage("build",
+			pipeline.NewStep("compile", func(_ context.Context) error { return nil }),
+		),
+	)
+
+	err := ex.Run(t.Context(), p)
+	require.NoError(t, err)
+
+	out := buf.String()
+
+	assert.Contains(t, out, "Stage: optional")
+	assert.Contains(t, out, "not needed")
+	assert.Contains(t, out, "Pipeline Complete")
+}
