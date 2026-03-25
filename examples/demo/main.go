@@ -9,7 +9,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -32,7 +31,7 @@ func main() {
 	)
 
 	if err := ex.Run(context.Background(), p); err != nil {
-		log.Fatalf("pipeline failed: %v", err)
+		fmt.Printf("\n(Note: The pipeline intentionally fails in the demo to showcase ContinueOnError)\n")
 	}
 }
 
@@ -74,8 +73,10 @@ func build() pipeline.Stage {
 	)
 }
 
+var flakyAttempts int
+
 func test() pipeline.Stage {
-	return pipeline.NewStage("test",
+	return pipeline.NewParallelStage("test",
 		pipeline.NewStep("unit-tests", func(ctx context.Context) error {
 			w := pipeline.OutputWriter(ctx, pipeline.Stdout)
 
@@ -87,7 +88,6 @@ func test() pipeline.Stage {
 				"PASS",
 			}
 
-			// Simulate a subprocess writing line by line.
 			for _, line := range lines {
 				fmt.Fprintln(w, line)
 				sleep()
@@ -98,7 +98,24 @@ func test() pipeline.Stage {
 		pipeline.NewStep("lint", func(_ context.Context) error {
 			return fmt.Errorf("already passed in CI: %w", pipeline.ErrSkipStep)
 		}),
-	)
+		pipeline.NewStep("integration", func(ctx context.Context) error {
+			pipeline.EmitInfo(ctx, "starting slow integration test...")
+			select {
+			case <-time.After(5 * time.Second):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}).WithTimeout(500*time.Millisecond),
+		pipeline.NewStep("flaky-test", func(ctx context.Context) error {
+			flakyAttempts++
+			if flakyAttempts < 3 {
+				return fmt.Errorf("network flake")
+			}
+			pipeline.EmitInfo(ctx, "passed on attempt 3")
+			return nil
+		}).WithRetry(3, 200*time.Millisecond),
+	).WithContinueOnError(true)
 }
 
 func release() pipeline.Stage {
