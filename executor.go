@@ -228,11 +228,12 @@ func (e *Executor) validate(p Pipeline) error {
 	stageNames := make(map[string]bool, len(p.Stages))
 
 	for i, s := range p.Stages {
-		if s.Name == "" {
+		switch {
+		case s.Name == "":
 			errs = append(errs, fmt.Errorf("stage[%d]: name cannot be empty", i))
-		} else if stageNames[s.Name] {
+		case stageNames[s.Name]:
 			errs = append(errs, fmt.Errorf("stage[%d]: duplicate stage name %q", i, s.Name))
-		} else {
+		default:
 			stageNames[s.Name] = true
 		}
 
@@ -243,11 +244,12 @@ func (e *Executor) validate(p Pipeline) error {
 		stepNames := make(map[string]bool, len(s.Steps))
 
 		for j, t := range s.Steps {
-			if t.Name == "" {
+			switch {
+			case t.Name == "":
 				errs = append(errs, fmt.Errorf("stage[%d] step[%d]: name cannot be empty", i, j))
-			} else if stepNames[t.Name] {
+			case stepNames[t.Name]:
 				errs = append(errs, fmt.Errorf("stage[%d] step[%d]: duplicate step name %q", i, j, t.Name))
-			} else {
+			default:
 				stepNames[t.Name] = true
 			}
 
