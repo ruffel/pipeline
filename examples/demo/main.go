@@ -24,15 +24,12 @@ func main() {
 
 	ex := pipeline.NewExecutor(buildObserver(*format))
 
-	p := pipeline.Pipeline{
-		Name: "deploy",
-		Stages: []pipeline.Stage{
-			preflight(),
-			build(),
-			test(),
-			release(),
-		},
-	}
+	p := pipeline.NewPipeline("deploy",
+		preflight(),
+		build(),
+		test(),
+		release(),
+	)
 
 	if err := ex.Run(context.Background(), p); err != nil {
 		log.Fatalf("pipeline failed: %v", err)
@@ -53,108 +50,74 @@ func buildObserver(format string) pipeline.Observer {
 // -----------------------------------------------------------------------------
 
 func preflight() pipeline.Stage {
-	return pipeline.Stage{
-		Name: "preflight",
-		Steps: []pipeline.Step{
-			{
-				Name: "check-cluster",
-				Run: func(ctx context.Context) error {
-					pipeline.EmitInfo(ctx, "connecting to cluster...")
-					sleep()
-					pipeline.EmitInfo(ctx, "cluster healthy ✓")
+	return pipeline.NewStage("preflight",
+		pipeline.NewStep("check-cluster", func(ctx context.Context) error {
+			pipeline.EmitInfo(ctx, "connecting to cluster...")
+			sleep()
+			pipeline.EmitInfo(ctx, "cluster healthy ✓")
 
-					return nil
-				},
-			},
-			{
-				Name: "validate-config",
-				Run: func(ctx context.Context) error {
-					pipeline.EmitInfo(ctx, "validating deployment config")
-					sleep()
+			return nil
+		}),
+		pipeline.NewStep("validate-config", func(ctx context.Context) error {
+			pipeline.EmitInfo(ctx, "validating deployment config")
+			sleep()
 
-					return nil
-				},
-			},
-		},
-	}
+			return nil
+		}),
+	)
 }
 
 func build() pipeline.Stage {
-	return pipeline.Stage{
-		Name:     "build",
-		Parallel: true,
-		Steps: []pipeline.Step{
-			{
-				Name: "compile-api",
-				Run:  compileStep("api"),
-			},
-			{
-				Name: "compile-worker",
-				Run:  compileStep("worker"),
-			},
-		},
-	}
+	return pipeline.NewParallelStage("build",
+		pipeline.NewStep("compile-api", compileStep("api")),
+		pipeline.NewStep("compile-worker", compileStep("worker")),
+	)
 }
 
 func test() pipeline.Stage {
-	return pipeline.Stage{
-		Name: "test",
-		Steps: []pipeline.Step{
-			{
-				Name: "unit-tests",
-				Run: func(ctx context.Context) error {
-					w := pipeline.OutputWriter(ctx, pipeline.Stdout)
+	return pipeline.NewStage("test",
+		pipeline.NewStep("unit-tests", func(ctx context.Context) error {
+			w := pipeline.OutputWriter(ctx, pipeline.Stdout)
 
-					lines := []string{
-						"=== RUN   TestUserService",
-						"--- PASS: TestUserService (0.3s)",
-						"=== RUN   TestOrderService",
-						"--- PASS: TestOrderService (0.2s)",
-						"PASS",
-					}
+			lines := []string{
+				"=== RUN   TestUserService",
+				"--- PASS: TestUserService (0.3s)",
+				"=== RUN   TestOrderService",
+				"--- PASS: TestOrderService (0.2s)",
+				"PASS",
+			}
 
-					// Simulate a subprocess writing line by line.
-					for _, line := range lines {
-						fmt.Fprintln(w, line)
-						sleep()
-					}
+			// Simulate a subprocess writing line by line.
+			for _, line := range lines {
+				fmt.Fprintln(w, line)
+				sleep()
+			}
 
-					return w.Close()
-				},
-			},
-			{
-				Name: "lint",
-				Run: func(_ context.Context) error {
-					return fmt.Errorf("already passed in CI: %w", pipeline.ErrSkipStep)
-				},
-			},
-		},
-	}
+			return w.Close()
+		}),
+		pipeline.NewStep("lint", func(_ context.Context) error {
+			return fmt.Errorf("already passed in CI: %w", pipeline.ErrSkipStep)
+		}),
+	)
 }
 
 func release() pipeline.Stage {
-	return pipeline.Stage{
-		Name: "release",
-		Steps: []pipeline.Step{
-			{
-				Name: "publish",
-				Run: func(ctx context.Context) error {
-					pipeline.EmitInfo(ctx, "pushing image to registry")
-					sleep()
-					pipeline.EmitProgress(ctx, "upload", "uploading image", 1, 3)
-					sleep()
-					pipeline.EmitProgress(ctx, "upload", "uploading image", 2, 3)
-					sleep()
-					pipeline.EmitProgress(ctx, "upload", "uploading image", 3, 3)
-					pipeline.EmitCustom(ctx, "deploy.image-pushed", map[string]string{
-						"image": "registry.example.com/app:v1.2.3",
-					})
+	return pipeline.NewStage("release",
+		pipeline.NewStep("publish", func(ctx context.Context) error {
+			pipeline.EmitInfo(ctx, "pushing image to registry")
+			sleep()
+			pipeline.EmitProgress(ctx, "upload", "uploading image", 1, 3)
+			sleep()
+			pipeline.EmitProgress(ctx, "upload", "uploading image", 2, 3)
+			sleep()
+			pipeline.EmitProgress(ctx, "upload", "uploading image", 3, 3)
+			pipeline.EmitCustom(ctx, "deploy.image-pushed", map[string]string{
+				"image": "registry.example.com/app:v1.2.3",
+			})
 
-					return nil
-				},
-			},
-		},
-	}
+			return nil
+		}),
+	)
 }
 
 // compileStep returns a step function that simulates compiling a service.
