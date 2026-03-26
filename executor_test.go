@@ -450,6 +450,95 @@ func TestExecutor_ContinueOnError(t *testing.T) {
 	require.ErrorIs(t, err, errB)
 }
 
+func TestExecutor_ContinueOnError_PreservesRealErrorsWithSkipPipeline(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+	realErr := errors.New("deploy failed")
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name:            "cleanup",
+				Parallel:        true,
+				ContinueOnError: true,
+				Steps: []pipeline.Step{
+					{Name: "real-fail", Run: func(_ context.Context) error { return realErr }},
+					{Name: "skip-pipe", Run: func(_ context.Context) error { return pipeline.ErrSkipPipeline }},
+				},
+			},
+		},
+	})
+
+	// Real failure must NOT be silently discarded.
+	require.Error(t, err)
+	require.ErrorIs(t, err, realErr)
+	assert.NotErrorIs(t, err, pipeline.ErrSkipPipeline, "skip should be filtered out")
+}
+
+func TestExecutor_ContinueOnError_SkipPipelineAloneIsClean(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name:            "check",
+				Parallel:        true,
+				ContinueOnError: true,
+				Steps: []pipeline.Step{
+					{Name: "skip-pipe", Run: func(_ context.Context) error { return pipeline.ErrSkipPipeline }},
+					{Name: "noop", Run: func(_ context.Context) error { return nil }},
+				},
+			},
+			{
+				Name:  "should-not-run",
+				Steps: []pipeline.Step{{Name: "x", Run: func(_ context.Context) error { return nil }}},
+			},
+		},
+	})
+
+	// Pipeline should pass cleanly — no real failures, skip is honoured.
+	require.NoError(t, err)
+
+	types := obs.eventTypes()
+	assert.NotContains(t, types, "pipeline.StageStartedEvent should-not-run")
+	assert.Contains(t, types, "pipeline.PipelinePassedEvent")
+}
+
+func TestExecutor_ContinueOnError_SkipStageAbsorbed(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name:            "cleanup",
+				Parallel:        true,
+				ContinueOnError: true,
+				Steps: []pipeline.Step{
+					{Name: "skip-stage", Run: func(_ context.Context) error { return pipeline.ErrSkipStage }},
+					{Name: "noop", Run: func(_ context.Context) error { return nil }},
+				},
+			},
+		},
+	})
+
+	// ErrSkipStage should be absorbed — stage passes.
+	require.NoError(t, err)
+
+	types := obs.eventTypes()
+	assert.Contains(t, types, "pipeline.PipelinePassedEvent")
+}
+
 // -----------------------------------------------------------------------------
 // Emitter wiring
 // -----------------------------------------------------------------------------
