@@ -93,6 +93,8 @@ func EmitProgress(ctx context.Context, key, message string, current, total int) 
 	e.emit(ctx, NewProgressEvent(e.loc, key, message, current, total, time.Now()))
 }
 
+// EmitIndeterminateProgress reports progress without a known total. This is
+// equivalent to calling [EmitProgress] with zero current and total values.
 func EmitIndeterminateProgress(ctx context.Context, key, message string) {
 	e := EmitterFrom(ctx)
 	if e == nil {
