@@ -406,6 +406,65 @@ func TestExecutor_ParallelFailFast(t *testing.T) {
 	require.ErrorIs(t, err, sentinel)
 }
 
+func TestExecutor_ParallelFailFast_SkipStageAbsorbed(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name:     "build",
+				Parallel: true,
+				Steps: []pipeline.Step{
+					{Name: "skip-stage", Run: func(_ context.Context) error { return pipeline.ErrSkipStage }},
+					{Name: "noop", Run: noop},
+				},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+
+	types := obs.eventTypes()
+	assert.Contains(t, types, "pipeline.StagePassedEvent")
+}
+
+func TestExecutor_ParallelFailFast_SkipPipelinePropagates(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name:     "check",
+				Parallel: true,
+				Steps: []pipeline.Step{
+					{Name: "skip-pipe", Run: func(_ context.Context) error { return pipeline.ErrSkipPipeline }},
+				},
+			},
+			{
+				Name:  "should-not-run",
+				Steps: []pipeline.Step{{Name: "x", Run: noop}},
+			},
+		},
+	})
+
+	// Pipeline passes cleanly — skip is honoured.
+	require.NoError(t, err)
+
+	for _, ev := range obs.events {
+		if e, ok := ev.(pipeline.StageStartedEvent); ok {
+			assert.NotEqual(t, "should-not-run", e.Stage, "skipped stage should not have started")
+		}
+	}
+}
+
 // -----------------------------------------------------------------------------
 // ContinueOnError (best-effort parallel)
 // -----------------------------------------------------------------------------

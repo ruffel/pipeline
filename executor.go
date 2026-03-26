@@ -130,7 +130,16 @@ func (e *Executor) runStepsFailFast(ctx context.Context, loc Location, s Stage) 
 		})
 	}
 
-	return g.Wait()
+	err := g.Wait()
+
+	switch {
+	case errors.Is(err, ErrSkipStage):
+		return nil
+	case errors.Is(err, ErrSkipPipeline):
+		return ErrSkipPipeline
+	default:
+		return err
+	}
 }
 
 func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage) error {
