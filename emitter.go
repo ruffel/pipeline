@@ -22,6 +22,10 @@ type Emitter struct {
 // serialises observer calls. For standalone use (e.g. CLI glue), any function
 // will work.
 func NewEmitter(broadcast func(context.Context, Event), loc Location) *Emitter {
+	if broadcast == nil {
+		broadcast = func(context.Context, Event) {}
+	}
+
 	return &Emitter{broadcast: broadcast, loc: loc}
 }
 
