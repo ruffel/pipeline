@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 )
 
@@ -12,10 +13,17 @@ import (
 // If the internal buffer fills up, new events are dropped to prevent stalling
 // the pipeline. The number of dropped events can be checked via [Dropped].
 type AsyncObserver struct {
-	next    Observer
-	events  chan asyncEvent
-	dropped atomic.Int64
-	done    chan struct{}
+	next      Observer
+	events    chan asyncEvent
+	dropped   atomic.Int64
+	done      chan struct{}
+	closeOnce sync.Once
+
+	// mu guards the closed flag and the channel send in OnEvent against
+	// a concurrent Close. OnEvent takes an RLock (concurrent senders don't
+	// block each other), Close takes a full Lock before closing the channel.
+	mu     sync.RWMutex
+	closed bool
 }
 
 type asyncEvent struct {
@@ -41,8 +49,18 @@ func NewAsyncObserver(next Observer, bufferSize int) *AsyncObserver {
 }
 
 // OnEvent implements [Observer]. It queues the event for background processing.
-// If the queue is full, the event is dropped and the dropped counter is incremented.
+// If the queue is full or the observer has been closed, the event is dropped
+// and the dropped counter is incremented.
 func (a *AsyncObserver) OnEvent(ctx context.Context, event Event) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.closed {
+		a.dropped.Add(1)
+
+		return
+	}
+
 	select {
 	case a.events <- asyncEvent{ctx: ctx, event: event}:
 	default:
@@ -51,15 +69,23 @@ func (a *AsyncObserver) OnEvent(ctx context.Context, event Event) {
 }
 
 // Dropped returns the number of events that were dropped because the buffer
-// was full.
+// was full or because the observer was already closed.
 func (a *AsyncObserver) Dropped() int64 {
 	return a.dropped.Load()
 }
 
 // Close stops accepting new events, waits for all queued events to be
 // processed by the wrapped observer, and releases the background goroutine.
+// Close is safe to call multiple times.
 func (a *AsyncObserver) Close() {
-	close(a.events)
+	a.closeOnce.Do(func() {
+		a.mu.Lock()
+		a.closed = true
+		a.mu.Unlock()
+
+		close(a.events)
+	})
+
 	<-a.done
 }
 
