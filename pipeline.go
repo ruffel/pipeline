@@ -22,7 +22,6 @@ type Pipeline struct {
 // Stage represents a logical grouping of steps within a pipeline.
 type Stage struct {
 	Name            string      // Human-readable display name.
-	Group           string      // Optional; UI only grouping.
 	Steps           []Step      // The steps that make up the stage.
 	Parallel        bool        // When true, steps run concurrently.
 	ContinueOnError bool        // When true, all steps run even if some fail; errors are joined.
