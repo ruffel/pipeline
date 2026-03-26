@@ -41,6 +41,8 @@ func NewWithOptions(w io.Writer, opts Options) *Observer {
 }
 
 // OnEvent implements [pipeline.Observer].
+//
+//nolint:cyclop // This is a large switch statement, but it is necessary to handle all the different types of events.
 func (o *Observer) OnEvent(ctx context.Context, ev pipeline.Event) {
 	o.mu.Lock()
 	defer o.mu.Unlock()

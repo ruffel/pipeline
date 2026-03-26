@@ -129,3 +129,35 @@ func TestWithRetry_ComposesWithTimeout(t *testing.T) {
 	require.NoError(t, step(t.Context()))
 	assert.Equal(t, int32(2), attempts.Load())
 }
+
+func TestWithRetry_DoesNotRetrySentinelErrors(t *testing.T) {
+	t.Parallel()
+
+	sentinels := []struct {
+		name string
+		err  error
+	}{
+		{"ErrSkipStep", pipeline.ErrSkipStep},
+		{"ErrSkipStage", pipeline.ErrSkipStage},
+		{"ErrSkipPipeline", pipeline.ErrSkipPipeline},
+	}
+
+	for _, tt := range sentinels {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var attempts atomic.Int32
+
+			step := pipeline.WithRetry(3, time.Millisecond, func(_ context.Context) error {
+				attempts.Add(1)
+
+				return tt.err
+			})
+
+			err := step(t.Context())
+
+			require.ErrorIs(t, err, tt.err)
+			assert.Equal(t, int32(1), attempts.Load(), "sentinel errors should not be retried")
+		})
+	}
+}
