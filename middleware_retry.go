@@ -18,6 +18,10 @@ import (
 // If the context is cancelled between attempts, the retry loop stops and
 // returns the context error.
 func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
+	if maxAttempts < 1 {
+		panic("pipeline: WithRetry maxAttempts must be >= 1")
+	}
+
 	return func(ctx context.Context) error {
 		var err error
 

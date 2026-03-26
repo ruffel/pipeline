@@ -161,3 +161,13 @@ func TestWithRetry_DoesNotRetrySentinelErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestWithRetry_PanicsOnInvalidMaxAttempts(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{0, -1, -100} {
+		assert.PanicsWithValue(t, "pipeline: WithRetry maxAttempts must be >= 1", func() {
+			pipeline.WithRetry(n, time.Millisecond, noop)
+		})
+	}
+}
