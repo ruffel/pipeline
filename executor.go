@@ -220,7 +220,7 @@ func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr e
 
 // stepCtx creates a child context with the emitter wired for the given step.
 func (e *Executor) stepCtx(ctx context.Context, loc Location, s Step) context.Context {
-	return WithEmitter(ctx, NewEmitter(e.observers, loc.WithStep(s.Name)))
+	return WithEmitter(ctx, NewEmitter(e.emit, loc.WithStep(s.Name)))
 }
 
 func (e *Executor) emit(ctx context.Context, event Event) {

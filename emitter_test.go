@@ -18,7 +18,7 @@ func TestEmitterContextRoundTrip(t *testing.T) {
 
 	obs := &recordingObserver{}
 	loc := pipeline.Location{Pipeline: "p", Stage: "s", Step: "step"}
-	em := pipeline.NewEmitter([]pipeline.Observer{obs}, loc)
+	em := pipeline.NewEmitter(obs.OnEvent, loc)
 
 	ctx := pipeline.WithEmitter(t.Context(), em)
 	got := pipeline.EmitterFrom(ctx)
@@ -158,7 +158,7 @@ func TestEmitCarriesLocation(t *testing.T) {
 
 	loc := pipeline.Location{Pipeline: "p", Stage: "s", Step: "step"}
 	obs := &recordingObserver{}
-	em := pipeline.NewEmitter([]pipeline.Observer{obs}, loc)
+	em := pipeline.NewEmitter(obs.OnEvent, loc)
 	ctx := pipeline.WithEmitter(t.Context(), em)
 
 	pipeline.EmitInfo(ctx, "test")
@@ -175,7 +175,7 @@ func emitterCtx(t *testing.T) (*recordingObserver, context.Context) {
 
 	obs := &recordingObserver{}
 	loc := pipeline.Location{Pipeline: "test"}
-	em := pipeline.NewEmitter([]pipeline.Observer{obs}, loc)
+	em := pipeline.NewEmitter(obs.OnEvent, loc)
 
 	return obs, pipeline.WithEmitter(t.Context(), em)
 }

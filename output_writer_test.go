@@ -13,7 +13,7 @@ func TestOutputWriter_EmitsLines(t *testing.T) {
 	t.Parallel()
 
 	obs := &recordingObserver{}
-	em := pipeline.NewEmitter([]pipeline.Observer{obs}, pipeline.Location{
+	em := pipeline.NewEmitter(obs.OnEvent, pipeline.Location{
 		Pipeline: "p",
 		Stage:    "s",
 		Step:     "step",
