@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -23,6 +24,11 @@ func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
 		for attempt := range maxAttempts {
 			if err = fn(ctx); err == nil {
 				return nil
+			}
+
+			// Sentinel skip errors are intentional flow control — propagate immediately.
+			if errors.Is(err, ErrSkipStep) || errors.Is(err, ErrSkipStage) || errors.Is(err, ErrSkipPipeline) {
+				return err
 			}
 
 			// Don't wait after the last attempt.
