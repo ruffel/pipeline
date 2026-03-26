@@ -10,16 +10,19 @@ import (
 // to the executor. An Emitter is stored in the step's context by the executor
 // and accessed via the EmitX package-level helpers.
 type Emitter struct {
-	observers []Observer
+	broadcast func(context.Context, Event)
 	loc       Location
 }
 
-// NewEmitter constructs an Emitter that broadcasts to the given observers at
-// the given location. This is primarily used by the executor, but is exported
-// for cases where code needs to emit events outside the normal execution flow
-// (e.g. bootstrapping, CLI glue).
-func NewEmitter(observers []Observer, loc Location) *Emitter {
-	return &Emitter{observers: observers, loc: loc}
+// NewEmitter constructs an Emitter that delivers events through the given
+// broadcast function at the given location. The broadcast function is
+// responsible for any synchronisation required by the underlying observers.
+//
+// Inside the executor, the broadcast function is [Executor.emit] which already
+// serialises observer calls. For standalone use (e.g. CLI glue), any function
+// will work.
+func NewEmitter(broadcast func(context.Context, Event), loc Location) *Emitter {
+	return &Emitter{broadcast: broadcast, loc: loc}
 }
 
 type emitterKey struct{}
@@ -37,9 +40,7 @@ func EmitterFrom(ctx context.Context) *Emitter {
 }
 
 func (e *Emitter) emit(ctx context.Context, event Event) {
-	for _, o := range e.observers {
-		o.OnEvent(ctx, event)
-	}
+	e.broadcast(ctx, event)
 }
 
 // -----------------------------------------------------------------------------
