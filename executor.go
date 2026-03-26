@@ -135,9 +135,10 @@ func (e *Executor) runStepsFailFast(ctx context.Context, loc Location, s Stage) 
 
 func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage) error {
 	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		errs []error
+		wg           sync.WaitGroup
+		mu           sync.Mutex
+		errs         []error
+		skipPipeline bool
 	)
 
 	for _, step := range s.Steps {
@@ -152,7 +153,14 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 			if err := e.runStep(stepCtx, stepLoc, step); err != nil {
 				mu.Lock()
 
-				errs = append(errs, err)
+				switch {
+				case errors.Is(err, ErrSkipPipeline):
+					skipPipeline = true
+				case errors.Is(err, ErrSkipStage):
+					// Absorbed — stage continues with remaining steps.
+				default:
+					errs = append(errs, err)
+				}
 
 				mu.Unlock()
 			}
@@ -161,7 +169,17 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 
 	wg.Wait()
 
-	return errors.Join(errs...)
+	// Real failures take priority over skip signals.
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+
+	// No real failures — propagate skip if requested.
+	if skipPipeline {
+		return ErrSkipPipeline
+	}
+
+	return nil
 }
 
 func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr error) {
