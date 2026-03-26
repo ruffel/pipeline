@@ -156,7 +156,7 @@ func TestWithRetry_DoesNotRetrySentinelErrors(t *testing.T) {
 
 			err := step(t.Context())
 
-			assert.ErrorIs(t, err, tt.err)
+			require.ErrorIs(t, err, tt.err)
 			assert.Equal(t, int32(1), attempts.Load(), "sentinel errors should not be retried")
 		})
 	}
