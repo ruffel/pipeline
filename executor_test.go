@@ -506,8 +506,13 @@ func TestExecutor_ContinueOnError_SkipPipelineAloneIsClean(t *testing.T) {
 	// Pipeline should pass cleanly — no real failures, skip is honoured.
 	require.NoError(t, err)
 
+	for _, ev := range obs.events {
+		if e, ok := ev.(pipeline.StageStartedEvent); ok {
+			assert.NotEqual(t, "should-not-run", e.Stage, "skipped stage should not have started")
+		}
+	}
+
 	types := obs.eventTypes()
-	assert.NotContains(t, types, "pipeline.StageStartedEvent should-not-run")
 	assert.Contains(t, types, "pipeline.PipelinePassedEvent")
 }
 
