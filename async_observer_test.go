@@ -137,15 +137,11 @@ func TestAsyncObserver_ConcurrentOnEventAndClose(t *testing.T) {
 	var wg sync.WaitGroup
 
 	for range 10 {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			for range 100 {
 				async.OnEvent(t.Context(), pipeline.PipelineStartedEvent{})
 			}
-		}()
+		})
 	}
 
 	// Close while senders are still active — must not panic.
