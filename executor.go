@@ -296,6 +296,10 @@ func (e *Executor) validate(p Pipeline) error {
 			errs = append(errs, fmt.Errorf("stage[%d] %q: must have at least one step", i, s.Name))
 		}
 
+		if s.ContinueOnError && !s.Parallel {
+			errs = append(errs, fmt.Errorf("stage[%d] %q: ContinueOnError requires Parallel", i, s.Name))
+		}
+
 		stepNames := make(map[string]bool, len(s.Steps))
 
 		for j, t := range s.Steps {

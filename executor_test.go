@@ -775,6 +775,16 @@ func TestExecutor_Validation(t *testing.T) {
 			},
 			wantErr: "name cannot be empty",
 		},
+		{
+			name: "ContinueOnError requires Parallel",
+			p: pipeline.Pipeline{
+				Name: "p",
+				Stages: []pipeline.Stage{
+					{Name: "s", ContinueOnError: true, Steps: []pipeline.Step{{Name: "a", Run: noop}}},
+				},
+			},
+			wantErr: "ContinueOnError requires Parallel",
+		},
 	}
 
 	for _, tt := range cases {
