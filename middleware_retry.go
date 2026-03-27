@@ -8,8 +8,8 @@ import (
 
 // WithRetry wraps a [StepFn] to retry on failure. The step is called up to
 // maxAttempts times with a fixed delay between attempts. Each failed attempt
-// emits a warning via [EmitWarnf]. Sentinel skip errors ([ErrSkipStep],
-// [ErrSkipStage], [ErrSkipPipeline]) are never retried.
+// emits a warning via [EmitWarnf]. Sentinel skip errors ([ErrSkipStage],
+// [ErrSkipPipeline]) are never retried.
 //
 //	pipeline.Step{
 //	    Name: "deploy",
@@ -32,7 +32,7 @@ func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
 			}
 
 			// Sentinel skip errors are intentional flow control — propagate immediately.
-			if errors.Is(err, ErrSkipStep) || errors.Is(err, ErrSkipStage) || errors.Is(err, ErrSkipPipeline) {
+			if errors.Is(err, ErrSkipStage) || errors.Is(err, ErrSkipPipeline) {
 				return err
 			}
 

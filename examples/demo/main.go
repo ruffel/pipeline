@@ -127,7 +127,9 @@ func test() pipeline.Stage {
 			return w.Close()
 		}),
 		pipeline.NewStep("lint", func(_ context.Context) error {
-			return fmt.Errorf("already passed in CI: %w", pipeline.ErrSkipStep)
+			return nil
+		}).WithCondition(func(_ context.Context) string {
+			return "already passed in CI"
 		}),
 		pipeline.NewStep("integration", func(ctx context.Context) error {
 			pipeline.EmitInfo(ctx, "starting slow integration test...")
