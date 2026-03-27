@@ -1,6 +1,6 @@
 # pipeline
 
-An Go library for executing multi-stage task pipelines with custom observers.
+A Go library for executing multi-stage task pipelines with custom observers.
 
 The pipeline handles execution, timeouts, and retries, only the tasks need defining.
 
