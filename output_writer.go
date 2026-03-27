@@ -50,9 +50,9 @@ func OutputWriter(ctx context.Context, stream Stream) io.WriteCloser {
 		// scannerMaxLine) through the event system. The only other channel is
 		// Close() but callers usually discard the Close() error.
 		if err := scanner.Err(); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			EmitWarnf(ctx, "output stream interrupted: %v", err)
-
 			_ = r.Close() // Unblock the writer so the subprocess doesn't hang.
+
+			EmitWarnf(ctx, "output stream interrupted: %v", err)
 		}
 	}()
 

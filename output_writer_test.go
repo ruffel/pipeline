@@ -76,7 +76,7 @@ func TestOutputWriter_LongLineEmitsWarning(t *testing.T) {
 	w := pipeline.OutputWriter(ctx, pipeline.Stdout)
 
 	// Write a line that exceeds scannerMaxLine (1 MiB).
-	longLine := make([]byte, 1024*1024+1)
+	longLine := make([]byte, 1024*1024+2)
 	for i := range longLine {
 		longLine[i] = 'x'
 	}
