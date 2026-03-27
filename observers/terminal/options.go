@@ -18,7 +18,8 @@ type Palette struct {
 
 	// Base
 	Foreground lipgloss.TerminalColor // Standard text.
-	Muted      lipgloss.TerminalColor // Dimmed or secondary text.
+	Muted      lipgloss.TerminalColor // Dimmed or secondary text (structure/chrome).
+	Output     lipgloss.TerminalColor // Subprocess stdout (readable but subordinate).
 
 	// Statuses
 	Success lipgloss.TerminalColor
