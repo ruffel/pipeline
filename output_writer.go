@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 )
 
@@ -43,6 +44,15 @@ func OutputWriter(ctx context.Context, stream Stream) io.WriteCloser {
 
 		for scanner.Scan() {
 			EmitOutput(ctx, stream, scanner.Text())
+		}
+
+		// Report scanner errors (e.g. bufio.ErrTooLong for lines exceeding
+		// scannerMaxLine) through the event system. The only other channel is
+		// Close() but callers usually discard the Close() error.
+		if err := scanner.Err(); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			EmitWarnf(ctx, "output stream interrupted: %v", err)
+
+			_ = r.Close() // Unblock the writer so the subprocess doesn't hang.
 		}
 	}()
 

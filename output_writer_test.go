@@ -61,3 +61,39 @@ func TestOutputWriter_ContextCancellation(t *testing.T) {
 	_, _ = w.Write([]byte("after cancel\n"))
 	_ = w.Close()
 }
+
+func TestOutputWriter_LongLineEmitsWarning(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	em := pipeline.NewEmitter(obs.OnEvent, pipeline.Location{
+		Pipeline: "p",
+		Stage:    "s",
+		Step:     "step",
+	})
+
+	ctx := pipeline.WithEmitter(t.Context(), em)
+	w := pipeline.OutputWriter(ctx, pipeline.Stdout)
+
+	// Write a line that exceeds scannerMaxLine (1 MiB).
+	longLine := make([]byte, 1024*1024+1)
+	for i := range longLine {
+		longLine[i] = 'x'
+	}
+
+	longLine[len(longLine)-1] = '\n'
+
+	_, _ = w.Write(longLine)
+	_ = w.Close()
+
+	// Should have emitted a warning about the interrupted stream.
+	var gotWarning bool
+
+	for _, e := range obs.events {
+		if msg, ok := e.(pipeline.MessageEvent); ok && msg.Level == pipeline.LevelWarn {
+			gotWarning = true
+		}
+	}
+
+	assert.True(t, gotWarning, "expected a warning event for scanner overflow")
+}
