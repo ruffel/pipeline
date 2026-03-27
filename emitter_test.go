@@ -126,6 +126,21 @@ func TestEmitProgress(t *testing.T) {
 	assert.Equal(t, 10, e.Total)
 }
 
+func TestEmitIndeterminateProgress(t *testing.T) {
+	t.Parallel()
+
+	obs, ctx := emitterCtx(t)
+	pipeline.EmitIndeterminateProgress(ctx, "scan", "scanning files")
+
+	require.Len(t, obs.events, 1)
+	e, ok := obs.events[0].(pipeline.ProgressEvent)
+	require.True(t, ok)
+	assert.Equal(t, "scan", e.Key)
+	assert.Equal(t, "scanning files", e.Message)
+	assert.Equal(t, 0, e.Current)
+	assert.Equal(t, 0, e.Total)
+}
+
 func TestEmitOutput(t *testing.T) {
 	t.Parallel()
 
