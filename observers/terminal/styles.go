@@ -19,7 +19,8 @@ func DefaultPalette() Palette {
 		Primary:    lipgloss.Color("63"),
 		Accent:     lipgloss.AdaptiveColor{Light: "#43BF6D", Dark: "#73F59F"},
 		Foreground: lipgloss.Color(""),
-		Muted:      lipgloss.AdaptiveColor{Light: "#D9DCCF", Dark: "#383838"},
+		Muted:      lipgloss.AdaptiveColor{Light: "#999999", Dark: "#6C6C6C"},
+		Output:     lipgloss.AdaptiveColor{Light: "#666666", Dark: "#999999"},
 		Success:    lipgloss.AdaptiveColor{Light: "#43BF6D", Dark: "#73F59F"},
 		Warning:    lipgloss.Color("#FFC72C"),
 		Error:      lipgloss.Color("196"),
@@ -272,7 +273,7 @@ func formatOutput(_ context.Context, e pipeline.OutputEvent, s State, p Palette)
 			line = r.colored(line, p.Warning)
 		} else {
 			pipe = r.pipe()
-			line = r.muted(line)
+			line = r.colored(line, p.Output)
 		}
 
 		return fmt.Sprintf("%s %s %s", r.prefix(e.Step), pipe, line)
