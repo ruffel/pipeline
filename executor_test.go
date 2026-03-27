@@ -125,10 +125,12 @@ func TestExecutor_ErrSkipPipeline(t *testing.T) {
 	// ErrSkipPipeline is a clean exit — no error returned.
 	require.NoError(t, err)
 
-	// The skip step should produce a skipped event, not a failed event.
-	// The pipeline should pass.
-	last := obs.eventTypes()[len(obs.eventTypes())-1]
-	assert.Equal(t, "pipeline.PipelinePassedEvent", last)
+	// Sentinel returns produce StepPassedEvent — the step ran and resolved.
+	types := obs.eventTypes()
+	assert.NotContains(t, types, "pipeline.StepSkippedEvent")
+	assert.NotContains(t, types, "pipeline.StepFailedEvent")
+	assert.NotContains(t, types, "pipeline.StageFailedEvent")
+	assert.Contains(t, types, "pipeline.PipelinePassedEvent")
 }
 
 func TestExecutor_ErrSkipStage(t *testing.T) {
@@ -156,12 +158,15 @@ func TestExecutor_ErrSkipStage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify the second stage still ran.
+	// Sentinel returns produce StepPassedEvent — the step ran and resolved.
 	types := obs.eventTypes()
+	assert.NotContains(t, types, "pipeline.StepSkippedEvent")
+	assert.NotContains(t, types, "pipeline.StepFailedEvent")
+	assert.NotContains(t, types, "pipeline.StageFailedEvent")
 	assert.Contains(t, types, "pipeline.PipelinePassedEvent")
 }
 
-func TestExecutor_ErrSkipStep(t *testing.T) {
+func TestExecutor_StepReturnsNilEarly(t *testing.T) {
 	t.Parallel()
 
 	obs := &recordingObserver{}
@@ -173,8 +178,10 @@ func TestExecutor_ErrSkipStep(t *testing.T) {
 			{
 				Name: "check",
 				Steps: []pipeline.Step{
-					{Name: "skip-me", Run: func(_ context.Context) error {
-						return fmt.Errorf("already done: %w", pipeline.ErrSkipStep)
+					{Name: "skip-me", Run: func(ctx context.Context) error {
+						pipeline.EmitInfo(ctx, "already done")
+
+						return nil
 					}},
 					{Name: "still-runs", Run: noop},
 				},
@@ -186,8 +193,9 @@ func TestExecutor_ErrSkipStep(t *testing.T) {
 	assert.Equal(t, []string{
 		"pipeline.PipelineStartedEvent",
 		"pipeline.StageStartedEvent",
-		"pipeline.StepStartedEvent", // Step starts before returning ErrSkipStep.
-		"pipeline.StepSkippedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.MessageEvent", // EmitInfo
+		"pipeline.StepPassedEvent",
 		"pipeline.StepStartedEvent",
 		"pipeline.StepPassedEvent",
 		"pipeline.StagePassedEvent",

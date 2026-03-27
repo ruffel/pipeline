@@ -17,7 +17,6 @@ func TestSentinelErrors(t *testing.T) {
 	}{
 		{"ErrSkipPipeline", pipeline.ErrSkipPipeline},
 		{"ErrSkipStage", pipeline.ErrSkipStage},
-		{"ErrSkipStep", pipeline.ErrSkipStep},
 	}
 
 	t.Run("survives wrapping", func(t *testing.T) {
@@ -42,8 +41,6 @@ func TestSentinelErrors(t *testing.T) {
 			other  error
 		}{
 			{"Pipeline vs Stage", pipeline.ErrSkipPipeline, pipeline.ErrSkipStage},
-			{"Pipeline vs Step", pipeline.ErrSkipPipeline, pipeline.ErrSkipStep},
-			{"Stage vs Step", pipeline.ErrSkipStage, pipeline.ErrSkipStep},
 		}
 
 		for _, tt := range cases {

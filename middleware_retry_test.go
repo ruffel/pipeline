@@ -137,7 +137,6 @@ func TestWithRetry_DoesNotRetrySentinelErrors(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"ErrSkipStep", pipeline.ErrSkipStep},
 		{"ErrSkipStage", pipeline.ErrSkipStage},
 		{"ErrSkipPipeline", pipeline.ErrSkipPipeline},
 	}

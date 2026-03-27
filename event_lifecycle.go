@@ -80,7 +80,8 @@ func newStageFailedEvent(loc Location, err error, now time.Time) StageFailedEven
 	return StageFailedEvent{BaseEvent: newBaseEvent(loc, now), Err: err}
 }
 
-// StageSkippedEvent is emitted when a stage's Condition returns a non-empty reason.
+// StageSkippedEvent is emitted when a stage's Condition returns a non-empty
+// reason. It is always standalone — no [StageStartedEvent] precedes it.
 type StageSkippedEvent struct {
 	BaseEvent
 
@@ -113,8 +114,8 @@ func newStepPassedEvent(loc Location, now time.Time) StepPassedEvent {
 	return StepPassedEvent{BaseEvent: newBaseEvent(loc, now)}
 }
 
-// StepFailedEvent is emitted when a step's Run function returns a non-nil error
-// (excluding sentinel skip errors, which produce StepSkippedEvent instead).
+// StepFailedEvent is emitted when a step's Run function returns a non-nil,
+// non-sentinel error.
 type StepFailedEvent struct {
 	BaseEvent
 
@@ -126,7 +127,7 @@ func newStepFailedEvent(loc Location, err error, now time.Time) StepFailedEvent 
 }
 
 // StepSkippedEvent is emitted when a step's Condition returns a non-empty
-// reason, or when the step returns ErrSkipStep.
+// reason. It is always standalone — no [StepStartedEvent] precedes it.
 type StepSkippedEvent struct {
 	BaseEvent
 

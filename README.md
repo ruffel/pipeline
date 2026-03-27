@@ -42,7 +42,7 @@ go get github.com/ruffel/pipeline
 
 See the [demo](./examples/demo/main.go) for a larger example showing:
 - Parallel execution with error boundaries (`ContinueOnError`)
-- Flow control (`ErrSkipStep`)
+- Flow control (`ErrSkipStage`, `ErrSkipPipeline`, step conditions)
 - Subprocess output streaming (`OutputWriter`)
 - Middlewares (`WithTimeout`, `WithRetry`)
 - Multiple observers (Styled Terminal, Plain, JSON)

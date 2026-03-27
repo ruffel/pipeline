@@ -37,17 +37,16 @@ type Step struct {
 
 // Sentinel errors for flow control. Steps return these (optionally wrapped
 // with additional context via fmt.Errorf) to trigger early exits without
-// signalling failure.
+// signalling failure. The returning step always emits a [StepPassedEvent]
+// because it ran and resolved; the sentinel controls what happens next.
 var (
 	// ErrSkipPipeline causes the executor to stop all remaining stages and
-	// complete the pipeline successfully.
+	// complete the pipeline successfully. The current stage emits a
+	// [StagePassedEvent] and the pipeline emits a [PipelinePassedEvent].
 	ErrSkipPipeline = errors.New("skip pipeline")
 
 	// ErrSkipStage causes the executor to skip the remaining steps in the
-	// current stage and continue with the next stage.
+	// current stage and continue with the next stage. The stage emits a
+	// [StagePassedEvent].
 	ErrSkipStage = errors.New("skip stage")
-
-	// ErrSkipStep causes the executor to mark the current step as skipped
-	// and continue with the next step.
-	ErrSkipStep = errors.New("skip step")
 )

@@ -85,6 +85,12 @@ func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
 		err = e.runStepsSequential(ctx, loc, s)
 	}
 
+	if errors.Is(err, ErrSkipPipeline) {
+		e.emit(ctx, newStagePassedEvent(loc, time.Now()))
+
+		return ErrSkipPipeline
+	}
+
 	if err != nil {
 		e.emit(ctx, newStageFailedEvent(loc, err, time.Now()))
 
@@ -211,10 +217,10 @@ func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr e
 	}()
 
 	if err := s.Run(ctx); err != nil {
-		if errors.Is(err, ErrSkipStep) {
-			e.emit(ctx, newStepSkippedEvent(loc, err.Error(), time.Now()))
+		if errors.Is(err, ErrSkipStage) || errors.Is(err, ErrSkipPipeline) {
+			e.emit(ctx, newStepPassedEvent(loc, time.Now()))
 
-			return nil
+			return err
 		}
 
 		e.emit(ctx, newStepFailedEvent(loc, err, time.Now()))
