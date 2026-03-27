@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ruffel/pipeline"
 	"github.com/stretchr/testify/assert"
@@ -428,7 +429,17 @@ func TestExecutor_ParallelFailFast_SkipStageAbsorbed(t *testing.T) {
 				Parallel: true,
 				Steps: []pipeline.Step{
 					{Name: "skip-stage", Run: func(_ context.Context) error { return pipeline.ErrSkipStage }},
-					{Name: "noop", Run: noop},
+					{Name: "slow-peer", Run: func(ctx context.Context) error {
+						// A sibling that takes longer than the sentinel.
+						// Without the fix, this would get context.Canceled
+						// and emit StepFailedEvent.
+						select {
+						case <-time.After(50 * time.Millisecond):
+							return nil
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					}},
 				},
 			},
 		},
@@ -438,6 +449,7 @@ func TestExecutor_ParallelFailFast_SkipStageAbsorbed(t *testing.T) {
 
 	types := obs.eventTypes()
 	assert.Contains(t, types, "pipeline.StagePassedEvent")
+	assert.NotContains(t, types, "pipeline.StepFailedEvent")
 }
 
 func TestExecutor_ParallelFailFast_SkipPipelinePropagates(t *testing.T) {
