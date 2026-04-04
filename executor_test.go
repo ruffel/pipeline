@@ -40,17 +40,25 @@ func TestExecutor_NoDeadlockOnObserverEmit(t *testing.T) {
 	obs := &deadlockingObserver{}
 	ex := pipeline.NewExecutor(obs)
 
-	err := ex.Run(t.Context(), pipeline.Pipeline{
-		Name: "p",
-		Stages: []pipeline.Stage{
-			{
-				Name:  "s",
-				Steps: []pipeline.Step{{Name: "step", Run: noop}},
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ex.Run(t.Context(), pipeline.Pipeline{
+			Name: "p",
+			Stages: []pipeline.Stage{
+				{
+					Name:  "s",
+					Steps: []pipeline.Step{{Name: "step", Run: noop}},
+				},
 			},
-		},
-	})
+		})
+	}()
 
-	require.NoError(t, err)
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("ex.Run did not return before timeout; possible deadlock in observer event emission")
+	}
 }
 
 type deadlockingObserver struct{}
