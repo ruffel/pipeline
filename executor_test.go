@@ -55,7 +55,7 @@ func TestExecutor_NoDeadlockOnObserverEmit(t *testing.T) {
 
 type deadlockingObserver struct{}
 
-func (d *deadlockingObserver) OnEvent(ctx context.Context, ev pipeline.Event) {
+func (d *deadlockingObserver) OnEvent(ctx context.Context, _ pipeline.Event) {
 	// This should be a safe no-op because the executor stripped the emitter.
 	pipeline.EmitInfo(ctx, "I'm trying to deadlock!")
 }
