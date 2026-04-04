@@ -36,6 +36,11 @@ func WithEmitter(ctx context.Context, e *Emitter) context.Context {
 	return context.WithValue(ctx, emitterKey{}, e)
 }
 
+// WithoutEmitter returns a new context with any existing Emitter removed.
+func WithoutEmitter(ctx context.Context) context.Context {
+	return context.WithValue(ctx, emitterKey{}, nil)
+}
+
 // EmitterFrom retrieves the Emitter from ctx, or nil if none is present.
 func EmitterFrom(ctx context.Context) *Emitter {
 	e, _ := ctx.Value(emitterKey{}).(*Emitter)

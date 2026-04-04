@@ -272,6 +272,10 @@ func (e *Executor) emit(ctx context.Context, event Event) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Mask the emitter so observers cannot call back into the executor
+	// and cause a deadlock.
+	ctx = WithoutEmitter(ctx)
+
 	for _, o := range e.observers {
 		o.OnEvent(ctx, event)
 	}
