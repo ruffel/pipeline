@@ -12,7 +12,7 @@ import "time"
 type PipelineStartedEvent struct {
 	BaseEvent
 
-	Definition Pipeline `json:"definition"`
+	Definition Pipeline `json:"-"`
 }
 
 func newPipelineStartedEvent(p Pipeline, now time.Time) PipelineStartedEvent {
