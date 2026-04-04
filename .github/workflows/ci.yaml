@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build-and-test:
@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.0'
+          go-version: "1.25.0"
           check-latest: true
 
       - uses: extractions/setup-just@v2
@@ -36,7 +36,7 @@ jobs:
         env:
           GOWORK: "off"
         with:
-          version: 'v2.8.0'
+          version: "v2.8.0"
           args: --timeout=5m
 
       - name: Verify Clean State
@@ -60,7 +60,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.0'
+          go-version: "1.25.0"
           check-latest: true
 
       - name: Install gorelease
@@ -74,4 +74,3 @@ jobs:
         working-directory: observers/terminal
         run: gorelease
         continue-on-error: true
-
