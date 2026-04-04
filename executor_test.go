@@ -15,6 +15,23 @@ import (
 )
 
 // -----------------------------------------------------------------------------
+// NewExecutor
+// -----------------------------------------------------------------------------
+
+func TestNewExecutor_NilObserversIgnored(t *testing.T) {
+	t.Parallel()
+
+	p := pipeline.NewPipeline("p",
+		pipeline.NewStage("s",
+			pipeline.NewStep("step", func(context.Context) error { return nil }),
+		),
+	)
+
+	ex := pipeline.NewExecutor(nil, &recordingObserver{}, nil)
+	require.NoError(t, ex.Run(t.Context(), p))
+}
+
+// -----------------------------------------------------------------------------
 // Sequential happy path
 // -----------------------------------------------------------------------------
 
