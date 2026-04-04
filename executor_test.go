@@ -31,6 +31,35 @@ func TestNewExecutor_NilObserversIgnored(t *testing.T) {
 	require.NoError(t, ex.Run(t.Context(), p))
 }
 
+func TestExecutor_NoDeadlockOnObserverEmit(t *testing.T) {
+	t.Parallel()
+
+	// An observer that attempts to emit its own events.
+	// Without the fix (stripping the emitter), this would deadlock because
+	// the executor holds a lock while calling observers.
+	obs := &deadlockingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "p",
+		Stages: []pipeline.Stage{
+			{
+				Name: "s",
+				Steps: []pipeline.Step{{Name: "step", Run: noop}},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+}
+
+type deadlockingObserver struct{}
+
+func (d *deadlockingObserver) OnEvent(ctx context.Context, ev pipeline.Event) {
+	// This should be a safe no-op because the executor stripped the emitter.
+	pipeline.EmitInfo(ctx, "I'm trying to deadlock!")
+}
+
 // -----------------------------------------------------------------------------
 // Sequential happy path
 // -----------------------------------------------------------------------------
