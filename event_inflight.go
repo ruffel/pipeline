@@ -10,6 +10,18 @@ const (
 	Stderr
 )
 
+// String implements [fmt.Stringer].
+func (s Stream) String() string {
+	switch s {
+	case Stdout:
+		return "stdout"
+	case Stderr:
+		return "stderr"
+	default:
+		return "stdout"
+	}
+}
+
 // MessageLevel classifies the severity of a MessageEvent.
 type MessageLevel int
 
@@ -18,6 +30,20 @@ const (
 	LevelWarn
 	LevelDebug
 )
+
+// String implements [fmt.Stringer].
+func (l MessageLevel) String() string {
+	switch l {
+	case LevelInfo:
+		return "info"
+	case LevelWarn:
+		return "warn"
+	case LevelDebug:
+		return "debug"
+	default:
+		return "info"
+	}
+}
 
 // -----------------------------------------------------------------------------
 // In-flight events — emitted by steps via the Emitter helpers.
