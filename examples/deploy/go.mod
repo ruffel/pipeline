@@ -1,6 +1,6 @@
 module github.com/ruffel/pipeline/examples/deploy
 
-go 1.25.6
+go 1.25.0
 
 require (
 	github.com/ruffel/pipeline v0.0.0
