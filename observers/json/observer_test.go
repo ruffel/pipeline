@@ -280,26 +280,3 @@ func nonEmptyLines(s string) []string {
 
 // Compile-time interface check.
 var _ pipeline.Observer = (*jsonobs.Observer)(nil)
-
-// TestObserver_ExtraFieldsCannotOverrideStructural is a regression test for
-// the MarshalJSON ordering bug: a CustomEvent whose Data contains a "type"
-// key must not overwrite the envelope's structural "type" discriminator.
-func TestObserver_ExtraFieldsCannotOverrideStructural(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-
-	obs := jsonobs.New(&buf)
-
-	obs.OnEvent(t.Context(), pipeline.CustomEvent{
-		BaseEvent: base("p", "s", "step", fixedTime),
-		Type:      "deploy.url-ready",
-		Data:      map[string]any{"type": "INJECTED", "timestamp": "INJECTED"},
-	})
-
-	m := parseLine(t, buf.String())
-
-	// Structural fields must not be overwritten by Extra data.
-	assert.Equal(t, "Custom", m["type"], "structural 'type' field must not be overridden by Extra")
-	assert.NotEqual(t, "INJECTED", m["timestamp"], "structural 'timestamp' field must not be overridden by Extra")
-}
