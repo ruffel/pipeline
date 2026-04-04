@@ -376,6 +376,82 @@ func TestExecutor_ContextCancelled(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+type ctxRecordingObserver struct {
+	mu           sync.Mutex
+	events       []pipeline.Event
+	eventCtxErrs []error
+}
+
+func (o *ctxRecordingObserver) OnEvent(ctx context.Context, e pipeline.Event) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.events = append(o.events, e)
+	o.eventCtxErrs = append(o.eventCtxErrs, ctx.Err())
+}
+
+func TestExecutor_ContextCancellation_TerminalEventsAreNotCancelled(t *testing.T) {
+	t.Parallel()
+
+	obs := &ctxRecordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	err := ex.Run(ctx, pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name: "build",
+				Steps: []pipeline.Step{
+					{Name: "step", Run: func(c context.Context) error {
+						// Emit a non-terminal event BEFORE cancelling
+						pipeline.EmitInfo(c, "before cancel")
+
+						cancel()
+
+						// Emit a non-terminal event AFTER cancelling
+						// The executor's emitted context here SHOULD be cancelled.
+						pipeline.EmitInfo(c, "after cancel")
+
+						return c.Err()
+					}},
+				},
+			},
+		},
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+
+	for i, e := range obs.events {
+		ctxErr := obs.eventCtxErrs[i]
+
+		switch ev := e.(type) {
+		case pipeline.PipelineStartedEvent, pipeline.StageStartedEvent, pipeline.StepStartedEvent:
+			require.NoError(t, ctxErr, "started events should not be cancelled")
+
+		case pipeline.MessageEvent:
+			switch ev.Message {
+			case "before cancel":
+				require.NoError(t, ctxErr, "first message before cancel should not be cancelled")
+			case "after cancel":
+				// This proves non-terminal events DO NOT get their cancellation stripped.
+				require.ErrorIs(t, ctxErr, context.Canceled, "message emitted after cancel should be cancelled")
+			}
+
+		case pipeline.StepFailedEvent, pipeline.StageFailedEvent, pipeline.PipelineFailedEvent:
+			// This proves terminal events DO get their cancellation stripped.
+			require.NoError(t, ctxErr, "terminal events should NOT have a cancelled context %T", ev)
+
+		default:
+			t.Fatalf("unexpected event: %T", e)
+		}
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Panic recovery
 // -----------------------------------------------------------------------------
