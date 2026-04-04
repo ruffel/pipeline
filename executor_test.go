@@ -41,6 +41,7 @@ func TestExecutor_NoDeadlockOnObserverEmit(t *testing.T) {
 	ex := pipeline.NewExecutor(obs)
 
 	errCh := make(chan error, 1)
+
 	go func() {
 		errCh <- ex.Run(t.Context(), pipeline.Pipeline{
 			Name: "p",
