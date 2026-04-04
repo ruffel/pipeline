@@ -198,5 +198,3 @@ func (o *Observer) duration(loc pipeline.Location, now time.Time) time.Duration 
 
 	return now.Sub(start)
 }
-
-
