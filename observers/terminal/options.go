@@ -57,7 +57,7 @@ type State struct {
 	stageTimes map[string]time.Time
 
 	// stepTimes tracks per-step start timestamps (unexported, used by Observer).
-	stepTimes map[string]time.Time
+	stepTimes map[pipeline.Location]time.Time
 }
 
 // newState initialises a State from a pipeline definition.
@@ -65,7 +65,7 @@ func newState(def pipeline.Pipeline) State {
 	s := State{
 		StageParallel: make(map[string]bool, len(def.Stages)),
 		stageTimes:    make(map[string]time.Time),
-		stepTimes:     make(map[string]time.Time),
+		stepTimes:     make(map[pipeline.Location]time.Time),
 	}
 
 	for _, stage := range def.Stages {
