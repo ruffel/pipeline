@@ -141,12 +141,18 @@ type envelope struct {
 	Extra fields `json:"-"`
 }
 
-// MarshalJSON flattens Extra into the top-level object.
+const envelopeStructuralFields = 6
+
+// MarshalJSON flattens Extra into the top-level object. Structural fields are
+// written after Extra so that event-specific data can never overwrite reserved
+// keys like "type" or "timestamp".
 func (e envelope) MarshalJSON() ([]byte, error) {
-	m := map[string]any{
-		"type":      e.Type,
-		"timestamp": e.Timestamp,
-	}
+	m := make(map[string]any, len(e.Extra)+envelopeStructuralFields)
+
+	maps.Copy(m, e.Extra)
+
+	m["type"] = e.Type
+	m["timestamp"] = e.Timestamp
 
 	if e.Pipeline != "" {
 		m["pipeline"] = e.Pipeline
@@ -163,8 +169,6 @@ func (e envelope) MarshalJSON() ([]byte, error) {
 	if e.DurationMs > 0 {
 		m["durationMs"] = e.DurationMs
 	}
-
-	maps.Copy(m, e.Extra)
 
 	return json.Marshal(m)
 }
