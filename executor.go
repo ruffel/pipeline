@@ -273,12 +273,28 @@ func (e *Executor) emit(ctx context.Context, event Event) {
 	defer e.mu.Unlock()
 
 	// Mask the emitter so observers cannot call back into the executor
-	// and cause a deadlock. Strip cancellation so observers can process
-	// final events even if the pipeline was halted by a context timeout.
-	ctx = context.WithoutCancel(WithoutEmitter(ctx))
+	// and cause a deadlock.
+	ctx = WithoutEmitter(ctx)
+
+	// Strip cancellation only for terminal lifecycle events if the context
+	// is cancelled.
+	if ctx.Err() != nil && isTerminalEvent(event) {
+		ctx = context.WithoutCancel(ctx)
+	}
 
 	for _, o := range e.observers {
 		o.OnEvent(ctx, event)
+	}
+}
+
+func isTerminalEvent(e Event) bool {
+	switch e.(type) {
+	case PipelinePassedEvent, PipelineFailedEvent,
+		StagePassedEvent, StageFailedEvent, StageSkippedEvent,
+		StepPassedEvent, StepFailedEvent, StepSkippedEvent:
+		return true
+	default:
+		return false
 	}
 }
 
