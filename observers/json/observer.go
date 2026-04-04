@@ -93,7 +93,7 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) { //nolint:c
 
 	case pipeline.MessageEvent:
 		f := fields{
-			"level":   levelString(e.Level),
+			"level":   e.Level.String(),
 			"message": e.Message,
 		}
 
@@ -105,7 +105,7 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) { //nolint:c
 
 	case pipeline.OutputEvent:
 		o.write("Output", e.Location, e.Timestamp, 0, fields{
-			"stream": streamString(e.Stream),
+			"stream": e.Stream.String(),
 			"line":   e.Line,
 		})
 
@@ -197,28 +197,4 @@ func (o *Observer) duration(loc pipeline.Location, now time.Time) time.Duration 
 	delete(o.starts, loc)
 
 	return now.Sub(start)
-}
-
-func levelString(l pipeline.MessageLevel) string {
-	switch l {
-	case pipeline.LevelInfo:
-		return "info"
-	case pipeline.LevelWarn:
-		return "warn"
-	case pipeline.LevelDebug:
-		return "debug"
-	default:
-		return "info"
-	}
-}
-
-func streamString(s pipeline.Stream) string {
-	switch s {
-	case pipeline.Stdout:
-		return "stdout"
-	case pipeline.Stderr:
-		return "stderr"
-	default:
-		return "stdout"
-	}
 }

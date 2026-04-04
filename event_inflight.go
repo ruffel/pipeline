@@ -1,6 +1,9 @@
 package pipeline
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Stream identifies stdout or stderr for OutputEvent.
 type Stream int
@@ -10,6 +13,18 @@ const (
 	Stderr
 )
 
+// String implements [fmt.Stringer].
+func (s Stream) String() string {
+	switch s {
+	case Stdout:
+		return "stdout"
+	case Stderr:
+		return "stderr"
+	default:
+		return fmt.Sprintf("Stream(%d)", int(s))
+	}
+}
+
 // MessageLevel classifies the severity of a MessageEvent.
 type MessageLevel int
 
@@ -18,6 +33,20 @@ const (
 	LevelWarn
 	LevelDebug
 )
+
+// String implements [fmt.Stringer].
+func (l MessageLevel) String() string {
+	switch l {
+	case LevelInfo:
+		return "info"
+	case LevelWarn:
+		return "warn"
+	case LevelDebug:
+		return "debug"
+	default:
+		return fmt.Sprintf("MessageLevel(%d)", int(l))
+	}
+}
 
 // -----------------------------------------------------------------------------
 // In-flight events — emitted by steps via the Emitter helpers.
