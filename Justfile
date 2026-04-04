@@ -41,3 +41,7 @@ demo format="terminal":
 
 demo-deploy format="terminal":
     cd examples/deploy && go run . -format {{ format }}
+
+# Regenerate the README demo GIF
+gif:
+    vhs .vhs/demo.tape
