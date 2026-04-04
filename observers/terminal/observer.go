@@ -87,7 +87,7 @@ func (o *Observer) OnEvent(ctx context.Context, ev pipeline.Event) {
 
 	case pipeline.StepFailedEvent:
 		dur := e.Timestamp.Sub(o.state.stepTimes[e.Location])
-		o.state.FailedSteps = append(o.state.FailedSteps, e.Step+" - "+e.Err.Error())
+		o.state.FailedSteps = append(o.state.FailedSteps, "["+e.Stage+"] "+e.Step+" - "+e.Err.Error())
 		output = o.opts.FormatStepFail(ctx, e, dur, o.state, o.opts.Palette)
 
 	case pipeline.StepSkippedEvent:
