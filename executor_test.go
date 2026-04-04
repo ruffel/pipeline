@@ -44,7 +44,7 @@ func TestExecutor_NoDeadlockOnObserverEmit(t *testing.T) {
 		Name: "p",
 		Stages: []pipeline.Stage{
 			{
-				Name: "s",
+				Name:  "s",
 				Steps: []pipeline.Step{{Name: "step", Run: noop}},
 			},
 		},
