@@ -15,3 +15,6 @@
 # OS
 .DS_Store
 Thumbs.db
+
+examples/demo/demo
+examples/deploy/deploy

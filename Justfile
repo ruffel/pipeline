@@ -38,3 +38,6 @@ check-clean: fmt tidy
 # Run the demo (formats: terminal, plain, json)
 demo format="terminal":
     cd examples/demo && go run . -format {{ format }}
+
+demo-deploy format="terminal":
+    cd examples/deploy && go run . -format {{ format }}
