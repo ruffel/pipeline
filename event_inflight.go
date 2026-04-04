@@ -1,6 +1,9 @@
 package pipeline
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Stream identifies stdout or stderr for OutputEvent.
 type Stream int
@@ -18,7 +21,7 @@ func (s Stream) String() string {
 	case Stderr:
 		return "stderr"
 	default:
-		return "stdout"
+		return fmt.Sprintf("Stream(%d)", int(s))
 	}
 }
 
@@ -41,7 +44,7 @@ func (l MessageLevel) String() string {
 	case LevelDebug:
 		return "debug"
 	default:
-		return "info"
+		return fmt.Sprintf("MessageLevel(%d)", int(l))
 	}
 }
 

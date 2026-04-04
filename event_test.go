@@ -135,3 +135,50 @@ func TestObserverFunc(t *testing.T) {
 
 // Compile-time interface check.
 var _ pipeline.Observer = pipeline.ObserverFunc(nil)
+
+// -----------------------------------------------------------------------------
+// Stream.String / MessageLevel.String
+// -----------------------------------------------------------------------------
+
+func TestStream_String(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		value pipeline.Stream
+		want  string
+	}{
+		{pipeline.Stdout, "stdout"},
+		{pipeline.Stderr, "stderr"},
+		{pipeline.Stream(99), "Stream(99)"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.want, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.value.String())
+		})
+	}
+}
+
+func TestMessageLevel_String(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		value pipeline.MessageLevel
+		want  string
+	}{
+		{pipeline.LevelInfo, "info"},
+		{pipeline.LevelWarn, "warn"},
+		{pipeline.LevelDebug, "debug"},
+		{pipeline.MessageLevel(99), "MessageLevel(99)"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.want, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.value.String())
+		})
+	}
+}
