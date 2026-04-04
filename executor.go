@@ -273,8 +273,9 @@ func (e *Executor) emit(ctx context.Context, event Event) {
 	defer e.mu.Unlock()
 
 	// Mask the emitter so observers cannot call back into the executor
-	// and cause a deadlock.
-	ctx = WithoutEmitter(ctx)
+	// and cause a deadlock. Strip cancellation so observers can process
+	// final events even if the pipeline was halted by a context timeout.
+	ctx = context.WithoutCancel(WithoutEmitter(ctx))
 
 	for _, o := range e.observers {
 		o.OnEvent(ctx, event)
