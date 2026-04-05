@@ -252,14 +252,18 @@ func formatMessage(_ context.Context, e pipeline.MessageEvent, s State, p Palett
 
 func formatProgress(_ context.Context, e pipeline.ProgressEvent, s State, p Palette) string {
 	r := render{p: p, s: s}
-	progress := r.muted(fmt.Sprintf("(%d/%d)", e.Current, e.Total))
+
+	var progress string
+	if e.Total > 0 {
+		progress = " " + r.muted(fmt.Sprintf("(%d/%d)", e.Current, e.Total))
+	}
 
 	if s.IsParallel(e.Stage, e.Step) {
-		return fmt.Sprintf("%s %s %s %s %s",
+		return fmt.Sprintf("%s %s %s %s%s",
 			r.prefix(e.Step), r.pipe(), r.marker(), e.Message, progress)
 	}
 
-	return fmt.Sprintf("  %s %s %s", r.marker(), e.Message, progress)
+	return fmt.Sprintf("  %s %s%s", r.marker(), e.Message, progress)
 }
 
 func formatOutput(_ context.Context, e pipeline.OutputEvent, s State, p Palette) string {
