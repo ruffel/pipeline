@@ -145,3 +145,30 @@ func TestObserver_CustomEvent_WithOverride(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "[deploy.url-ready] https://example.com")
 }
+
+func TestObserver_IndeterminateProgress_OmitsCounter(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := termobs.New(&buf)
+	ex := pipeline.NewExecutor(obs)
+
+	p := pipeline.NewPipeline("deploy",
+		pipeline.NewStage("build",
+			pipeline.NewStep("compile", func(ctx context.Context) error {
+				pipeline.EmitIndeterminateProgress(ctx, "wait", "waiting for lock")
+				pipeline.EmitProgress(ctx, "download", "fetching deps", 3, 10)
+
+				return nil
+			}),
+		),
+	)
+
+	require.NoError(t, ex.Run(t.Context(), p))
+
+	out := buf.String()
+
+	assert.NotContains(t, out, "(0/0)", "indeterminate progress must not render a counter")
+	assert.Contains(t, out, "(3/10)", "determinate progress must render the counter")
+}
