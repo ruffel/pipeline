@@ -31,6 +31,42 @@ func TestNewExecutor_NilObserversIgnored(t *testing.T) {
 	require.NoError(t, ex.Run(t.Context(), p))
 }
 
+func TestNewExecutorWithOptions_DefaultConfig(t *testing.T) {
+	t.Parallel()
+
+	p := pipeline.NewPipeline("p",
+		pipeline.NewStage("s",
+			pipeline.NewStep("step", func(context.Context) error { return nil }),
+		),
+	)
+
+	ex := pipeline.NewExecutorWithOptions()
+	require.NoError(t, ex.Run(t.Context(), p))
+}
+
+func TestNewExecutorWithOptions_WithObservers(t *testing.T) {
+	t.Parallel()
+
+	p := pipeline.NewPipeline("p",
+		pipeline.NewStage("s",
+			pipeline.NewStep("step", func(context.Context) error { return nil }),
+		),
+	)
+
+	obsA := &recordingObserver{}
+	obsB := &recordingObserver{}
+
+	ex := pipeline.NewExecutorWithOptions(
+		pipeline.WithObservers(nil, obsA),
+		pipeline.ExecutorOption(nil),
+		pipeline.WithObservers(obsB, nil),
+	)
+
+	require.NoError(t, ex.Run(t.Context(), p))
+	assert.Equal(t, obsA.eventTypes(), obsB.eventTypes())
+	assert.NotEmpty(t, obsA.eventTypes())
+}
+
 func TestExecutor_NoDeadlockOnObserverEmit(t *testing.T) {
 	t.Parallel()
 

@@ -19,15 +19,7 @@ type Executor struct {
 
 // NewExecutor returns an Executor that broadcasts events to the given observers.
 func NewExecutor(observers ...Observer) *Executor {
-	var filtered []Observer
-
-	for _, o := range observers {
-		if o != nil {
-			filtered = append(filtered, o)
-		}
-	}
-
-	return &Executor{observers: filtered}
+	return NewExecutorWithOptions(WithObservers(observers...))
 }
 
 // Run validates and executes the pipeline. It returns nil on success, including
