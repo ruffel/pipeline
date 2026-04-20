@@ -57,7 +57,7 @@ func (s Step) WithCondition(cond ConditionFn) Step {
 	return s
 }
 
-// WithTimeout wraps the step's Run function with a per-step deadline.
+// WithTimeout wraps the step's Run function with a deadline.
 func (s Step) WithTimeout(d time.Duration) Step {
 	s.Run = WithTimeout(d, s.Run)
 

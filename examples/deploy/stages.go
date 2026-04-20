@@ -51,7 +51,7 @@ func verify(cfg Config) pipeline.Stage {
 	return pipeline.NewParallelStage("verify",
 		pipeline.NewStep("smoke-test", (&SmokeTest{
 			Endpoint: fmt.Sprintf("https://%s.example.com/health", cfg.Namespace),
-		}).Run).WithRetry(3, time.Second),
+		}).Run).WithTimeout(2*time.Second).WithRetry(3, time.Second),
 		pipeline.NewStep("check-metrics", (&CheckMetrics{
 			Namespace: cfg.Namespace,
 		}).Run),

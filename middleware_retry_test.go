@@ -130,6 +130,44 @@ func TestWithRetry_ComposesWithTimeout(t *testing.T) {
 	assert.Equal(t, int32(2), attempts.Load())
 }
 
+func TestWithRetry_OutsideTimeout_GivesEachAttemptItsOwnDeadline(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+
+	step := pipeline.WithRetry(3, time.Millisecond,
+		pipeline.WithTimeout(20*time.Millisecond, func(ctx context.Context) error {
+			attempts.Add(1)
+			<-ctx.Done()
+
+			return ctx.Err()
+		}))
+
+	err := step(t.Context())
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, int32(3), attempts.Load())
+}
+
+func TestWithTimeout_OutsideRetry_CapsWholeRetryLoop(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+
+	step := pipeline.WithTimeout(20*time.Millisecond,
+		pipeline.WithRetry(3, time.Millisecond, func(ctx context.Context) error {
+			attempts.Add(1)
+			<-ctx.Done()
+
+			return ctx.Err()
+		}))
+
+	err := step(t.Context())
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, int32(1), attempts.Load())
+}
+
 func TestWithRetry_DoesNotRetrySentinelErrors(t *testing.T) {
 	t.Parallel()
 
