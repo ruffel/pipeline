@@ -37,6 +37,26 @@ func TestAsyncObserver_DeliversEvents(t *testing.T) {
 	assert.Equal(t, int64(0), async.Dropped())
 }
 
+func TestNewAsyncObserver_PanicsOnNilObserver(t *testing.T) {
+	t.Parallel()
+
+	assert.PanicsWithValue(t, "pipeline: NewAsyncObserver next observer cannot be nil", func() {
+		pipeline.NewAsyncObserver(nil, 1)
+	})
+}
+
+func TestNewAsyncObserver_PanicsOnInvalidBufferSize(t *testing.T) {
+	t.Parallel()
+
+	next := pipeline.ObserverFunc(func(_ context.Context, _ pipeline.Event) {})
+
+	for _, size := range []int{0, -1, -10} {
+		assert.PanicsWithValue(t, "pipeline: NewAsyncObserver bufferSize must be >= 1", func() {
+			pipeline.NewAsyncObserver(next, size)
+		})
+	}
+}
+
 func TestAsyncObserver_DropsEventsWhenFull(t *testing.T) {
 	t.Parallel()
 
