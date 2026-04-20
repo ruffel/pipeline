@@ -1,5 +1,33 @@
 # Pipeline Design Decisions
 
+## Observer Failures
+
+**Decision:** Observer failures are non-fatal and are not part of the
+executor's error model.
+
+The executor's return value should only be concerned if the pipeline work
+succeeded? Output problems are a separate concern. A deploy step that completed
+successfully should not look like a failed deploy because a log file filled the
+disk after the fact.
+
+For that reason, observers that care about durable or machine-consumed output
+should expose their own error state.
+
+Panics in observers remain fatal. This decision only covers ordinary write or
+delivery failures.
+
+## Terminal Events After Cancellation
+
+**Decision:** If the run context has already been cancelled, terminal lifecycle
+events are still delivered with cancellation stripped from the observer
+context.
+
+Users still need a final passed or failed event to render a summary, write a
+last log line, or flush a UI. If terminal events inherited cancellation, the
+observer would often see a cancelled context exactly when that final state was
+most important. Non-terminal events keep the original cancellation state so
+observers can still tell whether they were emitted before or after cancellation.
+
 ## Panic Recovery
 
 **Decision:** The executor recovers panics during `Step.Run`, but does NOT recover panics in observers or executor scaffolding.
