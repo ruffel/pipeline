@@ -57,7 +57,10 @@ func (s Step) WithCondition(cond ConditionFn) Step {
 	return s
 }
 
-// WithTimeout wraps the step's Run function with a deadline.
+// WithTimeout wraps the step's current Run function with a deadline.
+// Chaining order matters: placing WithTimeout outside WithRetry caps the whole
+// retry loop, while placing it before WithRetry applies the deadline to each
+// retry attempt.
 func (s Step) WithTimeout(d time.Duration) Step {
 	s.Run = WithTimeout(d, s.Run)
 
