@@ -28,6 +28,22 @@ observer would often see a cancelled context exactly when that final state was
 most important. Non-terminal events keep the original cancellation state so
 observers can still tell whether they were emitted before or after cancellation.
 
+## Skip Events for Bypassed Steps
+
+**Decision:** When a step ends a sequential stage via `ErrSkipStage`, every
+bypassed step emits a `StepSkippedEvent`. Work bypassed by `ErrSkipPipeline`
+(remaining steps and stages) emits nothing.
+
+`PipelineStartedEvent` carries the full definition precisely so observers can
+pre-render the plan. A step that silently never runs leaves such UIs with an
+unresolved entry, so bypassed steps are accounted for individually.
+
+`ErrSkipPipeline` is intentionally asymmetric: it means "the pipeline is done,
+successfully" — the run has reached its conclusion early, and the remaining
+stages are not skipped work that needs accounting. A cascade of stage and step
+skip events would bury that signal in noise. Observers that need to show
+unvisited stages can diff the definition against the events received.
+
 ## Panic Recovery
 
 **Decision:** The executor recovers panics during `Step.Run`, but does NOT recover panics in observers or executor scaffolding.

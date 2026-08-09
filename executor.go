@@ -103,7 +103,7 @@ func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
 }
 
 func (e *Executor) runStepsSequential(ctx context.Context, loc Location, s Stage) error {
-	for _, step := range s.Steps {
+	for i, step := range s.Steps {
 		// Mirror the between-stages check: once the run context is cancelled,
 		// remaining steps must not start.
 		if err := ctx.Err(); err != nil {
@@ -112,6 +112,8 @@ func (e *Executor) runStepsSequential(ctx context.Context, loc Location, s Stage
 
 		if err := e.runStep(e.stepCtx(ctx, loc, step), loc.WithStep(step.Name), step); err != nil {
 			if errors.Is(err, ErrSkipStage) {
+				e.emitBypassedSteps(ctx, loc, s.Steps[i+1:], step.Name)
+
 				return nil
 			}
 
@@ -120,6 +122,17 @@ func (e *Executor) runStepsSequential(ctx context.Context, loc Location, s Stage
 	}
 
 	return nil
+}
+
+// emitBypassedSteps emits a [StepSkippedEvent] for each step bypassed when an
+// earlier step ends its stage via [ErrSkipStage], so observers that pre-render
+// the pipeline definition can resolve every step.
+func (e *Executor) emitBypassedSteps(ctx context.Context, loc Location, steps []Step, cause string) {
+	reason := fmt.Sprintf("%q ended the stage early", cause)
+
+	for _, step := range steps {
+		e.emit(ctx, newStepSkippedEvent(loc.WithStep(step.Name), reason, time.Now()))
+	}
 }
 
 func (e *Executor) runStepsParallel(ctx context.Context, loc Location, s Stage) error {
