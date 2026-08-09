@@ -60,17 +60,20 @@ func TestWithRetry_RespectsContextCancellation(t *testing.T) {
 
 	var attempts atomic.Int32
 
+	attemptErr := errors.New("fail")
+
 	step := pipeline.WithRetry(10, time.Second, func(_ context.Context) error {
 		if attempts.Add(1) == 1 {
 			cancel()
 		}
 
-		return errors.New("fail")
+		return attemptErr
 	})
 
 	err := step(ctx)
 
 	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, attemptErr, "final attempt's error should be preserved")
 	assert.Equal(t, int32(1), attempts.Load())
 }
 
