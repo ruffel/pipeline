@@ -22,6 +22,7 @@ type Pipeline struct {
 // Stage represents a logical grouping of steps within a pipeline.
 type Stage struct {
 	Name            string      // Human-readable display name.
+	Description     string      // Optional; observers may display it alongside the name.
 	Steps           []Step      // The steps that make up the stage.
 	Parallel        bool        // When true, steps run concurrently.
 	ContinueOnError bool        // When true, all steps run even if some fail; errors are joined.
@@ -30,9 +31,10 @@ type Stage struct {
 
 // Step represents a unit of work to be executed within a stage.
 type Step struct {
-	Name      string      // Human-readable display name.
-	Run       StepFn      // The function that performs the step's work.
-	Condition ConditionFn // Optional; non-empty return skips the step with that reason.
+	Name        string      // Human-readable display name.
+	Description string      // Optional; observers may display it alongside the name.
+	Run         StepFn      // The function that performs the step's work.
+	Condition   ConditionFn // Optional; non-empty return skips the step with that reason.
 }
 
 // Sentinel errors for flow control. Steps return these to trigger early exits

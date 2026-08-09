@@ -30,13 +30,18 @@ type Observer struct {
 
 	// starts tracks event timestamps for duration calculation.
 	starts map[pipeline.Location]time.Time
+
+	// descriptions holds stage/step descriptions captured from the pipeline
+	// definition, keyed by location.
+	descriptions map[pipeline.Location]string
 }
 
 // New creates a JSON observer that writes to w.
 func New(w io.Writer) *Observer {
 	return &Observer{
-		enc:    json.NewEncoder(w),
-		starts: make(map[pipeline.Location]time.Time),
+		enc:          json.NewEncoder(w),
+		starts:       make(map[pipeline.Location]time.Time),
+		descriptions: make(map[pipeline.Location]string),
 	}
 }
 
@@ -46,6 +51,7 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) { //nolint:c
 	case pipeline.PipelineStartedEvent:
 		clear(o.starts)
 		o.err = nil
+		o.captureDescriptions(e.Definition)
 		o.starts[e.Location] = e.Timestamp
 		o.write("PipelineStarted", e.Location, e.Timestamp, 0, nil)
 
@@ -59,7 +65,7 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) { //nolint:c
 
 	case pipeline.StageStartedEvent:
 		o.starts[e.Location] = e.Timestamp
-		o.write("StageStarted", e.Location, e.Timestamp, 0, nil)
+		o.write("StageStarted", e.Location, e.Timestamp, 0, o.descriptionFields(e.Location))
 
 	case pipeline.StagePassedEvent:
 		o.write("StagePassed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), nil)
@@ -76,7 +82,7 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) { //nolint:c
 
 	case pipeline.StepStartedEvent:
 		o.starts[e.Location] = e.Timestamp
-		o.write("StepStarted", e.Location, e.Timestamp, 0, nil)
+		o.write("StepStarted", e.Location, e.Timestamp, 0, o.descriptionFields(e.Location))
 
 	case pipeline.StepPassedEvent:
 		o.write("StepPassed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), nil)
@@ -189,6 +195,37 @@ func (o *Observer) write(typ string, loc pipeline.Location, ts time.Time, dur ti
 		DurationMs: dur.Milliseconds(),
 		Extra:      extra,
 	})
+}
+
+// captureDescriptions records the stage/step descriptions declared in the
+// pipeline definition so Started events can carry them.
+func (o *Observer) captureDescriptions(def pipeline.Pipeline) {
+	clear(o.descriptions)
+
+	for _, stage := range def.Stages {
+		loc := pipeline.Location{Pipeline: def.Name, Stage: stage.Name}
+
+		if stage.Description != "" {
+			o.descriptions[loc] = stage.Description
+		}
+
+		for _, step := range stage.Steps {
+			if step.Description != "" {
+				o.descriptions[loc.WithStep(step.Name)] = step.Description
+			}
+		}
+	}
+}
+
+// descriptionFields returns a "description" field for the location, or nil
+// when the definition declared none.
+func (o *Observer) descriptionFields(loc pipeline.Location) fields {
+	desc, ok := o.descriptions[loc]
+	if !ok {
+		return nil
+	}
+
+	return fields{"description": desc}
 }
 
 func (o *Observer) duration(loc pipeline.Location, now time.Time) time.Duration {

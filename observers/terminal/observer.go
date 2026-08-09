@@ -80,6 +80,7 @@ func (o *Observer) OnEvent(ctx context.Context, ev pipeline.Event) {
 
 	case pipeline.StepStartedEvent:
 		o.state.stepTimes[e.Location] = e.Timestamp
+		output = o.opts.FormatStepStart(ctx, e, o.state, o.opts.Palette)
 
 	case pipeline.StepPassedEvent:
 		dur := e.Timestamp.Sub(o.state.stepTimes[e.Location])

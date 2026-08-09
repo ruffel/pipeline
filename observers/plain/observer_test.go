@@ -45,6 +45,35 @@ func TestObserver_HappyPath(t *testing.T) {
 	assert.Contains(t, output, "✓ Pipeline: deploy (1s)")
 }
 
+func TestObserver_Descriptions(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := plain.New(&buf)
+	ctx := t.Context()
+
+	def := pipeline.NewPipeline("deploy",
+		pipeline.NewStage("build",
+			pipeline.NewStep("compile", nil).WithDescription("Compiles the service"),
+		).WithDescription("Produces artifacts"),
+	)
+
+	events := []pipeline.Event{
+		pipeline.PipelineStartedEvent{BaseEvent: base("deploy", "", "", fixedTime), Definition: def},
+		pipeline.StageStartedEvent{BaseEvent: base("deploy", "build", "", fixedTime)},
+		pipeline.StepStartedEvent{BaseEvent: base("deploy", "build", "compile", fixedTime)},
+	}
+
+	for _, e := range events {
+		obs.OnEvent(ctx, e)
+	}
+
+	output := buf.String()
+	assert.Contains(t, output, "▶ Stage: build — Produces artifacts")
+	assert.Contains(t, output, "· compile — Compiles the service")
+}
+
 func TestObserver_StepFailure(t *testing.T) {
 	t.Parallel()
 

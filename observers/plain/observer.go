@@ -27,13 +27,18 @@ type Observer struct {
 
 	// starts tracks event timestamps for duration calculation.
 	starts map[pipeline.Location]time.Time
+
+	// descriptions holds stage/step descriptions captured from the pipeline
+	// definition, keyed by location.
+	descriptions map[pipeline.Location]string
 }
 
 // New creates a terminal observer that writes to w.
 func New(w io.Writer) *Observer {
 	return &Observer{
-		w:      w,
-		starts: make(map[pipeline.Location]time.Time),
+		w:            w,
+		starts:       make(map[pipeline.Location]time.Time),
+		descriptions: make(map[pipeline.Location]string),
 	}
 }
 
@@ -47,6 +52,7 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) {
 	// -------------------------------------------------------------------------
 	case pipeline.PipelineStartedEvent:
 		clear(o.starts)
+		o.captureDescriptions(e.Definition)
 		o.starts[e.Location] = e.Timestamp
 		o.writef("▶ Pipeline: %s\n", e.Pipeline)
 
@@ -61,7 +67,7 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) {
 	// -------------------------------------------------------------------------
 	case pipeline.StageStartedEvent:
 		o.starts[e.Location] = e.Timestamp
-		o.writef("  ▶ Stage: %s\n", e.Stage)
+		o.writef("  ▶ Stage: %s%s\n", e.Stage, o.description(e.Location))
 
 	case pipeline.StagePassedEvent:
 		o.writef("  ✓ Stage: %s%s\n", e.Stage, o.elapsed(e.Location, e.Timestamp))
@@ -77,6 +83,10 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) {
 	// -------------------------------------------------------------------------
 	case pipeline.StepStartedEvent:
 		o.starts[e.Location] = e.Timestamp
+
+		if desc := o.description(e.Location); desc != "" {
+			o.writef("    · %s%s\n", e.Step, desc)
+		}
 
 	case pipeline.StepPassedEvent:
 		o.writef("    ✓ %s%s\n", e.Step, o.elapsed(e.Location, e.Timestamp))
@@ -110,6 +120,37 @@ func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) {
 
 func (o *Observer) writef(format string, args ...any) {
 	_, _ = fmt.Fprintf(o.w, format, args...)
+}
+
+// captureDescriptions records the stage/step descriptions declared in the
+// pipeline definition so start events can carry them.
+func (o *Observer) captureDescriptions(def pipeline.Pipeline) {
+	clear(o.descriptions)
+
+	for _, stage := range def.Stages {
+		loc := pipeline.Location{Pipeline: def.Name, Stage: stage.Name}
+
+		if stage.Description != "" {
+			o.descriptions[loc] = stage.Description
+		}
+
+		for _, step := range stage.Steps {
+			if step.Description != "" {
+				o.descriptions[loc.WithStep(step.Name)] = step.Description
+			}
+		}
+	}
+}
+
+// description returns " — <description>" for the location, or empty when the
+// definition declared none.
+func (o *Observer) description(loc pipeline.Location) string {
+	desc, ok := o.descriptions[loc]
+	if !ok {
+		return ""
+	}
+
+	return " — " + desc
 }
 
 func (o *Observer) elapsed(loc pipeline.Location, now time.Time) string {
