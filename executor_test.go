@@ -250,12 +250,35 @@ func TestExecutor_ErrSkipStage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Sentinel returns produce StepPassedEvent — the step ran and resolved.
-	types := obs.eventTypes()
-	assert.NotContains(t, types, "pipeline.StepSkippedEvent")
-	assert.NotContains(t, types, "pipeline.StepFailedEvent")
-	assert.NotContains(t, types, "pipeline.StageFailedEvent")
-	assert.Contains(t, types, "pipeline.PipelinePassedEvent")
+	// The sentinel step passes (it ran and resolved); bypassed steps are
+	// accounted for with skip events.
+	assert.Equal(t, []string{
+		"pipeline.PipelineStartedEvent",
+		"pipeline.StageStartedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.StepPassedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.StepPassedEvent",
+		"pipeline.StepSkippedEvent",
+		"pipeline.StagePassedEvent",
+		"pipeline.StageStartedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.StepPassedEvent",
+		"pipeline.StagePassedEvent",
+		"pipeline.PipelinePassedEvent",
+	}, obs.eventTypes())
+
+	var skipped []pipeline.StepSkippedEvent
+
+	for _, e := range obs.events {
+		if s, ok := e.(pipeline.StepSkippedEvent); ok {
+			skipped = append(skipped, s)
+		}
+	}
+
+	require.Len(t, skipped, 1)
+	assert.Equal(t, "should-not-run", skipped[0].Step)
+	assert.Equal(t, `"skip-rest" ended the stage early`, skipped[0].Reason)
 }
 
 func TestExecutor_StepReturnsNilEarly(t *testing.T) {

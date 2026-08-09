@@ -48,6 +48,8 @@ var (
 
 	// ErrSkipStage causes the executor to skip the remaining steps in the
 	// current stage and continue with the next stage. The stage emits a
-	// [StagePassedEvent].
+	// [StagePassedEvent]. In a sequential stage, each bypassed step emits a
+	// [StepSkippedEvent]; in a parallel stage every step has already started,
+	// so nothing is bypassed.
 	ErrSkipStage = errors.New("skip stage")
 )
