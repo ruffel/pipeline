@@ -146,6 +146,10 @@ func (e *Executor) runStepsParallel(ctx context.Context, loc Location, s Stage) 
 func (e *Executor) runStepsFailFast(ctx context.Context, loc Location, s Stage) error {
 	g, gctx := errgroup.WithContext(ctx)
 
+	if s.MaxParallel > 0 {
+		g.SetLimit(s.MaxParallel)
+	}
+
 	var (
 		mu           sync.Mutex
 		skipPipeline bool
@@ -197,6 +201,12 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 		skipPipeline bool
 	)
 
+	// Optional counting semaphore bounding concurrent steps.
+	var sem chan struct{}
+	if s.MaxParallel > 0 {
+		sem = make(chan struct{}, s.MaxParallel)
+	}
+
 	for _, step := range s.Steps {
 		wg.Add(1)
 
@@ -205,6 +215,12 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 
 		go func() {
 			defer wg.Done()
+
+			if sem != nil {
+				sem <- struct{}{}
+
+				defer func() { <-sem }()
+			}
 
 			if err := e.runStep(stepCtx, stepLoc, step); err != nil {
 				mu.Lock()
@@ -332,31 +348,47 @@ func (e *Executor) validate(p Pipeline) error {
 			stageNames[s.Name] = true
 		}
 
-		if len(s.Steps) == 0 {
-			errs = append(errs, fmt.Errorf("stage[%d] %q: must have at least one step", i, s.Name))
-		}
-
-		if s.ContinueOnError && !s.Parallel {
-			errs = append(errs, fmt.Errorf("stage[%d] %q: ContinueOnError requires Parallel", i, s.Name))
-		}
-
-		stepNames := make(map[string]bool, len(s.Steps))
-
-		for j, t := range s.Steps {
-			switch {
-			case t.Name == "":
-				errs = append(errs, fmt.Errorf("stage[%d] step[%d]: name cannot be empty", i, j))
-			case stepNames[t.Name]:
-				errs = append(errs, fmt.Errorf("stage[%d] step[%d]: duplicate step name %q", i, j, t.Name))
-			default:
-				stepNames[t.Name] = true
-			}
-
-			if t.Run == nil {
-				errs = append(errs, fmt.Errorf("stage[%d] step[%d] %q: run function cannot be nil", i, j, t.Name))
-			}
-		}
+		errs = append(errs, validateStage(i, s)...)
 	}
 
 	return errors.Join(errs...)
+}
+
+func validateStage(i int, s Stage) []error {
+	var errs []error
+
+	if len(s.Steps) == 0 {
+		errs = append(errs, fmt.Errorf("stage[%d] %q: must have at least one step", i, s.Name))
+	}
+
+	if s.ContinueOnError && !s.Parallel {
+		errs = append(errs, fmt.Errorf("stage[%d] %q: ContinueOnError requires Parallel", i, s.Name))
+	}
+
+	if s.MaxParallel < 0 {
+		errs = append(errs, fmt.Errorf("stage[%d] %q: MaxParallel cannot be negative", i, s.Name))
+	}
+
+	if s.MaxParallel > 0 && !s.Parallel {
+		errs = append(errs, fmt.Errorf("stage[%d] %q: MaxParallel requires Parallel", i, s.Name))
+	}
+
+	stepNames := make(map[string]bool, len(s.Steps))
+
+	for j, t := range s.Steps {
+		switch {
+		case t.Name == "":
+			errs = append(errs, fmt.Errorf("stage[%d] step[%d]: name cannot be empty", i, j))
+		case stepNames[t.Name]:
+			errs = append(errs, fmt.Errorf("stage[%d] step[%d]: duplicate step name %q", i, j, t.Name))
+		default:
+			stepNames[t.Name] = true
+		}
+
+		if t.Run == nil {
+			errs = append(errs, fmt.Errorf("stage[%d] step[%d] %q: run function cannot be nil", i, j, t.Name))
+		}
+	}
+
+	return errs
 }

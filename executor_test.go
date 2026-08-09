@@ -867,6 +867,71 @@ func TestExecutor_ContinueOnError_SkipStageAbsorbed(t *testing.T) {
 // Emitter wiring
 // -----------------------------------------------------------------------------
 
+// concurrencyGauge returns a step that tracks the peak number of concurrently
+// running invocations in peak.
+func concurrencyGauge(current, peak *atomic.Int32) pipeline.StepFn {
+	return func(_ context.Context) error {
+		c := current.Add(1)
+
+		for {
+			p := peak.Load()
+			if c <= p || peak.CompareAndSwap(p, c) {
+				break
+			}
+		}
+
+		time.Sleep(20 * time.Millisecond)
+		current.Add(-1)
+
+		return nil
+	}
+}
+
+func TestExecutor_MaxParallel_LimitsConcurrency(t *testing.T) {
+	t.Parallel()
+
+	modes := []struct {
+		name            string
+		continueOnError bool
+	}{
+		{name: "fail fast", continueOnError: false},
+		{name: "continue on error", continueOnError: true},
+	}
+
+	for _, tt := range modes {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			const (
+				limit     = 2
+				stepCount = 6
+			)
+
+			var current, peak atomic.Int32
+
+			steps := make([]pipeline.Step, stepCount)
+			for i := range steps {
+				steps[i] = pipeline.Step{Name: fmt.Sprintf("step-%d", i), Run: concurrencyGauge(&current, &peak)}
+			}
+
+			err := pipeline.NewExecutor().Run(t.Context(), pipeline.Pipeline{
+				Name: "p",
+				Stages: []pipeline.Stage{{
+					Name:            "fan-out",
+					Parallel:        true,
+					ContinueOnError: tt.continueOnError,
+					MaxParallel:     limit,
+					Steps:           steps,
+				}},
+			})
+			require.NoError(t, err)
+
+			assert.LessOrEqual(t, peak.Load(), int32(limit))
+			assert.Zero(t, current.Load())
+		})
+	}
+}
+
 func TestExecutor_EmitterInStepContext(t *testing.T) {
 	t.Parallel()
 
@@ -1024,6 +1089,26 @@ func TestExecutor_Validation(t *testing.T) {
 				},
 			},
 			wantErr: "ContinueOnError requires Parallel",
+		},
+		{
+			name: "negative MaxParallel",
+			p: pipeline.Pipeline{
+				Name: "p",
+				Stages: []pipeline.Stage{
+					{Name: "s", Parallel: true, MaxParallel: -1, Steps: []pipeline.Step{{Name: "a", Run: noop}}},
+				},
+			},
+			wantErr: "MaxParallel cannot be negative",
+		},
+		{
+			name: "MaxParallel requires Parallel",
+			p: pipeline.Pipeline{
+				Name: "p",
+				Stages: []pipeline.Stage{
+					{Name: "s", MaxParallel: 2, Steps: []pipeline.Step{{Name: "a", Run: noop}}},
+				},
+			},
+			wantErr: "MaxParallel requires Parallel",
 		},
 	}
 

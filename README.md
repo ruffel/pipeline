@@ -36,6 +36,7 @@ ex.Run(context.Background(), p)
 ## Features
 
 - **Sequential & parallel stages** — `NewStage` runs steps in order, `NewParallelStage` runs concurrently
+- **Bounded parallelism** — `WithMaxParallel(n)` caps how many steps of a parallel stage run at once
 - **Conditions** — skip stages or steps based on runtime checks
 - **Retry & timeout** — `WithRetry(3, time.Second, fn)`, `WithTimeout(30*time.Second, fn)`
 - **Flow control** — `ErrSkipStage` and `ErrSkipPipeline` for early exit without failure

@@ -24,7 +24,7 @@ func TestBuilders(t *testing.T) {
 		pipeline.NewParallelStage("build",
 			pipeline.NewStep("api", runFast),
 			pipeline.NewStep("worker", runSlow).WithCondition(skipCond),
-		).WithContinueOnError(true),
+		).WithContinueOnError(true).WithMaxParallel(2),
 	)
 
 	assert.Equal(t, "deploy", p.Name)
@@ -42,6 +42,7 @@ func TestBuilders(t *testing.T) {
 	assert.Equal(t, "build", s2.Name)
 	assert.True(t, s2.Parallel)
 	assert.True(t, s2.ContinueOnError)
+	assert.Equal(t, 2, s2.MaxParallel)
 	assert.Nil(t, s2.Condition)
 	assert.Len(t, s2.Steps, 2)
 
