@@ -2,6 +2,7 @@ package json_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -53,6 +54,35 @@ func TestObserver_HappyPath(t *testing.T) {
 		"StagePassed",
 		"PipelinePassed",
 	}, types)
+}
+
+func TestObserver_RunID(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	ex := pipeline.NewExecutorWithOptions(
+		pipeline.WithObservers(jsonobs.New(&buf)),
+		pipeline.WithRunID("run-42"),
+	)
+
+	p := pipeline.NewPipeline("deploy",
+		pipeline.NewStage("build",
+			pipeline.NewStep("compile", func(_ context.Context) error { return nil }),
+		),
+	)
+
+	require.NoError(t, ex.Run(t.Context(), p))
+
+	lines := nonEmptyLines(buf.String())
+	require.NotEmpty(t, lines)
+
+	for _, line := range lines {
+		var obj map[string]any
+
+		require.NoError(t, json.Unmarshal([]byte(line), &obj))
+		assert.Equal(t, "run-42", obj["runId"])
+	}
 }
 
 func TestObserver_Descriptions(t *testing.T) {

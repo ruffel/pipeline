@@ -6,6 +6,7 @@ type ExecutorOption func(*executorConfig)
 
 type executorConfig struct {
 	observers []Observer
+	runID     string
 }
 
 // NewExecutorWithOptions returns an Executor configured by the given options.
@@ -19,7 +20,19 @@ func NewExecutorWithOptions(options ...ExecutorOption) *Executor {
 		}
 	}
 
-	return &Executor{observers: filterObservers(cfg.observers)}
+	return &Executor{
+		observers: filterObservers(cfg.observers),
+		runID:     cfg.runID,
+	}
+}
+
+// WithRunID sets an opaque identifier stamped into the context of every run
+// started by the executor. Observers and steps can read it via [RunIDFrom].
+// Empty (the default) means no identifier is stamped.
+func WithRunID(id string) ExecutorOption {
+	return func(cfg *executorConfig) {
+		cfg.runID = id
+	}
 }
 
 // WithObservers appends observers to the executor configuration. Nil observers

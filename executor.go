@@ -15,6 +15,7 @@ import (
 type Executor struct {
 	mu        sync.Mutex
 	observers []Observer
+	runID     string
 }
 
 // NewExecutor returns an Executor that broadcasts events to the given observers.
@@ -28,6 +29,10 @@ func NewExecutor(observers ...Observer) *Executor {
 func (e *Executor) Run(ctx context.Context, p Pipeline) error {
 	if err := e.validate(p); err != nil {
 		return err
+	}
+
+	if e.runID != "" {
+		ctx = withRunID(ctx, e.runID)
 	}
 
 	return e.runPipeline(ctx, p)

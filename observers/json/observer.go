@@ -28,6 +28,10 @@ type Observer struct {
 	enc *json.Encoder
 	err error
 
+	// runID carries the current event's run identifier, read from the event
+	// context on each OnEvent call.
+	runID string
+
 	// starts tracks event timestamps for duration calculation.
 	starts map[pipeline.Location]time.Time
 
@@ -46,7 +50,9 @@ func New(w io.Writer) *Observer {
 }
 
 // OnEvent implements [pipeline.Observer].
-func (o *Observer) OnEvent(_ context.Context, event pipeline.Event) { //nolint:cyclop,funlen
+func (o *Observer) OnEvent(ctx context.Context, event pipeline.Event) { //nolint:cyclop,funlen
+	o.runID = pipeline.RunIDFrom(ctx)
+
 	switch e := event.(type) {
 	case pipeline.PipelineStartedEvent:
 		clear(o.starts)
@@ -137,6 +143,7 @@ type fields map[string]any
 // envelope is the JSON structure written for each event.
 type envelope struct {
 	Type       string `json:"type"`
+	RunID      string `json:"runId,omitempty"`
 	Pipeline   string `json:"pipeline,omitempty"`
 	Stage      string `json:"stage,omitempty"`
 	Step       string `json:"step,omitempty"`
@@ -158,6 +165,10 @@ func (e envelope) MarshalJSON() ([]byte, error) {
 	// Structural fields are set after Extra so they always take precedence.
 	m["type"] = e.Type
 	m["timestamp"] = e.Timestamp
+
+	if e.RunID != "" {
+		m["runId"] = e.RunID
+	}
 
 	if e.Pipeline != "" {
 		m["pipeline"] = e.Pipeline
@@ -188,6 +199,7 @@ func (o *Observer) write(typ string, loc pipeline.Location, ts time.Time, dur ti
 
 	o.err = o.enc.Encode(envelope{
 		Type:       typ,
+		RunID:      o.runID,
 		Pipeline:   loc.Pipeline,
 		Stage:      loc.Stage,
 		Step:       loc.Step,
