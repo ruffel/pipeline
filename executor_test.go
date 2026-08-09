@@ -67,6 +67,58 @@ func TestNewExecutorWithOptions_WithObservers(t *testing.T) {
 	assert.NotEmpty(t, obsA.eventTypes())
 }
 
+func TestExecutor_RunID(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu  sync.Mutex
+		ids []string
+	)
+
+	obs := pipeline.ObserverFunc(func(ctx context.Context, _ pipeline.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		ids = append(ids, pipeline.RunIDFrom(ctx))
+	})
+
+	var stepSawID string
+
+	ex := pipeline.NewExecutorWithOptions(
+		pipeline.WithObservers(obs),
+		pipeline.WithRunID("run-42"),
+	)
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "p",
+		Stages: []pipeline.Stage{
+			{
+				Name: "s",
+				Steps: []pipeline.Step{{Name: "step", Run: func(ctx context.Context) error {
+					stepSawID = pipeline.RunIDFrom(ctx)
+
+					return nil
+				}}},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "run-42", stepSawID, "steps should see the run ID in their context")
+
+	require.NotEmpty(t, ids)
+
+	for _, id := range ids {
+		assert.Equal(t, "run-42", id, "every event context should carry the run ID")
+	}
+}
+
+func TestRunIDFrom_EmptyWithoutConfiguration(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, pipeline.RunIDFrom(t.Context()))
+}
+
 func TestExecutor_NoDeadlockOnObserverEmit(t *testing.T) {
 	t.Parallel()
 

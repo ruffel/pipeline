@@ -138,7 +138,30 @@ pipeline.NewStage("notify", steps...).WithCondition(func(_ context.Context) stri
 })
 ```
 
+## Runbooks
+
+Descriptions, approval gates, and an audit log turn a pipeline into an
+operator runbook — including "do-nothing" runbooks that walk a human through
+manual steps and let you automate them one at a time:
+
+```go
+pipeline.NewStage("approval",
+    pipeline.NewStep("confirm-failover", confirm("Proceed with failover?")).
+        WithDescription("Operator sign-off before any destructive action"),
+).WithDescription("The last safe moment to abort")
+```
+
+Gates read stdin, so keep each one in its own sequential, single-step stage —
+never inside a parallel stage (peer output interleaves with the prompt) and
+not behind an `AsyncObserver` (delayed output breaks prompt ordering). Pair
+`WithRunID` with the JSON observer to give every run a correlatable audit
+trail.
+
+See [`examples/runbook`](./examples/runbook) for the full pattern: gates,
+resumable steps via marker files, and a JSON Lines audit log.
+
 ## Examples
 
 - **[demo](./examples/demo)** — inline steps covering all pipeline features
 - **[deploy](./examples/deploy)** — struct-based steps with state management and production patterns
+- **[runbook](./examples/runbook)** — approval gates, step descriptions, resumable steps, audit log
