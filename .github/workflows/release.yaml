@@ -42,6 +42,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.0"
+          check-latest: true
+
+      # Submodule tags share the release commit, so each submodule must
+      # require the core version being tagged — otherwise standalone
+      # installs resolve a stale (or missing) core API.
+      - name: Verify submodule requires match release
+        env:
+          MODULES: observers/terminal
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+
+          for mod in ${MODULES}; do
+            REQ="$(cd "${mod}" && go mod edit -json | jq -r '.Require[] | select(.Path == "github.com/ruffel/pipeline") | .Version')"
+
+            if [ "${REQ}" != "${VERSION}" ]; then
+              echo "::error::${mod}/go.mod requires github.com/ruffel/pipeline ${REQ}, expected ${VERSION}. Run 'just prepare-release ${VERSION}' and merge before releasing."
+              exit 1
+            fi
+          done
+
       - name: Tag submodules
         env:
           MODULES: observers/terminal
