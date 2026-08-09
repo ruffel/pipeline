@@ -412,6 +412,56 @@ func TestExecutor_ContextCancelled(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestExecutor_ContextCancelledBetweenSequentialSteps(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	var secondRan atomic.Bool
+
+	err := ex.Run(ctx, pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name: "build",
+				Steps: []pipeline.Step{
+					{
+						Name: "cancels-run",
+						Run: func(_ context.Context) error {
+							cancel()
+
+							return nil
+						},
+					},
+					{
+						Name: "never-runs",
+						Run: func(_ context.Context) error {
+							secondRan.Store(true)
+
+							return nil
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.False(t, secondRan.Load(), "steps after cancellation should not run")
+
+	assert.Equal(t, []string{
+		"pipeline.PipelineStartedEvent",
+		"pipeline.StageStartedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.StepPassedEvent",
+		"pipeline.StageFailedEvent",
+		"pipeline.PipelineFailedEvent",
+	}, obs.eventTypes())
+}
+
 type ctxRecordingObserver struct {
 	mu           sync.Mutex
 	events       []pipeline.Event

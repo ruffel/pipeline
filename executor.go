@@ -104,6 +104,12 @@ func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
 
 func (e *Executor) runStepsSequential(ctx context.Context, loc Location, s Stage) error {
 	for _, step := range s.Steps {
+		// Mirror the between-stages check: once the run context is cancelled,
+		// remaining steps must not start.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		if err := e.runStep(e.stepCtx(ctx, loc, step), loc.WithStep(step.Name), step); err != nil {
 			if errors.Is(err, ErrSkipStage) {
 				return nil
