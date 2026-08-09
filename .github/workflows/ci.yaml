@@ -22,9 +22,9 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25.0"
           check-latest: true
@@ -39,11 +39,49 @@ jobs:
           version: "v2.8.0"
           args: --timeout=5m
 
+      # Workspace stays on so the submodule typechecks against HEAD core.
+      - name: golangci-lint (observers/terminal)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: "v2.8.0"
+          args: --timeout=5m
+          working-directory: observers/terminal
+
       - name: Verify Clean State
         run: just check-clean
 
       - name: Run Unit Tests (Common)
         run: just test
+
+      - name: Build Examples
+        run: just build-examples
+
+  govulncheck:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.0"
+          check-latest: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Scan root module
+        run: govulncheck ./...
+
+      - name: Scan observers/terminal
+        working-directory: observers/terminal
+        run: govulncheck ./...
 
   api-compatibility:
     name: API Compatibility
@@ -56,9 +94,9 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25.0"
           check-latest: true

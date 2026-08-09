@@ -35,6 +35,17 @@ tidy:
 check-clean: fmt tidy
     git diff --exit-code
 
+# Build all example modules (they are not covered by `test`)
+build-examples:
+    for dir in examples/*/; do \
+        (cd $dir && go build ./...); \
+    done
+
+# Point submodules at the version about to be released. Run before tagging.
+# go.sum entries for the new version land via `just tidy` once the tag exists.
+prepare-release version:
+    cd observers/terminal && go mod edit -require=github.com/ruffel/pipeline@{{ version }}
+
 # Run the demo (formats: terminal, plain, json)
 demo format="terminal":
     cd examples/demo && go run . -format {{ format }}

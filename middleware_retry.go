@@ -17,7 +17,8 @@ import (
 //	}
 //
 // If the context is cancelled between attempts, the retry loop stops and
-// returns the context error. Panics if maxAttempts < 1.
+// returns the context error joined with the final attempt's error, so the
+// underlying failure is not lost. Panics if maxAttempts < 1.
 func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
 	if maxAttempts < 1 {
 		panic("pipeline: WithRetry maxAttempts must be >= 1")
@@ -49,7 +50,8 @@ func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
 			case <-ctx.Done():
 				timer.Stop()
 
-				return ctx.Err()
+				// Keep the attempt's error visible alongside the cancellation.
+				return errors.Join(err, ctx.Err())
 			case <-timer.C:
 			}
 		}

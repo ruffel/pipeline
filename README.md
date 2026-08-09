@@ -67,6 +67,11 @@ func (p *PushImage) Run(ctx context.Context) error {
 }
 ```
 
+State handoffs are safe across stage boundaries: the executor joins all steps
+in a stage before starting the next, so a write in one stage happens-before
+reads in later stages. Within a **parallel** stage, steps touching the same
+field race — give concurrent steps disjoint fields or synchronise access.
+
 Wire steps into stages using bound method values:
 
 ```go
@@ -106,7 +111,9 @@ See [`examples/deploy`](./examples/deploy) for the full implementation.
 | JSON     | `observers/json`        | JSON Lines — one object per event     |
 | Custom   | `pipeline.ObserverFunc` | Any function                          |
 
-Observers are optional submodules — import only what you use:
+The plain and JSON observers ship with the core module and add no
+dependencies. The terminal observer is a separate submodule, so its styling
+dependencies stay opt-in:
 
 ```go
 import termobs "github.com/ruffel/pipeline/observers/terminal"
