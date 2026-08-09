@@ -47,6 +47,10 @@ type State struct {
 	// used for left-column alignment in parallel stages.
 	MaxStepLen int
 
+	// Descriptions maps stage and step locations to the optional
+	// descriptions declared in the pipeline definition.
+	Descriptions map[pipeline.Location]string
+
 	// FailedSteps tracks failed step descriptions for the end-of-pipeline summary.
 	FailedSteps []string
 
@@ -64,6 +68,7 @@ type State struct {
 func newState(def pipeline.Pipeline) State {
 	s := State{
 		StageParallel: make(map[string]bool, len(def.Stages)),
+		Descriptions:  make(map[pipeline.Location]string),
 		stageTimes:    make(map[string]time.Time),
 		stepTimes:     make(map[pipeline.Location]time.Time),
 	}
@@ -71,7 +76,16 @@ func newState(def pipeline.Pipeline) State {
 	for _, stage := range def.Stages {
 		s.StageParallel[stage.Name] = stage.Parallel
 
+		loc := pipeline.Location{Pipeline: def.Name, Stage: stage.Name}
+		if stage.Description != "" {
+			s.Descriptions[loc] = stage.Description
+		}
+
 		for _, step := range stage.Steps {
+			if step.Description != "" {
+				s.Descriptions[loc.WithStep(step.Name)] = step.Description
+			}
+
 			if len(step.Name) > s.MaxStepLen {
 				s.MaxStepLen = len(step.Name)
 			}
@@ -98,6 +112,7 @@ type Options struct {
 	FormatStagePass     func(ctx context.Context, e pipeline.StagePassedEvent, d time.Duration, s State, p Palette) string
 	FormatStageFail     func(ctx context.Context, e pipeline.StageFailedEvent, d time.Duration, s State, p Palette) string
 	FormatStageSkip     func(ctx context.Context, e pipeline.StageSkippedEvent, s State, p Palette) string
+	FormatStepStart     func(ctx context.Context, e pipeline.StepStartedEvent, s State, p Palette) string
 	FormatStepPass      func(ctx context.Context, e pipeline.StepPassedEvent, d time.Duration, s State, p Palette) string
 	FormatStepFail      func(ctx context.Context, e pipeline.StepFailedEvent, d time.Duration, s State, p Palette) string
 	FormatStepSkip      func(ctx context.Context, e pipeline.StepSkippedEvent, s State, p Palette) string
@@ -136,6 +151,10 @@ func (o *Options) applyDefaults() {
 
 	if o.FormatStageSkip == nil {
 		o.FormatStageSkip = defaults.FormatStageSkip
+	}
+
+	if o.FormatStepStart == nil {
+		o.FormatStepStart = defaults.FormatStepStart
 	}
 
 	if o.FormatStepPass == nil {

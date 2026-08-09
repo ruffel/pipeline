@@ -18,8 +18,8 @@ func TestBuilders(t *testing.T) {
 
 	p := pipeline.NewPipeline("deploy",
 		pipeline.NewStage("preflight",
-			pipeline.NewStep("check", runFast),
-		).WithCondition(skipCond),
+			pipeline.NewStep("check", runFast).WithDescription("Verifies cluster access"),
+		).WithCondition(skipCond).WithDescription("Sanity checks"),
 
 		pipeline.NewParallelStage("build",
 			pipeline.NewStep("api", runFast),
@@ -33,9 +33,11 @@ func TestBuilders(t *testing.T) {
 	// Stage 1: preflight
 	s1 := p.Stages[0]
 	assert.Equal(t, "preflight", s1.Name)
+	assert.Equal(t, "Sanity checks", s1.Description)
 	assert.False(t, s1.Parallel)
 	assert.NotNil(t, s1.Condition)
 	assert.Len(t, s1.Steps, 1)
+	assert.Equal(t, "Verifies cluster access", s1.Steps[0].Description)
 
 	// Stage 2: build
 	s2 := p.Stages[1]

@@ -34,6 +34,14 @@ func (s Stage) WithCondition(cond ConditionFn) Stage {
 	return s
 }
 
+// WithDescription sets a human-readable summary that observers may display
+// alongside the stage name.
+func (s Stage) WithDescription(d string) Stage {
+	s.Description = d
+
+	return s
+}
+
 // WithContinueOnError sets whether parallel execution should continue if a
 // step fails. Has no effect on sequential stages.
 func (s Stage) WithContinueOnError(continueOnError bool) Stage {
@@ -61,6 +69,14 @@ func NewStep(name string, run StepFn) Step {
 // WithCondition sets the conditional execution function for the step.
 func (s Step) WithCondition(cond ConditionFn) Step {
 	s.Condition = cond
+
+	return s
+}
+
+// WithDescription sets a human-readable summary that observers may display
+// alongside the step name.
+func (s Step) WithDescription(d string) Step {
+	s.Description = d
 
 	return s
 }

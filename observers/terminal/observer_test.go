@@ -100,6 +100,29 @@ func TestObserver_SameStepNameInDifferentStages(t *testing.T) {
 	assert.Contains(t, out, "✓ validate (")
 }
 
+func TestObserver_Descriptions(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := termobs.New(&buf)
+	ex := pipeline.NewExecutor(obs)
+
+	p := pipeline.NewPipeline("deploy",
+		pipeline.NewStage("build",
+			pipeline.NewStep("compile", func(_ context.Context) error { return nil }).
+				WithDescription("Compiles the service"),
+		).WithDescription("Produces artifacts"),
+	)
+
+	require.NoError(t, ex.Run(t.Context(), p))
+
+	out := buf.String()
+
+	assert.Contains(t, out, "Produces artifacts")
+	assert.Contains(t, out, "Compiles the service")
+}
+
 func TestObserver_CustomEvent_DefaultNoOp(t *testing.T) {
 	t.Parallel()
 

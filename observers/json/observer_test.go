@@ -55,6 +55,51 @@ func TestObserver_HappyPath(t *testing.T) {
 	}, types)
 }
 
+func TestObserver_Descriptions(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := jsonobs.New(&buf)
+	ctx := t.Context()
+
+	def := pipeline.NewPipeline("deploy",
+		pipeline.NewStage("build",
+			pipeline.NewStep("compile", nil).WithDescription("Compiles the service"),
+		).WithDescription("Produces artifacts"),
+	)
+
+	events := []pipeline.Event{
+		pipeline.PipelineStartedEvent{BaseEvent: base("deploy", "", "", fixedTime), Definition: def},
+		pipeline.StageStartedEvent{BaseEvent: base("deploy", "build", "", fixedTime)},
+		pipeline.StepStartedEvent{BaseEvent: base("deploy", "build", "compile", fixedTime)},
+		pipeline.StepPassedEvent{BaseEvent: base("deploy", "build", "compile", fixedTime)},
+	}
+
+	for _, e := range events {
+		obs.OnEvent(ctx, e)
+	}
+
+	lines := nonEmptyLines(buf.String())
+	require.Len(t, lines, 4)
+
+	var stage map[string]any
+
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &stage))
+	assert.Equal(t, "Produces artifacts", stage["description"])
+
+	var step map[string]any
+
+	require.NoError(t, json.Unmarshal([]byte(lines[2]), &step))
+	assert.Equal(t, "Compiles the service", step["description"])
+
+	// Only start events carry the description.
+	var passed map[string]any
+
+	require.NoError(t, json.Unmarshal([]byte(lines[3]), &passed))
+	assert.NotContains(t, passed, "description")
+}
+
 func TestObserver_TypeDiscriminator(t *testing.T) {
 	t.Parallel()
 

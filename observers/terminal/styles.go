@@ -43,6 +43,7 @@ func DefaultOptions() Options {
 		FormatStagePass:     formatStagePass,
 		FormatStageFail:     formatStageFail,
 		FormatStageSkip:     formatStageSkip,
+		FormatStepStart:     formatStepStart,
 		FormatStepPass:      formatStepPass,
 		FormatStepFail:      formatStepFail,
 		FormatStepSkip:      formatStepSkip,
@@ -164,13 +165,19 @@ func formatPipelineEnd(_ context.Context, e pipeline.Event, duration time.Durati
 	))
 }
 
-func formatStageStart(_ context.Context, e pipeline.StageStartedEvent, _ State, p Palette) string {
+func formatStageStart(_ context.Context, e pipeline.StageStartedEvent, s State, p Palette) string {
 	border := lipgloss.NewStyle().
 		BorderBottom(true).BorderTop(true).
 		BorderForeground(p.Primary).BorderStyle(lipgloss.RoundedBorder()).
 		Padding(0, 1)
 
-	return border.Render("Stage: " + e.Stage)
+	title := "Stage: " + e.Stage
+	if desc := s.Descriptions[e.Location]; desc != "" {
+		r := render{p: p}
+		title += "\n" + r.muted(desc)
+	}
+
+	return border.Render(title)
 }
 
 // formatStagePass is a no-op — step-level results already show the outcome.
@@ -188,6 +195,22 @@ func formatStageSkip(_ context.Context, e pipeline.StageSkippedEvent, _ State, p
 	icon := r.muted(p.SkipIcon)
 
 	return fmt.Sprintf("%s Stage: %s — %s", icon, e.Stage, r.muted(e.Reason))
+}
+
+// formatStepStart renders the step's description, if any, as the step begins.
+func formatStepStart(_ context.Context, e pipeline.StepStartedEvent, s State, p Palette) string {
+	desc := s.Descriptions[e.Location]
+	if desc == "" {
+		return ""
+	}
+
+	r := render{p: p, s: s}
+
+	if s.IsParallel(e.Stage, e.Step) {
+		return fmt.Sprintf("%s %s %s", r.prefix(e.Step), r.pipe(), r.muted(desc))
+	}
+
+	return r.muted("· " + desc)
 }
 
 func formatStepPass(_ context.Context, e pipeline.StepPassedEvent, d time.Duration, s State, p Palette) string {
