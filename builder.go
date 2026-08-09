@@ -42,6 +42,14 @@ func (s Stage) WithContinueOnError(continueOnError bool) Stage {
 	return s
 }
 
+// WithMaxParallel caps the number of steps running concurrently in a parallel
+// stage. Zero means unlimited. Only valid on parallel stages.
+func (s Stage) WithMaxParallel(n int) Stage {
+	s.MaxParallel = n
+
+	return s
+}
+
 // NewStep creates a [Step] with the given name and run function.
 func NewStep(name string, run StepFn) Step {
 	return Step{

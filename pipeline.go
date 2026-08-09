@@ -25,6 +25,7 @@ type Stage struct {
 	Steps           []Step      // The steps that make up the stage.
 	Parallel        bool        // When true, steps run concurrently.
 	ContinueOnError bool        // When true, all steps run even if some fail; errors are joined.
+	MaxParallel     int         // Caps concurrently running steps in a parallel stage; 0 = unlimited.
 	Condition       ConditionFn // Optional; non-empty return skips the stage with that reason.
 }
 
