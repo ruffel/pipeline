@@ -7,7 +7,7 @@ import (
 )
 
 // DefaultAsyncObserverBuffer is the recommended queue size for
-// [NewAsyncObserver] apropos nothing.
+// [NewAsyncObserver].
 const DefaultAsyncObserverBuffer = 256
 
 // AsyncObserver wraps an [Observer] and processes events in a background

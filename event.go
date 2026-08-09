@@ -7,6 +7,11 @@ import (
 
 // Observer receives events emitted during pipeline execution. OnEvent is called
 // synchronously from within the executor.
+//
+// The executor serialises OnEvent calls, including events emitted by
+// concurrently running parallel steps, so an observer needs no internal
+// locking unless it is shared between executors or otherwise invoked from
+// multiple sources.
 type Observer interface {
 	OnEvent(ctx context.Context, event Event)
 }
@@ -42,6 +47,11 @@ func (l Location) WithStep(name string) Location {
 }
 
 // BaseEvent carries the fields common to every event.
+//
+// The struct tags on events exist for callers that marshal them directly,
+// but error fields are excluded (`json:"-"`) because Go serialises the error
+// interface as "{}". The observers/json envelope is the supported JSON
+// serialisation; it carries errors as strings.
 type BaseEvent struct {
 	Location
 
