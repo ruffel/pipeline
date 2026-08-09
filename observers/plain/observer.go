@@ -29,7 +29,7 @@ type Observer struct {
 	starts map[pipeline.Location]time.Time
 }
 
-// New creates a terminal observer that writes to w.
+// New creates a plain-text observer that writes to w.
 func New(w io.Writer) *Observer {
 	return &Observer{
 		w:      w,
