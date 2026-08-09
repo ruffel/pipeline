@@ -47,6 +47,12 @@ jobs:
           args: --timeout=5m
           working-directory: observers/terminal
 
+      # Workspace OFF: proves the submodule builds against the core version its
+      # go.mod actually requires — the way a consumer resolves it. The workspace
+      # would mask a stale require by supplying HEAD core instead.
+      - name: Verify Submodules Build Standalone
+        run: just build-standalone
+
       - name: Verify Clean State
         run: just check-clean
 
