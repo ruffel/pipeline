@@ -35,6 +35,24 @@ tidy:
 check-clean: fmt tidy
     git diff --exit-code
 
+# Build submodules with the workspace off, as a consumer resolves them.
+# Fails when a submodule uses core APIs newer than the version it requires —
+# run `just sync-submodules` to repoint them at the current core commit.
+build-standalone:
+    for mod in {{MODULES}}; do \
+        (cd $mod && GOWORK=off go build ./...); \
+    done
+
+# Point submodules at the current origin/main core commit (pseudo-version).
+# Use after landing a core change that a submodule depends on.
+sync-submodules:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sha="$(git rev-parse origin/main)"
+    for mod in {{MODULES}}; do
+        (cd "$mod" && GOWORK=off go get "github.com/ruffel/pipeline@${sha}")
+    done
+
 # Build all example modules (they are not covered by `test`)
 build-examples:
     for dir in examples/*/; do \
