@@ -3,7 +3,7 @@ module github.com/ruffel/pipeline/examples/runbook
 go 1.25.0
 
 require (
-	github.com/ruffel/pipeline v0.1.4
+	github.com/ruffel/pipeline v0.1.5-0.20260809134210-a3b3c34a82fd
 	github.com/ruffel/pipeline/observers/terminal v0.0.0
 )
 
