@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -158,6 +159,7 @@ func (e *Executor) runStepsFailFast(ctx context.Context, loc Location, s Stage) 
 	var (
 		mu           sync.Mutex
 		skipPipeline bool
+		unstarted    atomic.Bool
 	)
 
 	for _, step := range s.Steps {
@@ -165,6 +167,18 @@ func (e *Executor) runStepsFailFast(ctx context.Context, loc Location, s Stage) 
 		stepLoc := loc.WithStep(step.Name)
 
 		g.Go(func() error {
+			// Once the group context is done — a peer failed, or the run
+			// was cancelled — a step that has not started must not start.
+			// It emits nothing, like steps the sequential path never
+			// reaches. This check sits inside the goroutine because a
+			// MaxParallel limit admits steps one at a time, so the context
+			// may have ended while this step waited for its slot.
+			if gctx.Err() != nil {
+				unstarted.Store(true)
+
+				return nil
+			}
+
 			err := e.runStep(stepCtx, stepLoc, step)
 			if err == nil {
 				return nil
@@ -189,6 +203,14 @@ func (e *Executor) runStepsFailFast(ctx context.Context, loc Location, s Stage) 
 
 	if err := g.Wait(); err != nil {
 		return err
+	}
+
+	// No step failed, yet some never started: only the run context can have
+	// ended the group, so report its cancellation rather than passing.
+	if unstarted.Load() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 
 	if skipPipeline {

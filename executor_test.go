@@ -1268,3 +1268,81 @@ func TestExecutor_PanicInParallel(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, `stage "parallel" step "panic-step": panic: boom`, err.Error())
 }
+
+// -----------------------------------------------------------------------------
+// Steps that never start once the run is cancelled
+// -----------------------------------------------------------------------------
+
+func TestExecutor_ParallelFailFast_MaxParallel_NoCascade(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	boom := errors.New("boom")
+
+	steps := []pipeline.Step{
+		{Name: "first", Run: func(_ context.Context) error { return boom }},
+	}
+
+	for i := 2; i <= 4; i++ {
+		steps = append(steps, pipeline.Step{Name: fmt.Sprintf("step-%d", i), Run: noop})
+	}
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name:   "p",
+		Stages: []pipeline.Stage{{Name: "par", Parallel: true, MaxParallel: 1, Steps: steps}},
+	})
+
+	require.ErrorIs(t, err, boom)
+
+	// With a single slot, "first" runs alone and fails. The queued steps
+	// find the group context cancelled and never start: no Started, no
+	// Failed, so one failure does not render as four.
+	assert.Equal(t, []string{
+		"pipeline.PipelineStartedEvent",
+		"pipeline.StageStartedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.StepFailedEvent",
+		"pipeline.StageFailedEvent",
+		"pipeline.PipelineFailedEvent",
+	}, obs.eventTypes())
+}
+
+func TestExecutor_ParallelFailFast_RunCancelledBeforeQueuedStepStarts(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	err := ex.Run(ctx, pipeline.Pipeline{
+		Name: "p",
+		Stages: []pipeline.Stage{{
+			Name:        "par",
+			Parallel:    true,
+			MaxParallel: 1,
+			Steps: []pipeline.Step{
+				{Name: "cancels", Run: func(_ context.Context) error {
+					cancel()
+
+					return nil
+				}},
+				{Name: "never", Run: noop},
+			},
+		}},
+	})
+
+	// Nothing failed, but "never" could not start: the stage must not pass.
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, []string{
+		"pipeline.PipelineStartedEvent",
+		"pipeline.StageStartedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.StepPassedEvent",
+		"pipeline.StageFailedEvent",
+		"pipeline.PipelineFailedEvent",
+	}, obs.eventTypes())
+}
