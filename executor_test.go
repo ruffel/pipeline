@@ -1346,3 +1346,91 @@ func TestExecutor_ParallelFailFast_RunCancelledBeforeQueuedStepStarts(t *testing
 		"pipeline.PipelineFailedEvent",
 	}, obs.eventTypes())
 }
+
+func TestExecutor_ContinueOnError_MaxParallel_HonoursCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	// Every step cancels the run. Whichever wins the single slot runs and
+	// passes; the others are still waiting for the slot, or find the
+	// context ended once admitted, and must not start.
+	cancelling := func(_ context.Context) error {
+		cancel()
+
+		return nil
+	}
+
+	err := ex.Run(ctx, pipeline.Pipeline{
+		Name: "p",
+		Stages: []pipeline.Stage{{
+			Name:            "par",
+			Parallel:        true,
+			ContinueOnError: true,
+			MaxParallel:     1,
+			Steps: []pipeline.Step{
+				{Name: "a", Run: cancelling},
+				{Name: "b", Run: cancelling},
+				{Name: "c", Run: cancelling},
+			},
+		}},
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, []string{
+		"pipeline.PipelineStartedEvent",
+		"pipeline.StageStartedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.StepPassedEvent",
+		"pipeline.StageFailedEvent",
+		"pipeline.PipelineFailedEvent",
+	}, obs.eventTypes())
+}
+
+func TestExecutor_ContinueOnError_RealErrorOutranksCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	boom := errors.New("boom")
+
+	// The first step to run fails and cancels the run; the other never
+	// starts. The stage reports the real failure, not the cancellation.
+	failing := func(_ context.Context) error {
+		cancel()
+
+		return boom
+	}
+
+	err := ex.Run(ctx, pipeline.Pipeline{
+		Name: "p",
+		Stages: []pipeline.Stage{{
+			Name:            "par",
+			Parallel:        true,
+			ContinueOnError: true,
+			MaxParallel:     1,
+			Steps: []pipeline.Step{
+				{Name: "a", Run: failing},
+				{Name: "b", Run: failing},
+			},
+		}},
+	})
+
+	require.ErrorIs(t, err, boom)
+	assert.Equal(t, []string{
+		"pipeline.PipelineStartedEvent",
+		"pipeline.StageStartedEvent",
+		"pipeline.StepStartedEvent",
+		"pipeline.StepFailedEvent",
+		"pipeline.StageFailedEvent",
+		"pipeline.PipelineFailedEvent",
+	}, obs.eventTypes())
+}

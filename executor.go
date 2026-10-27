@@ -226,6 +226,7 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 		mu           sync.Mutex
 		errs         []error
 		skipPipeline bool
+		unstarted    atomic.Bool
 	)
 
 	// Optional counting semaphore bounding concurrent steps.
@@ -243,10 +244,23 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 		go func() {
 			defer wg.Done()
 
-			if sem != nil {
-				sem <- struct{}{}
+			release, ok := acquire(ctx, sem)
+			if !ok {
+				// Cancelled while waiting for a slot: never start.
+				unstarted.Store(true)
 
-				defer func() { <-sem }()
+				return
+			}
+
+			defer release()
+
+			// A slot can free up only after the run was cancelled: a step
+			// that has not started must not start. It emits nothing, like
+			// steps the sequential path never reaches.
+			if ctx.Err() != nil {
+				unstarted.Store(true)
+
+				return
 			}
 
 			if err := e.runStep(stepCtx, stepLoc, step); err != nil {
@@ -268,9 +282,17 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 
 	wg.Wait()
 
-	// Real failures take priority over skip signals.
+	// Real failures take priority over skip signals and cancellation.
 	if len(errs) > 0 {
 		return errors.Join(errs...)
+	}
+
+	// Steps left unstarted means the run context ended: report it rather
+	// than passing a stage that did not run to completion.
+	if unstarted.Load() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 
 	// No real failures — propagate skip if requested.
@@ -279,6 +301,22 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 	}
 
 	return nil
+}
+
+// acquire takes a slot from sem, returning the matching release function. It
+// reports false if ctx ends before a slot frees. A nil sem means unbounded
+// concurrency: acquire succeeds at once and release is a no-op.
+func acquire(ctx context.Context, sem chan struct{}) (func(), bool) {
+	if sem == nil {
+		return func() {}, true
+	}
+
+	select {
+	case sem <- struct{}{}:
+		return func() { <-sem }, true
+	case <-ctx.Done():
+		return nil, false
+	}
 }
 
 func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr error) {
