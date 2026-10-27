@@ -77,6 +77,72 @@ func TestWithRetry_RespectsContextCancellation(t *testing.T) {
 	assert.Equal(t, int32(1), attempts.Load())
 }
 
+func TestWithRetry_CancelledAttempt_NoWarningNoDoubledError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	obs := &recordingObserver{}
+	ctx = pipeline.WithEmitter(ctx, pipeline.NewEmitter(obs.OnEvent, pipeline.Location{
+		Pipeline: "p",
+		Stage:    "s",
+		Step:     "step",
+	}))
+
+	var attempts atomic.Int32
+
+	// The attempt itself observes the cancellation and returns it.
+	step := pipeline.WithRetry(3, time.Second, func(ctx context.Context) error {
+		attempts.Add(1)
+		cancel()
+
+		return ctx.Err()
+	})
+
+	err := step(ctx)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, context.Canceled.Error(), err.Error(),
+		"the context error must not be joined with itself")
+	assert.Equal(t, int32(1), attempts.Load())
+	assert.Empty(t, obs.eventTypes(), "no retry is announced when none will happen")
+}
+
+func TestWithRetry_CancelledAttempt_KeepsUnrelatedError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	obs := &recordingObserver{}
+	ctx = pipeline.WithEmitter(ctx, pipeline.NewEmitter(obs.OnEvent, pipeline.Location{
+		Pipeline: "p",
+		Stage:    "s",
+		Step:     "step",
+	}))
+
+	boom := errors.New("boom")
+
+	var attempts atomic.Int32
+
+	// The context ends during the attempt, but the attempt fails for its
+	// own reason: both must be reported, and no retry announced.
+	step := pipeline.WithRetry(3, time.Second, func(_ context.Context) error {
+		attempts.Add(1)
+		cancel()
+
+		return boom
+	})
+
+	err := step(ctx)
+
+	require.ErrorIs(t, err, boom)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, int32(1), attempts.Load())
+	assert.Empty(t, obs.eventTypes())
+}
+
 func TestWithRetry_EmitsWarnings(t *testing.T) {
 	t.Parallel()
 

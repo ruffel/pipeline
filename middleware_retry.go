@@ -16,9 +16,10 @@ import (
 //	    Run:  pipeline.WithRetry(3, time.Second, deploy),
 //	}
 //
-// If the context is cancelled between attempts, the retry loop stops and
-// returns the context error joined with the final attempt's error, so the
-// underlying failure is not lost. Panics if maxAttempts < 1.
+// If the context ends during or between attempts, the loop stops without
+// announcing a retry and returns the final attempt's error, joined with the
+// context error unless the attempt's error already reports it. Panics if
+// maxAttempts < 1.
 func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
 	if maxAttempts < 1 {
 		panic("pipeline: WithRetry maxAttempts must be >= 1")
@@ -42,6 +43,12 @@ func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
 				break
 			}
 
+			// The context ended during the attempt: no retry will follow, so
+			// none is announced. The attempt's error stays visible.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return joinContextErr(err, ctxErr)
+			}
+
 			EmitWarnf(ctx, "attempt %d/%d failed: %v, retrying", attempt+1, maxAttempts, err)
 
 			timer := time.NewTimer(backoff)
@@ -51,11 +58,21 @@ func WithRetry(maxAttempts int, backoff time.Duration, fn StepFn) StepFn {
 				timer.Stop()
 
 				// Keep the attempt's error visible alongside the cancellation.
-				return errors.Join(err, ctx.Err())
+				return joinContextErr(err, ctx.Err())
 			case <-timer.C:
 			}
 		}
 
 		return err
 	}
+}
+
+// joinContextErr returns err joined with ctxErr, unless err already reports
+// ctxErr, in which case err is returned as is so the cause is not repeated.
+func joinContextErr(err, ctxErr error) error {
+	if errors.Is(err, ctxErr) {
+		return err
+	}
+
+	return errors.Join(err, ctxErr)
 }
