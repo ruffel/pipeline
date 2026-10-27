@@ -75,7 +75,11 @@ func (e *Executor) executeStages(ctx context.Context, p Pipeline) error {
 
 func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
 	if s.Condition != nil {
-		if reason := s.Condition(ctx); reason != "" {
+		// Stage conditions get a stage-scoped emitter, as step conditions
+		// get the step's, so either kind can explain itself via EmitInfo.
+		condCtx := WithEmitter(ctx, NewEmitter(e.emit, loc))
+
+		if reason := s.Condition(condCtx); reason != "" {
 			e.emit(ctx, newStageSkippedEvent(loc, reason, time.Now()))
 
 			return nil

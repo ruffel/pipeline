@@ -1434,3 +1434,37 @@ func TestExecutor_ContinueOnError_RealErrorOutranksCancellation(t *testing.T) {
 		"pipeline.PipelineFailedEvent",
 	}, obs.eventTypes())
 }
+
+func TestExecutor_StageConditionCanEmit(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "p",
+		Stages: []pipeline.Stage{{
+			Name: "gated",
+			Condition: func(ctx context.Context) string {
+				pipeline.EmitInfo(ctx, "checking gate")
+
+				return "closed"
+			},
+			Steps: []pipeline.Step{{Name: "noop", Run: noop}},
+		}},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"pipeline.PipelineStartedEvent",
+		"pipeline.MessageEvent",
+		"pipeline.StageSkippedEvent",
+		"pipeline.PipelinePassedEvent",
+	}, obs.eventTypes())
+
+	msg, ok := obs.events[1].(pipeline.MessageEvent)
+	require.True(t, ok)
+	assert.Equal(t, "checking gate", msg.Message)
+	assert.Equal(t, pipeline.Location{Pipeline: "p", Stage: "gated"}, msg.Location,
+		"the condition emits at the stage, not at any step")
+}
