@@ -53,3 +53,22 @@ unvisited stages can diff the definition against the events received.
 
 - **Reason for NOT catching panics elsewhere (in observers):**
   We intentionally do not wrap `Observer.OnEvent` calls in a recover block because there is no mechanism to handle the error. The `OnEvent` signature does not return an error, and keeping it simple is a core design goal. If we caught a panic, the executor couldn't report it via the pipeline's event system without risking recursive deadlocks, nor could it cleanly return it up the chain during a teardown phase. It is better to let the program crash than to silently swallow an observer exception and complicate the API.
+
+## Cancellation and Work That Never Starts
+
+**Decision (v0.1.x):** When the run context ends, steps and stages that have
+not started emit nothing. Steps already running that honour their context
+report a `StepFailedEvent` carrying the context error.
+
+The sequential path has always worked this way: once the context is done, the
+executor stops before the next step and returns the context error. The
+parallel paths now match it. A fail-fast stage no longer launches the steps
+queued behind a `MaxParallel` limit once a peer has failed, and a best-effort
+stage no longer starts a step that was waiting for a slot when the run was
+cancelled. Before this, every such step reported a `StepStartedEvent` followed
+by a `StepFailedEvent` with "context canceled", so one real failure rendered
+as several.
+
+This is the minimal, additive form. A later release introduces cancelled
+events so that every entry in the definition resolves to a terminal event, and
+so observers can tell collateral cancellation from failure.
