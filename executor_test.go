@@ -638,11 +638,74 @@ func TestExecutor_PanicRecovery(t *testing.T) {
 	})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "panic in step")
-	assert.Contains(t, err.Error(), "unexpected nil pointer")
+	assert.Equal(t, `stage "build" step "panic-step": panic: unexpected nil pointer`, err.Error(),
+		"a panic is wrapped like any other step failure, with the stack kept out of the message")
 
 	last := obs.eventTypes()[len(obs.eventTypes())-1]
 	assert.Equal(t, "pipeline.PipelineFailedEvent", last)
+}
+
+func TestExecutor_PanicError_CarriesValueAndStack(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	ex := pipeline.NewExecutor(obs)
+
+	err := ex.Run(t.Context(), pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name: "build",
+				Steps: []pipeline.Step{
+					{Name: "panic-step", Run: func(_ context.Context) error {
+						panic("unexpected nil pointer")
+					}},
+				},
+			},
+		},
+	})
+
+	var perr *pipeline.PanicError
+
+	require.ErrorAs(t, err, &perr)
+	assert.Equal(t, "unexpected nil pointer", perr.Value)
+	assert.Contains(t, string(perr.Stack), "goroutine", "the stack is captured on the PanicError")
+	assert.NotContains(t, err.Error(), "goroutine", "the stack stays out of the message")
+
+	// The event carries the PanicError itself, not the location-wrapped form.
+	var failed *pipeline.StepFailedEvent
+
+	for _, e := range obs.events {
+		if f, ok := e.(pipeline.StepFailedEvent); ok {
+			failed = &f
+		}
+	}
+
+	require.NotNil(t, failed, "a StepFailedEvent is emitted for the panic")
+	assert.Equal(t, perr, failed.Err)
+}
+
+func TestExecutor_PanicError_UnwrapsPanickedError(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("cause")
+
+	err := pipeline.NewExecutor().Run(t.Context(), pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{
+			{
+				Name: "build",
+				Steps: []pipeline.Step{
+					{Name: "panic-step", Run: func(_ context.Context) error {
+						panic(cause)
+					}},
+				},
+			},
+		},
+	})
+
+	require.ErrorIs(t, err, cause, "a panicked error is reachable through errors.Is")
+	assert.Equal(t, `stage "build" step "panic-step": panic: cause`, err.Error())
 }
 
 // -----------------------------------------------------------------------------
@@ -1203,5 +1266,5 @@ func TestExecutor_PanicInParallel(t *testing.T) {
 	})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "panic in step")
+	assert.Equal(t, `stage "parallel" step "panic-step": panic: boom`, err.Error())
 }

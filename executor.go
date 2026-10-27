@@ -272,9 +272,12 @@ func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr e
 
 	defer func() {
 		if r := recover(); r != nil {
-			stack := string(debug.Stack())
-			stepErr = fmt.Errorf("panic in step %q: %v\n%s", s.Name, r, stack)
-			e.emit(ctx, newStepFailedEvent(loc, stepErr, time.Now()))
+			// A panicking step is a step failure like any other: the event
+			// carries the PanicError and the returned error wraps it with
+			// the step's location, exactly as the error path below does.
+			perr := &PanicError{Value: r, Stack: debug.Stack()}
+			e.emit(ctx, newStepFailedEvent(loc, perr, time.Now()))
+			stepErr = wrapStepErr(loc, perr)
 		}
 	}()
 
@@ -287,12 +290,18 @@ func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr e
 
 		e.emit(ctx, newStepFailedEvent(loc, err, time.Now()))
 
-		return fmt.Errorf("stage %q step %q: %w", loc.Stage, loc.Step, err)
+		return wrapStepErr(loc, err)
 	}
 
 	e.emit(ctx, newStepPassedEvent(loc, time.Now()))
 
 	return nil
+}
+
+// wrapStepErr adds the step's location to an error returned by its Run
+// function so the failure is diagnosable from the error alone.
+func wrapStepErr(loc Location, err error) error {
+	return fmt.Errorf("stage %q step %q: %w", loc.Stage, loc.Step, err)
 }
 
 // stepCtx creates a child context with the emitter wired for the given step.
