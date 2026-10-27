@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ruffel/pipeline"
@@ -14,6 +15,33 @@ import (
 
 // errDeclined marks a gate the operator answered with anything but yes.
 var errDeclined = errors.New("declined by operator")
+
+// stdinLines is fed by the single goroutine that reads os.Stdin for the whole
+// process. Sharing one reader means buffered input is never lost between
+// gates, and a cancelled gate leaves no reader goroutine behind.
+var (
+	stdinOnce  sync.Once
+	stdinLines chan string
+)
+
+// stdin returns the channel of trimmed lines read from os.Stdin, starting the
+// shared reader on first use. The channel closes when stdin reaches EOF.
+func stdin() <-chan string {
+	stdinOnce.Do(func() {
+		stdinLines = make(chan string)
+
+		go func() {
+			defer close(stdinLines)
+
+			sc := bufio.NewScanner(os.Stdin)
+			for sc.Scan() {
+				stdinLines <- strings.TrimSpace(sc.Text())
+			}
+		}()
+	})
+
+	return stdinLines
+}
 
 // confirm returns a gate step that blocks until the operator answers y/N on
 // stdin. Keep gates in their own sequential, single-step stage so no peer
@@ -23,18 +51,16 @@ func confirm(prompt string) pipeline.StepFn {
 	return func(ctx context.Context) error {
 		pipeline.EmitInfo(ctx, prompt+" [y/N]")
 
-		answer := make(chan string, 1)
-
-		go func() {
-			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			answer <- strings.TrimSpace(line)
-		}()
-
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case a := <-answer:
-			if strings.EqualFold(a, "y") || strings.EqualFold(a, "yes") {
+		case answer, ok := <-stdin():
+			if !ok {
+				// EOF: nobody is there to approve.
+				return errDeclined
+			}
+
+			if strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
 				return nil
 			}
 

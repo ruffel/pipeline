@@ -80,9 +80,12 @@ func (r render) pipe() string { return r.muted("│") }
 // stderrPipe renders the thick "┃" separator in the error color.
 func (r render) stderrPipe() string { return r.colored("┃", r.p.Error) }
 
-// prefix renders "[step-name  ]" left-padded to the max step width.
+// prefix renders "[step-name  ]" padded to the widest step name. Padding is
+// measured in display cells, so wide and combining characters still align.
 func (r render) prefix(name string) string {
-	return r.muted(fmt.Sprintf("[%-[1]*[2]s]", r.s.MaxStepLen, name))
+	pad := strings.Repeat(" ", max(r.s.MaxStepLen-lipgloss.Width(name), 0))
+
+	return r.muted("[" + name + pad + "]")
 }
 
 // duration renders a step duration like " (803ms)" in the muted color.

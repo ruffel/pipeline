@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ruffel/pipeline"
 	termobs "github.com/ruffel/pipeline/observers/terminal"
 	"github.com/stretchr/testify/assert"
@@ -194,4 +196,48 @@ func TestObserver_IndeterminateProgress_OmitsCounter(t *testing.T) {
 
 	assert.NotContains(t, out, "(0/0)", "indeterminate progress must not render a counter")
 	assert.Contains(t, out, "(3/10)", "determinate progress must render the counter")
+}
+
+func TestObserver_ParallelPrefix_AlignsWideNames(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := termobs.New(&buf)
+	ex := pipeline.NewExecutor(obs)
+
+	// A CJK name is two runes but four display cells; byte or rune counting
+	// would leave its column out of line with the ASCII name.
+	const wide = "構築" //nolint:gosmopolitan // Test data: a wide script is the point.
+
+	p := pipeline.NewPipeline("deploy",
+		pipeline.NewParallelStage("build",
+			pipeline.NewStep("api", func(_ context.Context) error { return nil }),
+			pipeline.NewStep(wide, func(_ context.Context) error { return nil }),
+		),
+	)
+
+	require.NoError(t, ex.Run(t.Context(), p))
+
+	widths := map[string]int{}
+
+	for _, line := range strings.Split(buf.String(), "\n") {
+		start := strings.Index(line, "[")
+		end := strings.Index(line, "]")
+
+		if start < 0 || end < start {
+			continue
+		}
+
+		prefix := line[start : end+1]
+
+		for _, name := range []string{"api", wide} {
+			if strings.Contains(prefix, name) {
+				widths[name] = lipgloss.Width(prefix)
+			}
+		}
+	}
+
+	require.Len(t, widths, 2, "both steps render a prefixed line")
+	assert.Equal(t, widths["api"], widths[wide], "prefixes share one display width")
 }

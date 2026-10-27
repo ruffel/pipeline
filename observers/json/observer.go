@@ -22,8 +22,11 @@ import (
 
 // Observer writes JSON Lines event output to an [io.Writer].
 //
-// If a write fails, the observer records the first error and stops writing.
-// Call [Observer.Err] after the pipeline completes to check for write failures.
+// If a write fails, the observer records the first error and stops writing,
+// for its whole lifetime: a later run on the same observer is not written
+// either, so a lost record is never silently followed by a resumed log. Call
+// [Observer.Err] after the pipeline completes to check for write failures,
+// and create a new observer to start a fresh log.
 type Observer struct {
 	enc *json.Encoder
 	err error
@@ -56,7 +59,6 @@ func (o *Observer) OnEvent(ctx context.Context, event pipeline.Event) { //nolint
 	switch e := event.(type) {
 	case pipeline.PipelineStartedEvent:
 		clear(o.starts)
-		o.err = nil
 		o.captureDescriptions(e.Definition)
 		o.starts[e.Location] = e.Timestamp
 		o.write("PipelineStarted", e.Location, e.Timestamp, 0, nil)

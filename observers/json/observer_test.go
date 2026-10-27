@@ -302,6 +302,46 @@ func TestObserver_ErrStopsWritingAfterFailure(t *testing.T) {
 	assert.Contains(t, obs.Err().Error(), "disk full")
 }
 
+// failOnceWriter fails its first write and accepts every later one.
+type failOnceWriter struct {
+	bytes.Buffer
+
+	failed bool
+}
+
+func (w *failOnceWriter) Write(p []byte) (int, error) {
+	if !w.failed {
+		w.failed = true
+
+		return 0, errors.New("disk full")
+	}
+
+	return w.Buffer.Write(p)
+}
+
+func TestObserver_ErrIsStickyAcrossRuns(t *testing.T) {
+	t.Parallel()
+
+	w := &failOnceWriter{}
+	obs := jsonobs.New(w)
+	ctx := t.Context()
+
+	started := pipeline.PipelineStartedEvent{BaseEvent: base("p", "", "", fixedTime)}
+
+	// First run: the very first write fails.
+	obs.OnEvent(ctx, started)
+	require.Error(t, obs.Err())
+
+	// Second run on the same observer: the failure is not forgotten and
+	// nothing further is written, so the log cannot silently resume.
+	obs.OnEvent(ctx, started)
+	obs.OnEvent(ctx, pipeline.PipelinePassedEvent{BaseEvent: base("p", "", "", fixedTime)})
+
+	require.Error(t, obs.Err())
+	assert.Contains(t, obs.Err().Error(), "disk full")
+	assert.Empty(t, w.String(), "no record is written after a failure")
+}
+
 // -------------------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------------------

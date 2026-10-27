@@ -43,8 +43,8 @@ type State struct {
 	// StageParallel maps stage names to whether they are parallel.
 	StageParallel map[string]bool
 
-	// MaxStepLen is the length of the longest step name in the pipeline,
-	// used for left-column alignment in parallel stages.
+	// MaxStepLen is the display width of the widest step name in the
+	// pipeline, used for left-column alignment in parallel stages.
 	MaxStepLen int
 
 	// Descriptions maps stage and step locations to the optional
@@ -86,8 +86,8 @@ func newState(def pipeline.Pipeline) State {
 				s.Descriptions[loc.WithStep(step.Name)] = step.Description
 			}
 
-			if len(step.Name) > s.MaxStepLen {
-				s.MaxStepLen = len(step.Name)
+			if w := lipgloss.Width(step.Name); w > s.MaxStepLen {
+				s.MaxStepLen = w
 			}
 		}
 	}
