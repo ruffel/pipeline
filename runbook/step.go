@@ -31,8 +31,3 @@ type StepFunc func(ctx context.Context, s *StepContext) error
 func (f StepFunc) Run(ctx context.Context, s *StepContext) error {
 	return f(ctx, s)
 }
-
-// StepContext gives a running step access to the run: progress, output,
-// per-target results and recorded values. The executor creates one for each
-// call into a step.
-type StepContext struct{}
