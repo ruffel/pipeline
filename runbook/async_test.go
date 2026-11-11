@@ -237,3 +237,44 @@ func TestAsyncObserver_KeepsASlowObserverFromStallingTheRun(t *testing.T) {
 	assert.Equal(t, summary(out.events), summary(g.all()), "with room to spare, nothing is dropped")
 	assert.True(t, strings.HasPrefix(summary(g.all())[0], "run.started"))
 }
+
+// blockingStringer's String never returns.
+type blockingStringer struct{ block chan struct{} }
+
+func (b blockingStringer) String() string {
+	<-b.block
+
+	return "never"
+}
+
+// A panic value whose String blocks must not stall the run or Close.
+func TestAsyncObserver_ABlockingPanicFormatterDoesNotStallEnqueueOrClose(t *testing.T) {
+	t.Parallel()
+
+	block := make(chan struct{})
+	defer close(block)
+
+	a := runbook.NewAsyncObserver(runbook.ObserverFunc(func(context.Context, runbook.Event) {
+		panic(blockingStringer{block: block})
+	}), 0)
+
+	finished := make(chan error, 1)
+
+	go func() {
+		a.OnEvent(t.Context(), event(runbook.EventRunStarted, "p", ""))
+		time.Sleep(10 * time.Millisecond) // let delivery reach the formatter
+		a.OnEvent(t.Context(), event(runbook.EventRunFinished, "p", ""))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+
+		finished <- a.Close(ctx)
+	}()
+
+	select {
+	case err := <-finished:
+		require.ErrorIs(t, err, context.DeadlineExceeded, "Close gives up; the formatter is still stuck")
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnEvent or Close blocked behind the panic formatter")
+	}
+}

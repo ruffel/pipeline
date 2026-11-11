@@ -100,7 +100,7 @@ func (a *AsyncObserver) OnEvent(ctx context.Context, e Event) {
 
 		if len(a.chatter) > a.limit {
 			a.pending.Remove(a.chatter[0])
-			a.chatter = a.chatter[1:]
+			a.popChatter()
 			a.dropped++
 		}
 	default:
@@ -186,7 +186,7 @@ func (a *AsyncObserver) take() (*queued, int, bool) {
 	case item.event.Kind == EventProgress:
 		delete(a.progress, item.event.Path+"\x00"+item.event.Key)
 	case !item.event.Kind.Durable():
-		a.chatter = a.chatter[1:]
+		a.popChatter()
 	}
 
 	notice := a.dropped
@@ -195,17 +195,33 @@ func (a *AsyncObserver) take() (*queued, int, bool) {
 	return item, notice, true
 }
 
+// popChatter drops the oldest chatter entry, clearing its slot so the
+// backing array doesn't keep a delivered event alive.
+func (a *AsyncObserver) popChatter() {
+	a.chatter[0] = nil
+	a.chatter = a.chatter[1:]
+
+	if len(a.chatter) == 0 {
+		a.chatter = nil
+	}
+}
+
 // deliver calls the wrapped observer, and reports false if it panicked.
 func (a *AsyncObserver) deliver(ctx context.Context, e Event) bool {
-	if v := observe(ctx, a.next, e); v != nil {
-		a.mu.Lock()
-		a.err = fmt.Errorf("runbook: async observer: %T panicked: %v", a.next, v)
-		a.pending.Init()
-		a.chatter, a.progress = nil, map[string]*list.Element{}
-		a.mu.Unlock()
-
-		return false
+	v := observe(ctx, a.next, e)
+	if v == nil {
+		return true
 	}
 
-	return true
+	// Format the panic before taking the lock: the value's Error or String
+	// method is user code and may block. (fmt itself recovers a panic in it.)
+	err := fmt.Errorf("runbook: async observer: %T panicked: %v", a.next, v)
+
+	a.mu.Lock()
+	a.err = err
+	a.pending.Init()
+	a.chatter, a.progress = nil, map[string]*list.Element{}
+	a.mu.Unlock()
+
+	return false
 }
