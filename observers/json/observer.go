@@ -17,6 +17,7 @@ package json
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -224,35 +225,66 @@ func (o *Observer) write(typ string, loc pipeline.Location, ts time.Time, dur ti
 		env.Extra = encodable(extra)
 
 		if line, err = json.Marshal(env); err != nil {
-			o.err = fmt.Errorf("json observer: encode %s event: %w", typ, err)
+			// Not expected once every value is pre-encoded, but a bad value
+			// must never stop the log: keep the line, drop all of Extra.
+			env.Extra = fields{"marshalError": err.Error()}
 
-			return
+			if line, err = json.Marshal(env); err != nil {
+				o.err = fmt.Errorf("json observer: encode %s event: %w", typ, err)
+
+				return
+			}
 		}
 	}
 
 	_, o.err = o.w.Write(append(line, '\n'))
 }
 
-// encodable returns a copy of extra without the values that can't be encoded
-// as JSON, plus a "marshalError" field naming each one dropped and why.
+// encodable returns a copy of extra in which each value is encoded once and
+// kept as [json.RawMessage], so no marshaler runs again. Values that can't be
+// encoded are left out, and a "marshalError" field names each one and why.
 func encodable(extra fields) fields {
 	out := make(fields, len(extra)+1)
 
 	var problems []string
 
 	for _, k := range slices.Sorted(maps.Keys(extra)) {
-		if _, err := json.Marshal(extra[k]); err != nil {
+		raw, err := encodeField(extra[k])
+		if err != nil {
 			problems = append(problems, k+": "+err.Error())
 
 			continue
 		}
 
-		out[k] = extra[k]
+		out[k] = raw
 	}
 
-	out["marshalError"] = strings.Join(problems, "; ")
+	if len(problems) > 0 {
+		out["marshalError"] = strings.Join(problems, "; ")
+	}
 
 	return out
+}
+
+// encodeField encodes v and checks the result still parses when nested one
+// level down, as it is inside the envelope: a value at the JSON depth limit
+// encodes on its own but not within the line.
+func encodeField(v any) (json.RawMessage, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+
+	nested := make([]byte, 0, len(raw)+2)
+	nested = append(nested, '[')
+	nested = append(nested, raw...)
+	nested = append(nested, ']')
+
+	if !json.Valid(nested) {
+		return nil, errors.New("value nests too deeply to embed")
+	}
+
+	return raw, nil
 }
 
 // captureDescriptions records the stage/step descriptions declared in the

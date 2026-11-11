@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -308,6 +309,62 @@ func TestObserver_UnencodableValueKeepsLogging(t *testing.T) {
 			assert.Contains(t, custom["marshalError"], "data: json: unsupported")
 		})
 	}
+}
+
+func TestObserver_ValueTooDeepToEmbedIsDropped(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := jsonobs.New(&buf)
+
+	// Valid on its own, one level past the JSON depth limit inside a line.
+	deep := json.RawMessage(strings.Repeat("[", 10000) + strings.Repeat("]", 10000))
+
+	obs.OnEvent(t.Context(), pipeline.NewCustomEvent(
+		pipeline.Location{Pipeline: "p"}, "x.deep", map[string]any{"d": deep}, fixedTime))
+	obs.OnEvent(t.Context(), pipeline.StepPassedEvent{BaseEvent: base("p", "s", "b", fixedTime)})
+
+	require.NoError(t, obs.Err())
+
+	lines := nonEmptyLines(buf.String())
+	require.Len(t, lines, 2)
+
+	custom := parseLine(t, lines[0])
+	assert.NotContains(t, custom, "data")
+	assert.Contains(t, custom["marshalError"], "data: value nests too deeply")
+}
+
+// flakyValue fails on every other call to MarshalJSON.
+type flakyValue struct{ calls *atomic.Int32 }
+
+func (f flakyValue) MarshalJSON() ([]byte, error) {
+	if f.calls.Add(1)%2 == 1 {
+		return nil, errors.New("flaky")
+	}
+
+	return []byte(`"ok"`), nil
+}
+
+func TestObserver_MarshalerRunsOnceOnRetry(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := jsonobs.New(&buf)
+	calls := &atomic.Int32{}
+
+	// Fails in the first attempt, succeeds when re-encoded on its own. A
+	// third call would fail again.
+	obs.OnEvent(t.Context(), pipeline.NewCustomEvent(
+		pipeline.Location{Pipeline: "p"}, "x.flaky", flakyValue{calls: calls}, fixedTime))
+
+	require.NoError(t, obs.Err())
+	assert.Equal(t, int32(2), calls.Load())
+
+	custom := parseLine(t, nonEmptyLines(buf.String())[0])
+	assert.Equal(t, "ok", custom["data"])
+	assert.NotContains(t, custom, "marshalError", "nothing was dropped")
 }
 
 // -------------------------------------------------------------------------
