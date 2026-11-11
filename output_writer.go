@@ -52,19 +52,12 @@ func OutputWriter(ctx context.Context, stream Stream) io.WriteCloser {
 		scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), maxOutputLine)
 		scanner.Split(split.split)
 
-		warned := false
-
 		for scanner.Scan() {
-			EmitOutput(ctx, stream, scanner.Text())
-
-			switch {
-			case split.chunked && !warned:
+			if split.warn {
 				EmitWarnf(ctx, "output line longer than %d bytes was split into chunks", maxOutputLine)
-
-				warned = true
-			case !split.chunked:
-				warned = false
 			}
+
+			EmitOutput(ctx, stream, scanner.Text())
 		}
 
 		// The splitter never fails, so any error here comes from the pipe
@@ -81,71 +74,106 @@ func OutputWriter(ctx context.Context, stream Stream) io.WriteCloser {
 
 // lineSplitter is a [bufio.SplitFunc] that ends lines at "\n", "\r\n" or a
 // lone "\r", and splits lines longer than max into chunks instead of failing.
-// chunked reports whether the last token returned was such a chunk.
 type lineSplitter struct {
-	max     int
-	chunked bool
+	max int
+
+	// pieces is how many chunks of the current line have been returned. A
+	// non-zero value means the line continues.
+	pieces int
+
+	// skipLF: a "\r" was taken as a line end without seeing the next byte,
+	// because the buffer was full. A "\n" straight after it belongs to it.
+	skipLF bool
+
+	// warn reports that the token just returned is the first proof that its
+	// line is longer than max: a second piece of it. A line of exactly max
+	// bytes is one chunk followed by a bare line end, and is not warned about.
+	warn bool
 }
 
 func (l *lineSplitter) split(data []byte, atEOF bool) (int, []byte, error) {
-	afterChunk := l.chunked
-	l.chunked = false
+	l.warn = false
+
+	if l.skipLF && len(data) > 0 {
+		l.skipLF = false
+
+		if data[0] == '\n' {
+			return 1, nil, nil
+		}
+	}
 
 	i := bytes.IndexAny(data, "\r\n")
 
 	switch {
 	case i < 0:
 		return l.noBreak(data, atEOF)
-	case i == 0 && afterChunk:
+	case i == 0 && l.pieces > 0:
 		return l.afterChunk(data, atEOF)
 	case data[i] == '\n':
-		return i + 1, data[:i], nil
+		return l.endLine(i+1, data[:i])
 	case i+1 < len(data) && data[i+1] == '\n':
-		return i + 2, data[:i], nil
-	case i+1 == len(data) && !atEOF && len(data) < l.max:
-		// A trailing "\r" may be the first half of "\r\n": wait for more.
-		return 0, nil, nil
-	case i == 0:
+		return l.endLine(i+2, data[:i])
+	default:
+		return l.loneCR(data, i, atEOF)
+	}
+}
+
+// loneCR handles a line ended by a "\r" at data[i] with no "\n" after it yet.
+func (l *lineSplitter) loneCR(data []byte, i int, atEOF bool) (int, []byte, error) {
+	switch {
+	case i == 0 && (len(data) > 1 || atEOF):
 		// An empty "\r"-terminated line carries nothing; skip it.
 		return 1, nil, nil
+	case i+1 < len(data) || atEOF:
+		return l.endLine(i+1, data[:i])
+	case len(data) < l.max:
+		// A trailing "\r" may be the first half of "\r\n": wait for more.
+		return 0, nil, nil
 	default:
-		return i + 1, data[:i], nil
+		// The buffer is full and ends in "\r": take it now, and drop the
+		// "\n" if that is what comes next.
+		l.skipLF = true
+
+		return l.endLine(i+1, data[:i])
 	}
+}
+
+// endLine returns the last piece of a line.
+func (l *lineSplitter) endLine(advance int, token []byte) (int, []byte, error) {
+	l.warn = l.pieces == 1
+	l.pieces = 0
+
+	return advance, token, nil
 }
 
 // afterChunk handles a line break straight after a chunk: the end of a long
 // line that split exactly at a chunk boundary. The line has already been
-// emitted in full, so the break is consumed without emitting an empty line.
+// emitted in full, so the break is consumed without emitting anything.
 func (l *lineSplitter) afterChunk(data []byte, atEOF bool) (int, []byte, error) {
 	if len(data) == 1 && data[0] == '\r' && !atEOF {
-		// Wait to see whether a "\n" follows, still counting as after a chunk.
-		l.chunked = true
-
+		// Wait to see whether a "\n" follows.
 		return 0, nil, nil
 	}
 
-	return breakLen(data), nil, nil
-}
+	l.pieces = 0
 
-// breakLen returns the length of the line break at the start of data: 2 for
-// "\r\n", otherwise 1.
-func breakLen(data []byte) int {
 	if len(data) > 1 && data[0] == '\r' && data[1] == '\n' {
-		return 2
+		return 2, nil, nil
 	}
 
-	return 1
+	return 1, nil, nil
 }
 
 // noBreak handles data that holds no line break yet.
 func (l *lineSplitter) noBreak(data []byte, atEOF bool) (int, []byte, error) {
 	switch {
 	case len(data) >= l.max:
-		l.chunked = true
+		l.warn = l.pieces == 1
+		l.pieces++
 
 		return l.max, data[:l.max], nil
 	case atEOF && len(data) > 0:
-		return len(data), data, nil
+		return l.endLine(len(data), data)
 	default:
 		return 0, nil, nil
 	}

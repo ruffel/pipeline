@@ -111,6 +111,78 @@ func TestOutputWriter_LongLineOnChunkBoundary(t *testing.T) {
 	assert.Equal(t, "end", lines[5])
 }
 
+func TestOutputWriter_LineLengthEdges(t *testing.T) {
+	t.Parallel()
+
+	const mib = 1024 * 1024
+
+	x := func(n int) string { return strings.Repeat("x", n) }
+
+	for name, tc := range map[string]struct {
+		writes   []string
+		sizes    []int
+		warnings int
+	}{
+		"exactly the limit, then LF": {
+			writes: []string{x(mib) + "\n" + "next\n"},
+			sizes:  []int{mib, 4},
+		},
+		"exactly the limit, then EOF": {
+			writes: []string{x(mib)},
+			sizes:  []int{mib},
+		},
+		"exactly the limit, then CRLF split across writes": {
+			writes: []string{x(mib) + "\r", "\nnext\n"},
+			sizes:  []int{mib, 4},
+		},
+		"one byte under the limit, then CRLF": {
+			writes: []string{x(mib-1) + "\r\nnext\n"},
+			sizes:  []int{mib - 1, 4},
+		},
+		"one byte under the limit, then CRLF split across writes": {
+			writes: []string{x(mib-1) + "\r", "\nnext\n"},
+			sizes:  []int{mib - 1, 4},
+		},
+		"one byte under the limit, then a lone CR": {
+			writes: []string{x(mib-1) + "\r", "next\n"},
+			sizes:  []int{mib - 1, 4},
+		},
+		"two adjacent lines of twice the limit": {
+			writes:   []string{x(2*mib) + "\n" + x(2*mib) + "\n"},
+			sizes:    []int{mib, mib, mib, mib},
+			warnings: 2,
+		},
+		"three pieces warn once": {
+			writes:   []string{x(2*mib+1) + "\n"},
+			sizes:    []int{mib, mib, 1},
+			warnings: 1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			obs, w := newOutputWriter(t)
+
+			for _, chunk := range tc.writes {
+				_, err := w.Write([]byte(chunk))
+				require.NoError(t, err)
+			}
+
+			require.NoError(t, w.Close())
+
+			lines, warnings := outputOf(obs)
+
+			sizes := make([]int, len(lines))
+			for i, l := range lines {
+				sizes[i] = len(l)
+			}
+
+			assert.Equal(t, tc.sizes, sizes)
+			assert.Len(t, warnings, tc.warnings)
+		})
+	}
+}
+
 func TestOutputWriter_WarnsOncePerLongLine(t *testing.T) {
 	t.Parallel()
 
