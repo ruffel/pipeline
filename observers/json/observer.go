@@ -275,10 +275,7 @@ func encodeField(v any) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	nested := make([]byte, 0, len(raw)+2)
-	nested = append(nested, '[')
-	nested = append(nested, raw...)
-	nested = append(nested, ']')
+	nested := append(append([]byte{'['}, raw...), ']')
 
 	if !json.Valid(nested) {
 		return nil, errors.New("value nests too deeply to embed")
