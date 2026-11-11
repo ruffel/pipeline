@@ -478,6 +478,28 @@ func TestRun_TimeoutBoundsEachTry(t *testing.T) {
 	assert.Equal(t, runbook.OutcomeFailed, out.res.Outcome)
 }
 
+func TestRun_RunDoesNotStartWhenCheckUsedUpTheTry(t *testing.T) {
+	t.Parallel()
+
+	step := &checkStep{done: func() bool { return false }}
+	slowCheck := &slowChecker{checkStep: step}
+
+	out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", slowCheck).Timeout(10*time.Millisecond)))
+
+	require.ErrorIs(t, out.err, context.DeadlineExceeded)
+	assert.Equal(t, int32(0), step.runCalls.Load(), "Run must not start after the try's time ran out")
+	assert.False(t, out.state.Element("p/a").RunCalled)
+}
+
+// slowChecker's Check outlasts its context, then reports not done.
+type slowChecker struct{ *checkStep }
+
+func (c *slowChecker) Check(ctx context.Context, _ *runbook.StepContext) (bool, error) {
+	<-ctx.Done()
+
+	return false, nil
+}
+
 func TestRun_CheckErrorFailsTheStep(t *testing.T) {
 	t.Parallel()
 
@@ -596,6 +618,10 @@ func TestRun_B5_StepContextIsInertAfterTheStepReturns(t *testing.T) {
 
 			if err := s.Record("k", 1); !errors.Is(err, runbook.ErrStepReturned) {
 				return fmt.Errorf("Record after return: %w", err)
+			}
+
+			if _, err := s.Recorded("p/a", "k", new(int)); !errors.Is(err, runbook.ErrStepReturned) {
+				return fmt.Errorf("Recorded after return: %w", err)
 			}
 
 			return nil
@@ -852,6 +878,25 @@ func TestRun_CancelDuringAStepFailsItAsCancelled(t *testing.T) {
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, runbook.ErrorCancelled, out.state.Element("p/a").Error.Kind)
 	assert.Equal(t, runbook.OutcomeCancelled, out.res.Outcome)
+}
+
+func TestRun_CancelAfterAFailureLeavesTheRunFailed(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	// The cancel arrives as the failure is reported, after it interrupted
+	// nothing.
+	cancelOnFinish := runbook.ObserverFunc(func(_ context.Context, e runbook.Event) {
+		if e.Kind == runbook.EventStepFinished {
+			cancel()
+		}
+	})
+
+	out := runPlan(t, ctx, mustPlan(t, runbook.Effect("a", fail("boom"))), runbook.WithObservers(cancelOnFinish))
+
+	require.ErrorContains(t, out.err, "p/a: boom")
+	assert.Equal(t, runbook.OutcomeFailed, out.res.Outcome)
 }
 
 func TestRun_CancelAfterTheLastStepLeavesTheRunPassed(t *testing.T) {

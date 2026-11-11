@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,11 +61,12 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		observers: cfg.observers,
 		obsCtx:    context.WithoutCancel(ctx),
 		cancel:    cancel,
+		runDone:   runCtx.Done(),
 		prev:      prev,
 		values:    map[string]map[string]json.RawMessage{},
 	}
 
-	return r.run(runCtx, ctx, cfg.labels)
+	return r.run(runCtx, cfg.labels)
 }
 
 // runner holds one attempt's state.
@@ -76,6 +78,12 @@ type runner struct {
 	attempt int
 	cancel  context.CancelCauseFunc
 	prev    *State
+
+	// runDone is closed when the run is cancelled. cut records that a cancel
+	// of the run stopped something: a step it interrupted, or children it
+	// kept from starting.
+	runDone <-chan struct{}
+	cut     atomic.Bool
 
 	// mu serialises journal writes and observer calls, so observers see
 	// events in journal order.
@@ -89,7 +97,7 @@ type runner struct {
 	values   map[string]map[string]json.RawMessage
 }
 
-func (r *runner) run(ctx, parent context.Context, labels L) (*Result, error) {
+func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	start := r.clock.Now()
 	spec := r.plan.Spec()
 
@@ -105,11 +113,11 @@ func (r *runner) run(ctx, parent context.Context, labels L) (*Result, error) {
 
 	outcome := OutcomePassed
 
-	// A cancel that stopped nothing (it came after the last step) leaves the
-	// run passed; groups report a cancel that cut them short as an error.
+	// The run is cancelled only if the cancel stopped something. A cancel that
+	// arrived after the work ended (even after a failure) changes nothing.
 	switch {
 	case err == nil:
-	case parent.Err() != nil:
+	case r.cut.Load():
 		outcome = OutcomeCancelled
 	default:
 		outcome = OutcomeFailed
@@ -175,6 +183,8 @@ func (r *runner) children(ctx context.Context, n *node) error {
 		if ctx.Err() != nil {
 			errs = append(errs, context.Cause(ctx))
 
+			r.markCut()
+
 			break
 		}
 
@@ -219,6 +229,8 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 
 		if !stopped && ctx.Err() != nil {
 			errs = append(errs, context.Cause(ctx))
+
+			r.markCut()
 		}
 		mu.Unlock()
 
@@ -266,9 +278,16 @@ func (r *runner) step(ctx context.Context, n *node) error {
 	}
 
 	sc := &StepContext{r: r, n: n}
-	defer sc.close()
 
 	outcome, reason, err := r.tries(ctx, n, sc)
+
+	// Close before step.finished: writes still in flight land first, and any
+	// later ones are refused, so nothing follows the step's last event.
+	sc.close()
+
+	if err != nil && ctx.Err() != nil {
+		r.markCut()
+	}
 
 	if ferr := r.emit(Event{
 		Kind: EventStepFinished, Path: n.path, Outcome: outcome, Reason: reason,
@@ -338,6 +357,12 @@ func (r *runner) try(ctx context.Context, n *node, sc *StepContext, ranOnce *boo
 		}
 	}
 
+	// Check may have used up the try's time, or the run may have been
+	// cancelled while it ran: never start Run then.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
 	if !*ranOnce {
 		if err := r.emit(Event{Kind: EventStepRunning, Path: n.path}); err != nil {
 			return false, err
@@ -379,7 +404,9 @@ func (r *runner) emitLocked(e Event) error {
 
 	r.deliver(stored)
 
-	return nil
+	// Delivering may have written warnings about panicking observers; if one
+	// of those writes failed, the journal is broken and the caller must stop.
+	return r.fatal
 }
 
 // deliver hands e to every observer, dropping any that panic and recording
@@ -417,6 +444,16 @@ func observe(ctx context.Context, o Observer, e Event) any {
 	}()
 
 	return recovered
+}
+
+// markCut records that a cancel of the run stopped something. A cancel of
+// one group's children (CancelOnError) is that group's failure, not the run's.
+func (r *runner) markCut() {
+	select {
+	case <-r.runDone:
+		r.cut.Store(true)
+	default:
+	}
 }
 
 func (r *runner) fatalErr() error {

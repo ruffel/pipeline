@@ -106,7 +106,7 @@ func (j *Journal) append(e Event) (Event, error) {
 
 	stored, err := decodeEvent(line)
 	if err != nil {
-		return Event{}, fmt.Errorf("runbook: decode %s event: %w", e.Kind, err)
+		return Event{}, fmt.Errorf("runbook: journal: decode %s event: %w", e.Kind, err)
 	}
 
 	if err := j.store.append(line, e.Kind.Durable()); err != nil {

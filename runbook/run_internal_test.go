@@ -70,6 +70,50 @@ func TestRun_JournalFailureStopsTheRun(t *testing.T) {
 	assert.Len(t, events, 3)
 }
 
+// A failure to write the warning about a panicking observer is a journal
+// failure like any other: the run must not report success, and must not start
+// a step's Run.
+func TestRun_FailedObserverWarningStopsTheRun(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		panicOn EventKind
+		stored  int
+	}{
+		"on run.finished":  {panicOn: EventRunFinished, stored: 5},
+		"on step.running":  {panicOn: EventStepRunning, stored: 3},
+		"on step.finished": {panicOn: EventStepFinished, stored: 4},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ran := false
+
+			plan, err := NewPlan("p", Effect("a", StepFunc(func(context.Context, *StepContext) error {
+				ran = true
+
+				return nil
+			})))
+			require.NoError(t, err)
+
+			bad := ObserverFunc(func(_ context.Context, e Event) {
+				if e.Kind == tc.panicOn {
+					panic("renderer bug")
+				}
+			})
+
+			res, err := Run(t.Context(), plan, &Journal{store: &failingStore{n: tc.stored}}, WithObservers(bad))
+
+			require.ErrorContains(t, err, "runbook: journal: write message event: disk full")
+			assert.Equal(t, OutcomeFailed, res.Outcome)
+
+			if tc.panicOn == EventStepRunning {
+				assert.False(t, ran, "Run must not start after the journal failed")
+			}
+		})
+	}
+}
+
 func TestRun_JournalFailureAtTheStartReturnsAtOnce(t *testing.T) {
 	t.Parallel()
 

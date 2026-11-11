@@ -141,7 +141,11 @@ func (s *StepContext) Record(key string, value any) error {
 // any step, in this attempt or an earlier one. It reports whether there was
 // one.
 func (s *StepContext) Recorded(path, key string, v any) (bool, error) {
-	if s.r == nil {
+	s.mu.Lock()
+	returned := s.closed || s.r == nil
+	s.mu.Unlock()
+
+	if returned {
 		return false, ErrStepReturned
 	}
 
