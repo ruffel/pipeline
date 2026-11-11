@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -255,6 +256,58 @@ func TestObserver_OutputFields(t *testing.T) {
 	m := parseLine(t, buf.String())
 	assert.Equal(t, "stderr", m["stream"])
 	assert.Equal(t, "error: not found", m["line"])
+}
+
+// -------------------------------------------------------------------------
+// Values that can't be encoded
+// -------------------------------------------------------------------------
+
+func TestObserver_UnencodableValueKeepsLogging(t *testing.T) {
+	t.Parallel()
+
+	for name, bad := range map[string]any{
+		"func": map[string]any{"f": func() {}},
+		"nan":  map[string]any{"ratio": math.NaN()},
+		"chan": make(chan int),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+
+			obs := jsonobs.New(&buf)
+
+			p := pipeline.NewPipeline("p", pipeline.NewStage("s",
+				pipeline.NewStep("a", func(ctx context.Context) error {
+					pipeline.EmitCustom(ctx, "x.bad", bad)
+
+					return nil
+				}),
+				pipeline.NewStep("b", func(_ context.Context) error { return nil }),
+			))
+
+			require.NoError(t, pipeline.NewExecutor(obs).Run(t.Context(), p))
+			require.NoError(t, obs.Err(), "an unencodable value is not a write failure")
+
+			lines := nonEmptyLines(buf.String())
+			assert.Equal(t, []string{
+				"PipelineStarted",
+				"StageStarted",
+				"StepStarted",
+				"Custom",
+				"StepPassed",
+				"StepStarted",
+				"StepPassed",
+				"StagePassed",
+				"PipelinePassed",
+			}, parseTypes(t, lines))
+
+			custom := parseLine(t, lines[3])
+			assert.Equal(t, "x.bad", custom["eventType"], "fields that encode are kept")
+			assert.NotContains(t, custom, "data")
+			assert.Contains(t, custom["marshalError"], "data: json: unsupported")
+		})
+	}
 }
 
 // -------------------------------------------------------------------------

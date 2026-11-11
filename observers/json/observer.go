@@ -8,13 +8,20 @@
 //
 // Error fields are serialised as strings (Go's json.Marshal produces "{}" for
 // the error interface). The observer handles this transparently.
+//
+// A value that can't be encoded (a func, a channel, NaN) is dropped from its
+// line, and a "marshalError" field names it and gives the reason. The rest of
+// the line, and every later line, is still written.
 package json
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/ruffel/pipeline"
@@ -24,8 +31,9 @@ import (
 //
 // If a write fails, the observer records the first error and stops writing.
 // Call [Observer.Err] after the pipeline completes to check for write failures.
+// A value that can't be encoded is not a write failure (see the package doc).
 type Observer struct {
-	enc *json.Encoder
+	w   io.Writer
 	err error
 
 	// runID carries the current event's run identifier, read from the event
@@ -43,7 +51,7 @@ type Observer struct {
 // New creates a JSON observer that writes to w.
 func New(w io.Writer) *Observer {
 	return &Observer{
-		enc:          json.NewEncoder(w),
+		w:            w,
 		starts:       make(map[pipeline.Location]time.Time),
 		descriptions: make(map[pipeline.Location]string),
 	}
@@ -189,7 +197,8 @@ func (e envelope) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// Err returns the first write error encountered, or nil.
+// Err returns the first write error encountered, or nil. Values that could not
+// be encoded are reported in the output instead, and don't set Err.
 func (o *Observer) Err() error { return o.err }
 
 func (o *Observer) write(typ string, loc pipeline.Location, ts time.Time, dur time.Duration, extra fields) {
@@ -197,7 +206,7 @@ func (o *Observer) write(typ string, loc pipeline.Location, ts time.Time, dur ti
 		return
 	}
 
-	o.err = o.enc.Encode(envelope{
+	env := envelope{
 		Type:       typ,
 		RunID:      o.runID,
 		Pipeline:   loc.Pipeline,
@@ -206,7 +215,44 @@ func (o *Observer) write(typ string, loc pipeline.Location, ts time.Time, dur ti
 		Timestamp:  ts.Format(time.RFC3339Nano),
 		DurationMs: dur.Milliseconds(),
 		Extra:      extra,
-	})
+	}
+
+	line, err := json.Marshal(env)
+	if err != nil {
+		// Only Extra can fail to encode. Drop what fails and say so, rather
+		// than losing this line and every line after it.
+		env.Extra = encodable(extra)
+
+		if line, err = json.Marshal(env); err != nil {
+			o.err = fmt.Errorf("json observer: encode %s event: %w", typ, err)
+
+			return
+		}
+	}
+
+	_, o.err = o.w.Write(append(line, '\n'))
+}
+
+// encodable returns a copy of extra without the values that can't be encoded
+// as JSON, plus a "marshalError" field naming each one dropped and why.
+func encodable(extra fields) fields {
+	out := make(fields, len(extra)+1)
+
+	var problems []string
+
+	for _, k := range slices.Sorted(maps.Keys(extra)) {
+		if _, err := json.Marshal(extra[k]); err != nil {
+			problems = append(problems, k+": "+err.Error())
+
+			continue
+		}
+
+		out[k] = extra[k]
+	}
+
+	out["marshalError"] = strings.Join(problems, "; ")
+
+	return out
 }
 
 // captureDescriptions records the stage/step descriptions declared in the
