@@ -85,6 +85,23 @@ const (
 	ReasonSettled Reason = "settled"
 	// ReasonNotReached means the run ended before the element started.
 	ReasonNotReached Reason = "not-reached"
+	// ReasonGroupSkipped means a step in the element's group returned
+	// ErrSkipGroup before the element started.
+	ReasonGroupSkipped Reason = "group-skipped"
+	// ReasonRunSkipped means a step returned ErrSkipRun before the element
+	// started.
+	ReasonRunSkipped Reason = "run-skipped"
+)
+
+// Signal is flow control a step's Run returned: [ErrSkipGroup] or
+// [ErrSkipRun]. It is recorded on the step's step.finished event, so a
+// resumed run can apply it again without running the step.
+type Signal string
+
+// The signals.
+const (
+	SignalSkipGroup Signal = "skip-group"
+	SignalSkipRun   Signal = "skip-run"
 )
 
 // ErrorKind classifies an error recorded in an [Event].
@@ -146,6 +163,7 @@ type Event struct {
 	// *.finished and step.retry.
 	Outcome    Outcome    `json:"outcome,omitempty"`
 	Reason     Reason     `json:"reason,omitempty"`
+	Signal     Signal     `json:"signal,omitempty"`
 	Error      *ErrorInfo `json:"error,omitempty"`
 	DurationMs int64      `json:"ms,omitempty"`
 	Try        int        `json:"try,omitempty"`
