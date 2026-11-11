@@ -115,16 +115,16 @@ func TestPlainObserver_Rendering(t *testing.T) {
 
 	assert.Equal(t, `▶ upgrade
   ▶ prechecks — Read-only checks
-      │ probing (2/3)
+      │ prechecks/ring: probing (2/3)
     ✓ ring (1.8s)
   ✓ prechecks (1.9s)
   ⊘ backup — done
   · apply — Install the packages
-    │ E: dpkg was interrupted
-    │ node7: failed — timeout
-    │ [WARN] careful
-    │ [deploy.ready] {"port":443}
-    │ try 1 failed — flaky, retrying
+    │ apply: E: dpkg was interrupted
+    │ apply: node7 failed — timeout
+    │ apply: [WARN] careful
+    │ apply: [deploy.ready] {"port":443}
+    │ apply: try 1 failed — flaky, retrying
   ✗ apply — exit status 1 (400ms)
 ✗ upgrade failed — upgrade/apply: exit status 1 (2.3s)
 `, buf.String())
@@ -148,7 +148,32 @@ func TestPlainObserver_ARealRun(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	assert.Equal(t, "▶ p", lines[0])
 	assert.Equal(t, "  ▶ g", lines[1])
-	assert.Equal(t, "      │ hello", lines[2])
+	assert.Equal(t, "      │ g/a: hello", lines[2])
 	assert.True(t, strings.HasPrefix(lines[3], "    ✓ a"))
 	assert.True(t, strings.HasPrefix(lines[len(lines)-1], "✓ p passed"))
+}
+
+// Steps in a parallel group interleave their output; each line names its
+// step, even when steps in different groups share a name.
+func TestPlainObserver_AttributesInterleavedOutput(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := runbook.NewPlainObserver(&buf)
+
+	for _, e := range []runbook.Event{
+		{Kind: runbook.EventRunStarted, Path: "upgrade"},
+		{Kind: runbook.EventOutput, Path: "upgrade/nodes/node1/stop", Line: "stopping"},
+		{Kind: runbook.EventOutput, Path: "upgrade/nodes/node2/stop", Line: "stopping"},
+		{Kind: runbook.EventMessage, Path: "upgrade/nodes/node1/stop", Level: runbook.LevelInfo, Message: "done"},
+	} {
+		obs.OnEvent(t.Context(), e)
+	}
+
+	assert.Equal(t, `▶ upgrade
+        │ nodes/node1/stop: stopping
+        │ nodes/node2/stop: stopping
+        │ nodes/node1/stop: [INFO] done
+`, buf.String())
 }

@@ -56,16 +56,18 @@ func (o *JSONObserver) Err() error {
 //	    ✓ ring (1.8s)
 //	  ✓ prechecks (1.9s)
 //	  ⊘ backup — done
+//	    │ apply: E: dpkg was interrupted
 //	  ✗ apply — exit status 1 (0.4s)
-//	    │ E: dpkg was interrupted
 //	✗ upgrade failed (2.3s)
 //
 // Groups and the run show when they start and finish, steps when they
 // finish. Output, messages, progress, items, custom events and retries are
-// shown under their step, marked │. Write errors are ignored.
+// marked │ and named by their step's path below the plan, since steps in a
+// parallel group interleave. Write errors are ignored.
 type PlainObserver struct {
 	mu           sync.Mutex
 	w            io.Writer
+	root         string
 	descriptions map[string]string
 }
 
@@ -83,6 +85,7 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 
 	switch e.Kind {
 	case EventRunStarted:
+		o.root = e.Path
 		o.capture(e.Plan)
 		o.printf("▶ %s%s\n", e.Path, o.description(e.Path))
 	case EventRunFinished:
@@ -96,24 +99,36 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 	case EventGroupFinished, EventStepFinished:
 		o.printf("%s%s %s%s%s%s\n", indent, mark(e.Outcome), name(e.Path), reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
 	case EventOutput:
-		o.printf("%s  │ %s\n", indent, e.Line)
+		o.detail(indent, e.Path, e.Line)
 	case EventMessage:
-		o.printf("%s  │ [%s] %s\n", indent, strings.ToUpper(string(e.Level)), e.Message)
+		o.detail(indent, e.Path, fmt.Sprintf("[%s] %s", strings.ToUpper(string(e.Level)), e.Message))
 	case EventProgress:
 		if e.Total > 0 {
-			o.printf("%s  │ %s (%d/%d)\n", indent, e.Message, e.Current, e.Total)
+			o.detail(indent, e.Path, fmt.Sprintf("%s (%d/%d)", e.Message, e.Current, e.Total))
 		} else {
-			o.printf("%s  │ %s\n", indent, e.Message)
+			o.detail(indent, e.Path, e.Message)
 		}
 	case EventItem:
-		o.printf("%s  │ %s: %s%s\n", indent, e.Item, e.Status, dash(e.Message))
+		o.detail(indent, e.Path, fmt.Sprintf("%s %s%s", e.Item, e.Status, dash(e.Message)))
 	case EventCustom:
-		o.printf("%s  │ [%s] %s\n", indent, e.Type, e.Data)
+		o.detail(indent, e.Path, fmt.Sprintf("[%s] %s", e.Type, e.Data))
 	case EventStepRetry:
-		o.printf("%s  │ try %d failed%s, retrying\n", indent, e.Try, errorText(e.Error))
+		o.detail(indent, e.Path, fmt.Sprintf("try %d failed%s, retrying", e.Try, errorText(e.Error)))
 	case EventStepRunning, EventValue:
 		// Bookkeeping for resume and rollback; nothing for a reader.
 	}
+}
+
+// detail writes a line under a step, named by the step's path below the plan.
+func (o *PlainObserver) detail(indent, path, text string) {
+	step := strings.TrimPrefix(path, o.root+"/")
+	if step == "" || step == o.root {
+		o.printf("%s  │ %s\n", indent, text)
+
+		return
+	}
+
+	o.printf("%s  │ %s: %s\n", indent, step, text)
 }
 
 func (o *PlainObserver) printf(format string, args ...any) {
