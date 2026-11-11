@@ -65,6 +65,9 @@ type ElementState struct {
 	// RunCalled means some attempt called the step's Run, so it may have
 	// changed the system.
 	RunCalled bool
+	// Signal is the flow control the step's Run returned when it last
+	// finished, if any.
+	Signal Signal
 }
 
 // ItemState is the latest result recorded for one target of a step.
@@ -179,6 +182,12 @@ func (s *State) apply(e Event) {
 func (s *State) finish(e Event) {
 	el := s.elements[e.Path]
 	el.Reason, el.Error, el.Run = e.Reason, e.Error, e.Run
+
+	// A signal belongs to the last time Run actually finished: a passed or
+	// failed outcome sets or clears it, and a skip leaves it for resume.
+	if e.Outcome == OutcomePassed || e.Outcome == OutcomeFailed {
+		el.Signal = e.Signal
+	}
 
 	switch e.Outcome {
 	case OutcomePassed:

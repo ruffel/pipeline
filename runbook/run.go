@@ -86,6 +86,9 @@ type runner struct {
 	runDone <-chan struct{}
 	cut     atomic.Bool
 
+	// skipRun is set when a step returns ErrSkipRun: no element starts after.
+	skipRun atomic.Bool
+
 	// mu serialises journal writes and observer calls, so observers see
 	// events in journal order.
 	mu        sync.Mutex
@@ -183,7 +186,14 @@ func (r *runner) children(ctx context.Context, n *node) error {
 
 	var errs []error
 
-	for _, c := range n.children {
+children:
+	for i, c := range n.children {
+		if r.skipRun.Load() {
+			errs = append(errs, r.skipRest(n.children[i:], ReasonRunSkipped))
+
+			break
+		}
+
 		if ctx.Err() != nil {
 			errs = append(errs, context.Cause(ctx))
 
@@ -192,11 +202,27 @@ func (r *runner) children(ctx context.Context, n *node) error {
 			break
 		}
 
-		if err := r.element(ctx, c); err != nil {
+		err := r.element(ctx, c)
+
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrSkipGroup):
+			errs = append(errs, r.skipRest(n.children[i+1:], ReasonGroupSkipped))
+
+			break children
+		case errors.Is(err, ErrSkipRun):
+			// The next iteration records the rest as skipped.
+		default:
 			errs = append(errs, err)
 
 			if n.failure != FailureContinue {
-				break
+				// A run-wide skip signalled inside the failed child (after an
+				// earlier failure there) still applies to the rest.
+				if r.skipRun.Load() {
+					errs = append(errs, r.skipRest(n.children[i+1:], ReasonRunSkipped))
+				}
+
+				break children
 			}
 		}
 	}
@@ -209,18 +235,18 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 	defer cancel()
 
 	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		errs    []error
-		stopped bool
-		slots   chan struct{}
+		wg    sync.WaitGroup
+		g     parallelGroup
+		slots chan struct{}
 	)
 
 	if n.limit > 0 {
 		slots = make(chan struct{}, n.limit)
 	}
 
-	for _, c := range n.children {
+	started := len(n.children)
+
+	for i, c := range n.children {
 		if slots != nil {
 			select {
 			case slots <- struct{}{}:
@@ -228,17 +254,9 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 			}
 		}
 
-		mu.Lock()
-		stop := stopped || ctx.Err() != nil
+		if g.admit(ctx, r) {
+			started = i
 
-		if !stopped && ctx.Err() != nil {
-			errs = append(errs, context.Cause(ctx))
-
-			r.markCut()
-		}
-		mu.Unlock()
-
-		if stop {
 			break
 		}
 
@@ -249,28 +267,102 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 				}
 			}()
 
-			if err := r.element(gctx, c); err != nil {
-				mu.Lock()
-				defer mu.Unlock()
-
-				errs = append(errs, err)
-
-				switch n.failure {
-				case FailureStop:
-					stopped = true
-				case FailureCancel:
-					stopped = true
-
-					cancel()
-				case FailureContinue:
-				}
-			}
+			g.finished(r.element(gctx, c), n.failure, cancel)
 		})
 	}
 
 	wg.Wait()
 
-	return errors.Join(errs...)
+	// Children never started are skipped if any child signalled, including a
+	// signal that came after a failure had already stopped admission.
+	if reason := g.skipReason(r); reason != "" && started < len(n.children) {
+		g.add(r.skipRest(n.children[started:], reason))
+	}
+
+	return g.err()
+}
+
+// parallelGroup is the state a parallel group's children share.
+type parallelGroup struct {
+	mu      sync.Mutex
+	errs    []error
+	stopped bool   // a child failed: start nothing new
+	skip    Reason // a child signalled: record the rest as skipped
+}
+
+// admit reports whether the next child must not start. A cancel that stops
+// it is recorded.
+func (g *parallelGroup) admit(ctx context.Context, r *runner) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	skip := g.skip != "" || r.skipRun.Load()
+
+	if !g.stopped && !skip && ctx.Err() != nil {
+		g.errs = append(g.errs, context.Cause(ctx))
+
+		r.markCut()
+	}
+
+	return g.stopped || skip || ctx.Err() != nil
+}
+
+// skipReason returns why children that never started are skipped, if a child
+// of this group, or any step in the run, signalled.
+func (g *parallelGroup) skipReason(r *runner) Reason {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if r.skipRun.Load() {
+		return ReasonRunSkipped
+	}
+
+	return g.skip
+}
+
+// finished records how a child ended, applying the group's failure policy.
+func (g *parallelGroup) finished(err error, policy FailurePolicy, cancel context.CancelFunc) {
+	if err == nil {
+		return
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	switch {
+	case errors.Is(err, ErrSkipRun):
+		g.skip = ReasonRunSkipped
+	case errors.Is(err, ErrSkipGroup):
+		if g.skip == "" {
+			g.skip = ReasonGroupSkipped
+		}
+	default:
+		g.errs = append(g.errs, err)
+
+		switch policy {
+		case FailureStop:
+			g.stopped = true
+		case FailureCancel:
+			g.stopped = true
+
+			cancel()
+		case FailureContinue:
+		}
+	}
+}
+
+func (g *parallelGroup) add(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.errs = append(g.errs, err)
+}
+
+func (g *parallelGroup) err() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	return errors.Join(g.errs...)
 }
 
 // step runs a step's tries: Check, then Run if the work isn't done.
@@ -283,7 +375,12 @@ func (r *runner) step(ctx context.Context, n *node) error {
 
 	sc := &StepContext{r: r, n: n}
 
-	outcome, reason, err := r.tries(ctx, n, sc)
+	outcome, reason, signal, err := r.tries(ctx, n, sc)
+
+	if signal == SignalSkipRun {
+		// Set at once, so parallel siblings start nothing new.
+		r.skipRun.Store(true)
+	}
 
 	// Close before step.finished: writes still in flight land first, and any
 	// later ones are refused, so nothing follows the step's last event.
@@ -294,43 +391,75 @@ func (r *runner) step(ctx context.Context, n *node) error {
 	}
 
 	if ferr := r.emit(Event{
-		Kind: EventStepFinished, Path: n.path, Outcome: outcome, Reason: reason,
+		Kind: EventStepFinished, Path: n.path, Outcome: outcome, Reason: reason, Signal: signal,
 		Error: errorInfo(err), DurationMs: r.since(start),
 	}); ferr != nil {
 		return ferr
 	}
 
-	if err != nil {
+	switch {
+	case err != nil:
 		return &StepError{Path: n.path, Err: err}
+	case signal == SignalSkipGroup:
+		return ErrSkipGroup
+	case signal == SignalSkipRun:
+		return ErrSkipRun
+	default:
+		return nil
+	}
+}
+
+// skipRest records elements that never started as skipped, with reason:
+// each group after its descendants, in plan order.
+func (r *runner) skipRest(elems []*node, reason Reason) error {
+	for _, n := range elems {
+		if err := r.skipRest(n.children, reason); err != nil {
+			return err
+		}
+
+		kind := EventStepFinished
+		if n.kind == KindGroup {
+			kind = EventGroupFinished
+		}
+
+		if err := r.emit(Event{Kind: kind, Path: n.path, Outcome: OutcomeSkipped, Reason: reason}); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (r *runner) tries(ctx context.Context, n *node, sc *StepContext) (Outcome, Reason, error) {
+// tries runs the step until it passes, is found done, signals, or runs out
+// of tries. A signal from Run passes the step.
+func (r *runner) tries(ctx context.Context, n *node, sc *StepContext) (Outcome, Reason, Signal, error) {
 	ranOnce := false
 
 	for try := 1; ; try++ {
 		done, err := r.try(ctx, n, sc, &ranOnce)
 
+		if signal := signalOf(err); signal != "" {
+			return OutcomePassed, "", signal, nil
+		}
+
 		switch {
 		case err == nil && done && ranOnce:
-			return OutcomePassed, ReasonRecovered, nil
+			return OutcomePassed, ReasonRecovered, "", nil
 		case err == nil && done:
-			return OutcomeSkipped, ReasonDone, nil
+			return OutcomeSkipped, ReasonDone, "", nil
 		case err == nil:
-			return OutcomePassed, "", nil
+			return OutcomePassed, "", "", nil
 		case try >= n.tries || ctx.Err() != nil || r.fatalErr() != nil:
-			return OutcomeFailed, "", err
+			return OutcomeFailed, "", "", err
 		}
 
 		if eerr := r.emit(Event{Kind: EventStepRetry, Path: n.path, Try: try, Error: errorInfo(err)}); eerr != nil {
-			return OutcomeFailed, "", eerr
+			return OutcomeFailed, "", "", eerr
 		}
 
 		select {
 		case <-ctx.Done():
-			return OutcomeFailed, "", errors.Join(err, ctx.Err())
+			return OutcomeFailed, "", "", errors.Join(err, ctx.Err())
 		case <-r.clock.After(n.backoff):
 		}
 	}
@@ -356,6 +485,12 @@ func (r *runner) try(ctx context.Context, n *node, sc *StepContext, ranOnce *boo
 
 			return err
 		})
+
+		if signalOf(err) != "" {
+			// Only Run may end its group or the run; from Check it is a bug.
+			return false, fmt.Errorf("runbook: Check returned %q; only Run may skip", err.Error())
+		}
+
 		if err != nil || done {
 			return done, err
 		}

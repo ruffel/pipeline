@@ -14,7 +14,31 @@ var (
 	// ErrStepReturned is returned by [StepContext] methods called after the
 	// step has returned, for example from a goroutine it left running.
 	ErrStepReturned = errors.New("runbook: the step has returned")
+
+	// ErrSkipGroup, returned by a step's Run, ends the step's group early.
+	// The step passes, its signal is recorded, and the group's children that
+	// have not started are recorded as skipped. Siblings already running in
+	// a parallel group finish. The group passes unless something failed.
+	ErrSkipGroup = errors.New("runbook: skip the rest of the group")
+
+	// ErrSkipRun, returned by a step's Run, ends the run early, as passed.
+	// The step passes, its signal is recorded, and every element that has
+	// not started is recorded as skipped. Steps already running finish.
+	ErrSkipRun = errors.New("runbook: skip the rest of the run")
 )
+
+// signalOf returns the signal err carries, if it is [ErrSkipGroup] or
+// [ErrSkipRun].
+func signalOf(err error) Signal {
+	switch {
+	case errors.Is(err, ErrSkipRun):
+		return SignalSkipRun
+	case errors.Is(err, ErrSkipGroup):
+		return SignalSkipGroup
+	default:
+		return ""
+	}
+}
 
 // PanicError is a panic recovered from a step's Check or Run.
 type PanicError struct {
