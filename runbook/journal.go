@@ -101,16 +101,16 @@ func (j *Journal) append(e Event) (Event, error) {
 
 	line, err := json.Marshal(e)
 	if err != nil {
-		return Event{}, fmt.Errorf("runbook: encode %s event: %w", e.Kind, err)
+		return Event{}, fmt.Errorf("runbook: journal: encode %s event: %w", e.Kind, err)
 	}
 
 	stored, err := decodeEvent(line)
 	if err != nil {
-		return Event{}, fmt.Errorf("runbook: decode %s event: %w", e.Kind, err)
+		return Event{}, fmt.Errorf("runbook: journal: decode %s event: %w", e.Kind, err)
 	}
 
 	if err := j.store.append(line, e.Kind.Durable()); err != nil {
-		return Event{}, fmt.Errorf("runbook: write %s event: %w", e.Kind, err)
+		return Event{}, fmt.Errorf("runbook: journal: write %s event: %w", e.Kind, err)
 	}
 
 	j.seq = e.Seq
