@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ruffel/pipeline/internal/linesplit"
 	"github.com/stretchr/testify/assert"
@@ -70,6 +71,9 @@ func TestWriter_MatchesTheScanner(t *testing.T) {
 		"three pieces":                   x(2*limit+1) + "\n",
 		"long line ending in CRLF":       x(limit) + "\r\n" + x(limit*3) + "\r\nend\n",
 		"long line without a line break": x(limit*3 + 5),
+		"2-byte character at the cut":    x(limit-1) + "é" + x(limit) + "\n",
+		"4-byte character at the cut":    x(limit-2) + "😀" + "tail\n",
+		"multibyte characters only":      strings.Repeat("é", limit*2) + "\n",
 	}
 
 	for name, input := range inputs {
@@ -100,6 +104,38 @@ func TestWriter_MarksLongLines(t *testing.T) {
 		{Text: "x", Continued: true},
 		{Text: "short"},
 	}, lines)
+}
+
+func TestWriter_KeepsUTF8CharactersWhole(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		input string
+		want  []string
+	}{
+		"2-byte":  {x(limit-1) + "é\n", []string{x(limit - 1), "é"}},
+		"3-byte":  {x(limit-2) + "€\n", []string{x(limit - 2), "€"}},
+		"4-byte":  {x(limit-3) + "😀\n", []string{x(limit - 3), "😀"}},
+		"fits":    {x(limit-2) + "é\n", []string{x(limit-2) + "é"}},
+		"invalid": {x(limit-1) + "\xff\xff\n", []string{x(limit-1) + "\xff", "\xff"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			lines := written(tc.input, func() int { return 1000 })
+			texts := make([]string, 0, len(lines))
+
+			for _, l := range lines {
+				texts = append(texts, l.Text)
+
+				if name != "invalid" {
+					assert.True(t, utf8.ValidString(l.Text), "piece %q splits a character", l.Text)
+				}
+			}
+
+			assert.Equal(t, tc.want, texts)
+		})
+	}
 }
 
 func TestWriter_IsSafeForConcurrentWrites(t *testing.T) {

@@ -7,6 +7,7 @@ package linesplit
 import (
 	"bytes"
 	"sync"
+	"unicode/utf8"
 )
 
 // Splitter is a [bufio.SplitFunc] with state. Use its Split method with a
@@ -134,12 +135,35 @@ func (l *Splitter) noBreak(data []byte, atEOF bool) (int, []byte, error) {
 		l.cont = l.pieces > 0
 		l.pieces++
 
-		return l.max, data[:l.max], nil
+		cut := runeBoundary(data[:l.max])
+
+		return cut, data[:cut], nil
 	case atEOF && len(data) > 0:
 		return l.endLine(len(data), data)
 	default:
 		return 0, nil, nil
 	}
+}
+
+// runeBoundary returns where to cut a full piece so that no UTF-8 character
+// is split across two pieces: len(piece), or the start of an incomplete
+// character at its end. Bytes that aren't valid UTF-8 are cut anywhere.
+func runeBoundary(piece []byte) int {
+	n := len(piece)
+
+	for i := n - 1; i >= 0 && i >= n-utf8.UTFMax; i-- {
+		if !utf8.RuneStart(piece[i]) {
+			continue
+		}
+
+		if utf8.FullRune(piece[i:]) || i == 0 {
+			return n
+		}
+
+		return i
+	}
+
+	return n
 }
 
 // Line is one line, or one piece of a long line, from a [Writer].
@@ -168,15 +192,24 @@ func NewWriter(maxLine int, emit func(Line)) *Writer {
 	return &Writer{s: New(maxLine), max: maxLine, emit: emit}
 }
 
-// Write implements [io.Writer]. It never fails.
+// Write implements [io.Writer]. It never fails. It takes p a window of at
+// most max bytes at a time, so however large p is, the Writer holds no more
+// than about two windows.
 func (w *Writer) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	w.buf = append(w.buf, p...)
-	w.drain(false)
+	n := len(p)
 
-	return len(p), nil
+	for len(p) > 0 {
+		take := min(len(p), w.max)
+		w.buf = append(w.buf, p[:take]...)
+		p = p[take:]
+
+		w.drain(false)
+	}
+
+	return n, nil
 }
 
 // Flush emits what is left, as a final line.
@@ -208,7 +241,11 @@ func (w *Writer) drain(atEOF bool) {
 		}
 	}
 
-	if len(w.buf) == 0 {
+	switch {
+	case len(w.buf) == 0:
 		w.buf = nil
+	case cap(w.buf) > 4*w.max:
+		// Don't keep a large backing array alive for a short tail.
+		w.buf = append([]byte(nil), w.buf...)
 	}
 }
