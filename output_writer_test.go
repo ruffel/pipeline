@@ -2,6 +2,10 @@ package pipeline_test
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/ruffel/pipeline"
@@ -62,38 +66,228 @@ func TestOutputWriter_ContextCancellation(t *testing.T) {
 	_ = w.Close()
 }
 
-func TestOutputWriter_LongLineEmitsWarning(t *testing.T) {
+func TestOutputWriter_LongLineIsSplitNotFatal(t *testing.T) {
 	t.Parallel()
 
-	obs := &recordingObserver{}
-	em := pipeline.NewEmitter(obs.OnEvent, pipeline.Location{
-		Pipeline: "p",
-		Stage:    "s",
-		Step:     "step",
-	})
+	obs, w := newOutputWriter(t)
 
-	ctx := pipeline.WithEmitter(t.Context(), em)
-	w := pipeline.OutputWriter(ctx, pipeline.Stdout)
+	long := strings.Repeat("x", 2*1024*1024+10)
 
-	// Write a line that exceeds scannerMaxLine (1 MiB).
-	longLine := make([]byte, 1024*1024+2)
-	for i := range longLine {
-		longLine[i] = 'x'
+	_, err := w.Write([]byte("before\n" + long + "\n"))
+	require.NoError(t, err)
+
+	_, err = w.Write([]byte("after\n"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	lines, warnings := outputOf(obs)
+
+	require.Len(t, lines, 5)
+	assert.Equal(t, "before", lines[0])
+	assert.Equal(t, long, lines[1]+lines[2]+lines[3])
+	assert.Len(t, lines[1], 1024*1024)
+	assert.Equal(t, "after", lines[4])
+	assert.Len(t, warnings, 1, "one warning per over-long line")
+}
+
+func TestOutputWriter_LongLineOnChunkBoundary(t *testing.T) {
+	t.Parallel()
+
+	obs, w := newOutputWriter(t)
+
+	long := strings.Repeat("x", 2*1024*1024)
+
+	// The second line's CRLF arrives split across writes.
+	for _, chunk := range []string{long + "\nafter\n", long + "\r", "\nend\n"} {
+		_, err := w.Write([]byte(chunk))
+		require.NoError(t, err)
 	}
 
-	longLine[len(longLine)-1] = '\n'
+	require.NoError(t, w.Close())
 
-	_, _ = w.Write(longLine)
-	_ = w.Close()
+	lines, _ := outputOf(obs)
+	require.Len(t, lines, 6, "no empty line after the last chunk")
+	assert.Equal(t, "after", lines[2])
+	assert.Equal(t, "end", lines[5])
+}
 
-	// Should have emitted a warning about the interrupted stream.
-	var gotWarning bool
+func TestOutputWriter_LineLengthEdges(t *testing.T) {
+	t.Parallel()
+
+	const mib = 1024 * 1024
+
+	x := func(n int) string { return strings.Repeat("x", n) }
+
+	for name, tc := range map[string]struct {
+		writes   []string
+		sizes    []int
+		warnings int
+	}{
+		"exactly the limit, then LF": {
+			writes: []string{x(mib) + "\n" + "next\n"},
+			sizes:  []int{mib, 4},
+		},
+		"exactly the limit, then EOF": {
+			writes: []string{x(mib)},
+			sizes:  []int{mib},
+		},
+		"exactly the limit, then CRLF split across writes": {
+			writes: []string{x(mib) + "\r", "\nnext\n"},
+			sizes:  []int{mib, 4},
+		},
+		"one byte under the limit, then CRLF": {
+			writes: []string{x(mib-1) + "\r\nnext\n"},
+			sizes:  []int{mib - 1, 4},
+		},
+		"one byte under the limit, then CRLF split across writes": {
+			writes: []string{x(mib-1) + "\r", "\nnext\n"},
+			sizes:  []int{mib - 1, 4},
+		},
+		"one byte under the limit, then a lone CR": {
+			writes: []string{x(mib-1) + "\r", "next\n"},
+			sizes:  []int{mib - 1, 4},
+		},
+		"two adjacent lines of twice the limit": {
+			writes:   []string{x(2*mib) + "\n" + x(2*mib) + "\n"},
+			sizes:    []int{mib, mib, mib, mib},
+			warnings: 2,
+		},
+		"three pieces warn once": {
+			writes:   []string{x(2*mib+1) + "\n"},
+			sizes:    []int{mib, mib, 1},
+			warnings: 1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			obs, w := newOutputWriter(t)
+
+			for _, chunk := range tc.writes {
+				_, err := w.Write([]byte(chunk))
+				require.NoError(t, err)
+			}
+
+			require.NoError(t, w.Close())
+
+			lines, warnings := outputOf(obs)
+
+			sizes := make([]int, len(lines))
+			for i, l := range lines {
+				sizes[i] = len(l)
+			}
+
+			assert.Equal(t, tc.sizes, sizes)
+			assert.Len(t, warnings, tc.warnings)
+		})
+	}
+}
+
+func TestOutputWriter_WarnsOncePerLongLine(t *testing.T) {
+	t.Parallel()
+
+	obs, w := newOutputWriter(t)
+
+	long := strings.Repeat("x", 1024*1024+1)
+
+	_, err := w.Write([]byte(long + "\nshort\n" + long + "\n"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	_, warnings := outputOf(obs)
+	assert.Len(t, warnings, 2)
+}
+
+func TestOutputWriter_CarriageReturnEndsLine(t *testing.T) {
+	t.Parallel()
+
+	obs, w := newOutputWriter(t)
+
+	// Progress redraws, a CRLF line, a trailing CR with no newline after it,
+	// and a CR split across two writes.
+	for _, chunk := range []string{"\r10%\r20%\r", "100%\r\ncrlf\r\nlast\r", "\n", "tail"} {
+		_, err := w.Write([]byte(chunk))
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, w.Close())
+
+	lines, warnings := outputOf(obs)
+	assert.Equal(t, []string{"10%", "20%", "100%", "crlf", "last", "tail"}, lines)
+	assert.Empty(t, warnings)
+}
+
+func TestOutputWriter_ProgressWithoutNewlineKeepsDraining(t *testing.T) {
+	t.Parallel()
+
+	obs, w := newOutputWriter(t)
+
+	// About 1.2 MiB of "\r" progress with no newline: one huge line before
+	// "\r" ended lines, which stopped the stream.
+	for i := range 60000 {
+		_, err := fmt.Fprintf(w, "\rdownloading %6d/60000", i)
+		require.NoError(t, err)
+	}
+
+	_, err := w.Write([]byte("\ndone\n"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	lines, warnings := outputOf(obs)
+	require.Len(t, lines, 60001)
+	assert.Equal(t, "downloading  59999/60000", lines[59999])
+	assert.Equal(t, "done", lines[60000])
+	assert.Empty(t, warnings)
+}
+
+func TestOutputWriter_SubprocessSurvivesLongLine(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("needs sh")
+	}
+
+	obs, w := newOutputWriter(t)
+
+	cmd := exec.CommandContext(t.Context(), "sh", "-c",
+		`echo before; head -c 2097152 /dev/zero | tr '\0' a; echo; echo after`)
+	cmd.Stdout = w
+
+	require.NoError(t, cmd.Run(), "the subprocess must not see a broken pipe")
+	require.NoError(t, w.Close())
+
+	lines, _ := outputOf(obs)
+	require.NotEmpty(t, lines)
+	assert.Equal(t, "before", lines[0])
+	assert.Equal(t, "after", lines[len(lines)-1])
+}
+
+func newOutputWriter(t *testing.T) (*recordingObserver, io.WriteCloser) {
+	t.Helper()
+
+	obs := &recordingObserver{}
+	em := pipeline.NewEmitter(obs.OnEvent, pipeline.Location{Pipeline: "p", Stage: "s", Step: "step"})
+
+	return obs, pipeline.OutputWriter(pipeline.WithEmitter(t.Context(), em), pipeline.Stdout)
+}
+
+// outputOf returns the output lines and warning messages recorded, in order.
+func outputOf(obs *recordingObserver) ([]string, []string) {
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+
+	var lines, warnings []string
 
 	for _, e := range obs.events {
-		if msg, ok := e.(pipeline.MessageEvent); ok && msg.Level == pipeline.LevelWarn {
-			gotWarning = true
+		switch ev := e.(type) {
+		case pipeline.OutputEvent:
+			lines = append(lines, ev.Line)
+		case pipeline.MessageEvent:
+			if ev.Level == pipeline.LevelWarn {
+				warnings = append(warnings, ev.Message)
+			}
 		}
 	}
 
-	assert.True(t, gotWarning, "expected a warning event for scanner overflow")
+	return lines, warnings
 }
