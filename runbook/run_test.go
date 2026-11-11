@@ -1153,3 +1153,42 @@ func TestRun_WritesAfterTheStepReturnsFail(t *testing.T) {
 	_, err := zero.Stdout().Write([]byte("x\n"))
 	require.ErrorIs(t, err, runbook.ErrStepReturned)
 }
+
+// A write the step's writer accepts is always recorded, even when it races
+// the step returning: a write either fails with ErrStepReturned or appears.
+func TestRun_AcceptedWritesAreNeverLost(t *testing.T) {
+	t.Parallel()
+
+	for range 20 {
+		var accepted atomic.Int32
+
+		writerDone := make(chan struct{})
+
+		out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", runbook.StepFunc(
+			func(_ context.Context, s *runbook.StepContext) error {
+				w := s.Stdout()
+
+				go func() {
+					defer close(writerDone)
+
+					for {
+						if _, err := io.WriteString(w, "line\n"); err != nil {
+							return
+						}
+
+						accepted.Add(1)
+					}
+				}()
+
+				time.Sleep(time.Millisecond)
+
+				return nil
+			}))))
+
+		<-writerDone
+		require.NoError(t, out.err)
+
+		lines, _ := outputOf(out.events)
+		require.Len(t, lines, int(accepted.Load()))
+	}
+}

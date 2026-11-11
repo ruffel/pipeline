@@ -20,8 +20,9 @@ const (
 	// MaxOutputLine is the longest output line recorded as one event. Longer
 	// lines are recorded in pieces, all but the first marked Continued.
 	MaxOutputLine = 16 << 10
-	// MaxStepOutput caps the output one step records in one attempt. Lines
-	// past it are dropped and counted.
+	// MaxStepOutput caps the output one step records in one attempt. Each
+	// line or piece counts its length plus one for its line break, so blank
+	// lines count too. Lines past the cap are dropped and counted.
 	MaxStepOutput = 16 << 20
 )
 
@@ -45,6 +46,11 @@ type StepContext struct {
 	stdout, stderr *linesplit.Writer
 	outBytes       int
 	dropped        int
+
+	// closing stops new writes once the step has returned; writes counts
+	// those already admitted, which close waits for before flushing.
+	closing bool
+	writes  sync.WaitGroup
 }
 
 // Path returns the step's path, such as "upgrade/node7/packages".
@@ -235,7 +241,11 @@ func (s *StepContext) output(stream string, l linesplit.Line) {
 		return
 	}
 
-	if s.outBytes+len(l.Text) > s.r.budget {
+	// Each line or piece also costs one byte for its line break, so a flood
+	// of blank lines is bounded too.
+	cost := len(l.Text) + 1
+
+	if s.outBytes+cost > s.r.budget {
 		if s.dropped == 0 {
 			_ = s.emitLocked(Event{Kind: EventMessage, Level: LevelWarn, Message: fmt.Sprintf(
 				"output past %d bytes is dropped", s.r.budget)})
@@ -246,7 +256,7 @@ func (s *StepContext) output(stream string, l linesplit.Line) {
 		return
 	}
 
-	s.outBytes += len(l.Text)
+	s.outBytes += cost
 
 	if l.Warn {
 		_ = s.emitLocked(Event{Kind: EventMessage, Level: LevelWarn, Message: fmt.Sprintf(
@@ -256,20 +266,28 @@ func (s *StepContext) output(stream string, l linesplit.Line) {
 	_ = s.emitLocked(Event{Kind: EventOutput, Stream: stream, Line: l.Text, Continued: l.Continued})
 }
 
-// stepWriter refuses writes once its step has returned.
+// stepWriter refuses writes once its step has returned. A write it admits is
+// always recorded: the step's close waits for it before flushing.
 type stepWriter struct {
 	s *StepContext
 	w *linesplit.Writer
 }
 
 func (sw *stepWriter) Write(p []byte) (int, error) {
-	sw.s.mu.Lock()
-	returned := sw.s.closed || sw.s.r == nil
-	sw.s.mu.Unlock()
+	s := sw.s
 
-	if returned {
+	s.mu.Lock()
+
+	if s.closing || s.closed || s.r == nil {
+		s.mu.Unlock()
+
 		return 0, ErrStepReturned
 	}
+
+	s.writes.Add(1)
+	s.mu.Unlock()
+
+	defer s.writes.Done()
 
 	return sw.w.Write(p)
 }
@@ -291,15 +309,18 @@ func (s *StepContext) emitLocked(e Event) error {
 	return s.r.emit(e)
 }
 
-// close records what is left in the output writers, then makes the context
-// inert, after waiting for any write in flight.
+// close stops new output writes, waits for those already admitted, records
+// what is left in the writers, and then makes the context inert.
 func (s *StepContext) close() {
 	s.mu.Lock()
+	s.closing = true
 	writers := []*linesplit.Writer{s.stdout, s.stderr}
 	s.mu.Unlock()
 
-	// Flushing records lines through output, which takes s.mu, so it must
-	// happen before s.mu is held here.
+	// Admitted writes record their lines through output, which takes s.mu,
+	// so wait and flush without holding it.
+	s.writes.Wait()
+
 	for _, w := range writers {
 		if w != nil {
 			w.Flush()

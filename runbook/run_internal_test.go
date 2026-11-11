@@ -135,7 +135,8 @@ func TestRun_OutputPastTheBudgetIsDroppedAndCounted(t *testing.T) {
 	plan, err := NewPlan("p", Effect("a", StepFunc(func(_ context.Context, s *StepContext) error {
 		w := s.Stdout()
 
-		// Ten 9-byte lines fit a 90-byte budget; three more are dropped.
+		// Ten 9-byte lines (10 bytes with the line break) fit a 100-byte
+		// budget; three more are dropped.
 		for i := range 13 {
 			_, _ = fmt.Fprintf(w, "line %04d\n", i)
 		}
@@ -147,7 +148,7 @@ func TestRun_OutputPastTheBudgetIsDroppedAndCounted(t *testing.T) {
 	require.NoError(t, err)
 
 	j := MemoryJournal()
-	small := func(c *config) { c.outputBudget = 90 }
+	small := func(c *config) { c.outputBudget = 100 }
 
 	_, err = Run(t.Context(), plan, j, small)
 	require.NoError(t, err)
@@ -169,8 +170,37 @@ func TestRun_OutputPastTheBudgetIsDroppedAndCounted(t *testing.T) {
 	assert.Len(t, lines, 10)
 	assert.Equal(t, "line 0009", lines[9])
 	assert.Equal(t, []string{
-		"output past 90 bytes is dropped",
-		"dropped 4 output lines past the step's 90-byte budget",
+		"output past 100 bytes is dropped",
+		"dropped 4 output lines past the step's 100-byte budget",
 	}, warnings)
 	assert.NotContains(t, strings.Join(lines, ""), "both streams")
+}
+
+func TestRun_BlankLinesCountTowardsTheBudget(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewPlan("p", Effect("a", StepFunc(func(_ context.Context, s *StepContext) error {
+		_, _ = io.WriteString(s.Stdout(), strings.Repeat("\n", 1000))
+
+		return nil
+	})))
+	require.NoError(t, err)
+
+	j := MemoryJournal()
+
+	_, err = Run(t.Context(), plan, j, func(c *config) { c.outputBudget = 50 })
+	require.NoError(t, err)
+
+	events, err := j.Events()
+	require.NoError(t, err)
+
+	var blank int
+
+	for _, e := range events {
+		if e.Kind == EventOutput {
+			blank++
+		}
+	}
+
+	assert.Equal(t, 50, blank, "each blank line costs one byte")
 }
