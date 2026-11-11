@@ -1117,8 +1117,12 @@ func TestRun_SubprocessOutputWithAnOverLongLine(t *testing.T) {
 	assert.True(t, pieces[2].Continued)
 	assert.Len(t, pieces[0].Line, runbook.MaxOutputLine)
 
+	// exec copies stdout and stderr on separate goroutines, so lines from
+	// the two streams can be recorded in either order. Order holds within a
+	// stream.
 	lines, warnings := outputOf(out.events)
-	assert.Equal(t, "stdout: before", lines[0])
+	stdout := slices.DeleteFunc(slices.Clone(lines), func(l string) bool { return !strings.HasPrefix(l, "stdout: ") })
+	assert.Equal(t, "stdout: before", stdout[0])
 	assert.Contains(t, lines, "stderr: after")
 	assert.Len(t, warnings, 1, "one warning for the one long line")
 }
