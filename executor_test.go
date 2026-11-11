@@ -645,6 +645,66 @@ func TestExecutor_PanicRecovery(t *testing.T) {
 	assert.Equal(t, "pipeline.PipelineFailedEvent", last)
 }
 
+func TestExecutor_StepConditionPanicFailsStep(t *testing.T) {
+	t.Parallel()
+
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%v", parallel), func(t *testing.T) {
+			t.Parallel()
+
+			obs := &recordingObserver{}
+
+			err := pipeline.NewExecutor(obs).Run(t.Context(), pipeline.Pipeline{
+				Name: "deploy",
+				Stages: []pipeline.Stage{{
+					Name:     "build",
+					Parallel: parallel,
+					Steps: []pipeline.Step{{
+						Name:      "guarded",
+						Run:       noop,
+						Condition: func(_ context.Context) string { panic("boom") },
+					}},
+				}},
+			})
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `panic in condition of step "guarded": boom`)
+			assert.Equal(t, []string{
+				"pipeline.PipelineStartedEvent",
+				"pipeline.StageStartedEvent",
+				"pipeline.StepStartedEvent",
+				"pipeline.StepFailedEvent",
+				"pipeline.StageFailedEvent",
+				"pipeline.PipelineFailedEvent",
+			}, obs.eventTypes())
+		})
+	}
+}
+
+func TestExecutor_StageConditionPanicFailsStage(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+
+	err := pipeline.NewExecutor(obs).Run(t.Context(), pipeline.Pipeline{
+		Name: "deploy",
+		Stages: []pipeline.Stage{{
+			Name:      "build",
+			Steps:     []pipeline.Step{{Name: "compile", Run: noop}},
+			Condition: func(_ context.Context) string { panic("boom") },
+		}},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `panic in condition of stage "build": boom`)
+	assert.Equal(t, []string{
+		"pipeline.PipelineStartedEvent",
+		"pipeline.StageStartedEvent",
+		"pipeline.StageFailedEvent",
+		"pipeline.PipelineFailedEvent",
+	}, obs.eventTypes())
+}
+
 // -----------------------------------------------------------------------------
 // Parallel execution
 // -----------------------------------------------------------------------------

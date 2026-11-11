@@ -74,7 +74,15 @@ func (e *Executor) executeStages(ctx context.Context, p Pipeline) error {
 
 func (e *Executor) runStage(ctx context.Context, loc Location, s Stage) error {
 	if s.Condition != nil {
-		if reason := s.Condition(ctx); reason != "" {
+		reason, err := evalCondition(ctx, s.Condition, "stage "+quote(s.Name))
+		if err != nil {
+			e.emit(ctx, newStageStartedEvent(loc, time.Now()))
+			e.emit(ctx, newStageFailedEvent(loc, err, time.Now()))
+
+			return err
+		}
+
+		if reason != "" {
 			e.emit(ctx, newStageSkippedEvent(loc, reason, time.Now()))
 
 			return nil
@@ -261,7 +269,16 @@ func (e *Executor) runStepsBestEffort(ctx context.Context, loc Location, s Stage
 
 func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr error) {
 	if s.Condition != nil {
-		if reason := s.Condition(ctx); reason != "" {
+		reason, err := evalCondition(ctx, s.Condition, "step "+quote(s.Name))
+		if err != nil {
+			// Keep "a failed step was started first" true for observers.
+			e.emit(ctx, newStepStartedEvent(loc, time.Now()))
+			e.emit(ctx, newStepFailedEvent(loc, err, time.Now()))
+
+			return err
+		}
+
+		if reason != "" {
 			e.emit(ctx, newStepSkippedEvent(loc, reason, time.Now()))
 
 			return nil
@@ -293,6 +310,32 @@ func (e *Executor) runStep(ctx context.Context, loc Location, s Step) (stepErr e
 	e.emit(ctx, newStepPassedEvent(loc, time.Now()))
 
 	return nil
+}
+
+// evalCondition calls cond, turning a panic into an error. A step's condition
+// runs on an executor goroutine in a parallel stage, where a panic would kill
+// the process with no way for the caller to recover it.
+func evalCondition(ctx context.Context, cond ConditionFn, owner string) (string, error) {
+	var (
+		reason string
+		err    error
+	)
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic in condition of %s: %v\n%s", owner, r, debug.Stack())
+			}
+		}()
+
+		reason = cond(ctx)
+	}()
+
+	return reason, err
+}
+
+func quote(name string) string {
+	return fmt.Sprintf("%q", name)
 }
 
 // stepCtx creates a child context with the emitter wired for the given step.
