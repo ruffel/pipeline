@@ -107,6 +107,15 @@ type ErrorInfo struct {
 	Stack string `json:"stack,omitempty"`
 }
 
+// Level is the severity of a message event.
+type Level string
+
+// The message levels.
+const (
+	LevelInfo Level = "info"
+	LevelWarn Level = "warn"
+)
+
 // ItemStatus is a step's result for one target.
 type ItemStatus string
 
@@ -148,14 +157,15 @@ type Event struct {
 	// item, message and progress.
 	Item    string     `json:"item,omitempty"`
 	Status  ItemStatus `json:"status,omitempty"`
-	Level   string     `json:"level,omitempty"`
+	Level   Level      `json:"level,omitempty"`
 	Message string     `json:"message,omitempty"`
 	Current int        `json:"current,omitempty"`
 	Total   int        `json:"total,omitempty"`
 
-	// output.
-	Stream string `json:"stream,omitempty"`
-	Line   string `json:"line,omitempty"`
+	// output. Continued marks every piece of a split long line but the first.
+	Stream    string `json:"stream,omitempty"`
+	Line      string `json:"line,omitempty"`
+	Continued bool   `json:"continued,omitempty"`
 
 	// custom.
 	Type string          `json:"type,omitempty"`
