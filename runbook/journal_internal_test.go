@@ -49,6 +49,28 @@ func TestJournal_AppendStampsVersionAndSequence(t *testing.T) {
 	assert.Equal(t, []Event{first, second}, events, "what observers get is what replay reads")
 }
 
+func TestJournal_AppendReturnsTheEventAsStored(t *testing.T) {
+	t.Parallel()
+
+	j := MemoryJournal()
+	data := json.RawMessage(`{ "spaced" :  [1, 2] }`)
+
+	got, err := j.append(Event{Kind: EventCustom, Line: "bad \xff utf-8", Data: data})
+	require.NoError(t, err)
+
+	events, err := j.Events()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	assert.Equal(t, events[0], got, "observers get what replay reads")
+	assert.Equal(t, "bad \ufffd utf-8", got.Line, "invalid UTF-8 is replaced, as in the journal")
+	assert.JSONEq(t, `{"spaced":[1,2]}`, string(got.Data))
+
+	data[0] = 'X'
+
+	assert.Equal(t, byte('{'), got.Data[0], "the returned event shares nothing with the caller's data")
+}
+
 func TestJournal_TellsTheStoreWhichEventsAreDurable(t *testing.T) {
 	t.Parallel()
 

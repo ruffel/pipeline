@@ -84,8 +84,10 @@ func (j *Journal) Close() error {
 }
 
 // append stamps e with the schema version and the next sequence number,
-// stores it, and returns it as stored. A durable event is stored before
-// append returns; if that fails, the caller must stop the run.
+// stores it, and returns it decoded from the stored line: encoding can change
+// data (invalid UTF-8 is replaced, raw JSON is compacted), and observers must
+// see exactly what a replay of the journal sees. A durable event is stored
+// before append returns; if that fails, the caller must stop the run.
 func (j *Journal) append(e Event) (Event, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -102,13 +104,18 @@ func (j *Journal) append(e Event) (Event, error) {
 		return Event{}, fmt.Errorf("runbook: encode %s event: %w", e.Kind, err)
 	}
 
+	stored, err := decodeEvent(line)
+	if err != nil {
+		return Event{}, fmt.Errorf("runbook: decode %s event: %w", e.Kind, err)
+	}
+
 	if err := j.store.append(line, e.Kind.Durable()); err != nil {
 		return Event{}, fmt.Errorf("runbook: write %s event: %w", e.Kind, err)
 	}
 
 	j.seq = e.Seq
 
-	return e, nil
+	return stored, nil
 }
 
 func decodeEvent(line []byte) (Event, error) {
