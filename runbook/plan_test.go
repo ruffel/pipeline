@@ -22,6 +22,11 @@ type checked struct{}
 func (checked) Run(context.Context, *runbook.StepContext) error           { return nil }
 func (checked) Check(context.Context, *runbook.StepContext) (bool, error) { return false, nil }
 
+// pointerStep has a pointer receiver, so a nil *pointerStep is a nil Step value.
+type pointerStep struct{}
+
+func (*pointerStep) Run(context.Context, *runbook.StepContext) error { return nil }
+
 // reversible is a step with Check and Undo.
 type reversible struct{ checked }
 
@@ -68,6 +73,8 @@ func TestNewPlan_ReportsEveryProblemWithItsPath(t *testing.T) {
 		runbook.Effect("bad/name", noop()),
 		runbook.Effect("-leading", noop()),
 		runbook.Effect("nil-step", nil),
+		runbook.Effect("nil-func", runbook.StepFunc(nil)),
+		runbook.Effect("nil-pointer", (*pointerStep)(nil)),
 		runbook.Observe("probe", checked{}),
 		runbook.Effect("retry", noop()).Retry(0, time.Second),
 		runbook.Effect("timeout", noop()).Timeout(-time.Second),
@@ -81,6 +88,8 @@ func TestNewPlan_ReportsEveryProblemWithItsPath(t *testing.T) {
 		`p/bad/name: name "bad/name" may only use`,
 		`p/-leading: name "-leading" may only use`,
 		"p/nil-step: step is nil",
+		"p/nil-func: step is nil",
+		"p/nil-pointer: step is nil",
 		"p/probe: an observe step may not have Check or Undo",
 		"p/retry: retry allows 0 tries",
 		"p/timeout: backoff and timeout may not be negative",
@@ -111,7 +120,7 @@ func TestPlan_SpecCarriesSettingsAndCapabilities(t *testing.T) {
 		runbook.Group("checks",
 			runbook.Observe("ring", noop()),
 		).Parallel(8).ContinueOnError().Description("Read-only checks"),
-		runbook.Effect("backup", reversible{}),
+		runbook.Effect("backup", reversible{}).Retry(3, time.Second).Timeout(time.Minute),
 		runbook.Ensure("maintenance", checked{}),
 		runbook.Group("nodes").Parallel(0).CancelOnError(),
 	)
@@ -122,13 +131,14 @@ func TestPlan_SpecCarriesSettingsAndCapabilities(t *testing.T) {
 	assert.Equal(t, runbook.NodeSpec{
 		Name: "checks", Path: "p/checks", Kind: runbook.KindGroup, Description: "Read-only checks",
 		Parallel: true, Limit: 8, Failure: runbook.FailureContinue,
-		Children: []runbook.NodeSpec{{Name: "ring", Path: "p/checks/ring", Kind: runbook.KindObserve}},
+		Children: []runbook.NodeSpec{{Name: "ring", Path: "p/checks/ring", Kind: runbook.KindObserve, Tries: 1}},
 	}, children[0])
 	assert.Equal(t, runbook.NodeSpec{
 		Name: "backup", Path: "p/backup", Kind: runbook.KindEffect, Check: true, Undo: true,
+		Tries: 3, Backoff: time.Second, Timeout: time.Minute,
 	}, children[1])
 	assert.Equal(t, runbook.NodeSpec{
-		Name: "maintenance", Path: "p/maintenance", Kind: runbook.KindEnsure, Check: true,
+		Name: "maintenance", Path: "p/maintenance", Kind: runbook.KindEnsure, Check: true, Tries: 1,
 	}, children[2])
 	assert.Equal(t, runbook.FailureCancel, children[3].Failure)
 	assert.True(t, children[3].Parallel)
@@ -139,7 +149,9 @@ func TestPlan_SpecRoundTripsThroughJSON(t *testing.T) {
 	t.Parallel()
 
 	plan, err := runbook.NewPlan("p",
-		runbook.Group("g", runbook.Effect("e", reversible{})).Parallel(2).Labels(runbook.L{"k": "v"}),
+		runbook.Group("g",
+			runbook.Effect("e", reversible{}).Retry(2, 500*time.Millisecond).Timeout(time.Second),
+		).Parallel(2).Labels(runbook.L{"k": "v"}),
 	)
 	require.NoError(t, err)
 
@@ -154,7 +166,10 @@ func TestPlan_SpecRoundTripsThroughJSON(t *testing.T) {
 		"children": [{
 			"name": "g", "path": "p/g", "kind": "group", "labels": {"k": "v"},
 			"parallel": true, "limit": 2, "failure": "stop",
-			"children": [{"name": "e", "path": "p/g/e", "kind": "effect", "labels": {"k": "v"}, "check": true, "undo": true}]
+			"children": [{
+				"name": "e", "path": "p/g/e", "kind": "effect", "labels": {"k": "v"}, "check": true, "undo": true,
+				"tries": 2, "backoff": 500000000, "timeout": 1000000000
+			}]
 		}]
 	}`, string(raw))
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -80,8 +81,9 @@ func (p *Plan) Spec() NodeSpec {
 	return p.root.spec()
 }
 
-// NodeSpec describes one element of a plan without its step function. It is
-// what the journal stores, [Describe] prints, and viewers render.
+// NodeSpec describes one element of a plan without its step function: its
+// identity, labels, description, and group or step settings. It is what the
+// journal stores, [Describe] prints, and viewers render.
 type NodeSpec struct {
 	Name        string `json:"name"`
 	Path        string `json:"path"`
@@ -95,9 +97,13 @@ type NodeSpec struct {
 	Failure  FailurePolicy `json:"failure,omitempty"`
 	Children []NodeSpec    `json:"children,omitempty"`
 
-	// Step fields: whether the step implements [Checker] and [Undoer].
-	Check bool `json:"check,omitempty"`
-	Undo  bool `json:"undo,omitempty"`
+	// Step fields: whether the step implements [Checker] and [Undoer], and its
+	// settings. Durations are in nanoseconds, as encoding/json writes them.
+	Check   bool          `json:"check,omitempty"`
+	Undo    bool          `json:"undo,omitempty"`
+	Tries   int           `json:"tries,omitempty"`
+	Backoff time.Duration `json:"backoff,omitempty"`
+	Timeout time.Duration `json:"timeout,omitempty"`
 }
 
 func (n *node) spec() NodeSpec {
@@ -111,6 +117,9 @@ func (n *node) spec() NodeSpec {
 		Limit:       n.limit,
 		Check:       n.hasCheck,
 		Undo:        n.hasUndo,
+		Tries:       n.tries,
+		Backoff:     n.backoff,
+		Timeout:     n.timeout,
 	}
 
 	if n.kind == KindGroup {
@@ -211,7 +220,7 @@ func (b *builder) step(parent *node, s StepNode) *node {
 	n.backoff = s.backoff
 	n.timeout = s.timeout
 
-	if s.step == nil {
+	if isNil(s.step) {
 		b.failf(n.path, "step is nil")
 
 		return n
@@ -233,6 +242,23 @@ func (b *builder) step(parent *node, s StepNode) *node {
 	}
 
 	return n
+}
+
+// isNil reports whether step is nil, or holds a nil func, pointer, map,
+// slice, channel or interface, any of which would panic when Run is called.
+func isNil(step Step) bool {
+	if step == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(step)
+
+	switch v.Kind() { //nolint:exhaustive // Only nil-capable kinds can hold nil.
+	case reflect.Func, reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // validateName checks a name is usable as a path segment and a file name:
