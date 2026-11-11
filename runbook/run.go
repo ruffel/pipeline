@@ -216,6 +216,12 @@ children:
 			errs = append(errs, err)
 
 			if n.failure != FailureContinue {
+				// A run-wide skip signalled inside the failed child (after an
+				// earlier failure there) still applies to the rest.
+				if r.skipRun.Load() {
+					errs = append(errs, r.skipRest(n.children[i+1:], ReasonRunSkipped))
+				}
+
 				break children
 			}
 		}
@@ -238,6 +244,8 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 		slots = make(chan struct{}, n.limit)
 	}
 
+	started := len(n.children)
+
 	for i, c := range n.children {
 		if slots != nil {
 			select {
@@ -246,10 +254,8 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 			}
 		}
 
-		if stop, skip := g.admit(ctx, r); stop {
-			if skip != "" {
-				g.add(r.skipRest(n.children[i:], skip))
-			}
+		if g.admit(ctx, r) {
+			started = i
 
 			break
 		}
@@ -267,6 +273,12 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 
 	wg.Wait()
 
+	// Children never started are skipped if any child signalled, including a
+	// signal that came after a failure had already stopped admission.
+	if reason := g.skipReason(r); reason != "" && started < len(n.children) {
+		g.add(r.skipRest(n.children[started:], reason))
+	}
+
 	return g.err()
 }
 
@@ -278,23 +290,34 @@ type parallelGroup struct {
 	skip    Reason // a child signalled: record the rest as skipped
 }
 
-// admit reports whether the next child must not start, and if the rest are
-// to be recorded as skipped, why. A cancel that stops it is recorded.
-func (g *parallelGroup) admit(ctx context.Context, r *runner) (bool, Reason) {
+// admit reports whether the next child must not start. A cancel that stops
+// it is recorded.
+func (g *parallelGroup) admit(ctx context.Context, r *runner) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if g.skip == "" && r.skipRun.Load() {
-		g.skip = ReasonRunSkipped
-	}
+	skip := g.skip != "" || r.skipRun.Load()
 
-	if !g.stopped && g.skip == "" && ctx.Err() != nil {
+	if !g.stopped && !skip && ctx.Err() != nil {
 		g.errs = append(g.errs, context.Cause(ctx))
 
 		r.markCut()
 	}
 
-	return g.stopped || g.skip != "" || ctx.Err() != nil, g.skip
+	return g.stopped || skip || ctx.Err() != nil
+}
+
+// skipReason returns why children that never started are skipped, if a child
+// of this group, or any step in the run, signalled.
+func (g *parallelGroup) skipReason(r *runner) Reason {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if r.skipRun.Load() {
+		return ReasonRunSkipped
+	}
+
+	return g.skip
 }
 
 // finished records how a child ended, applying the group's failure policy.

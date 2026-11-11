@@ -2,6 +2,7 @@ package runbook_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -240,4 +241,82 @@ func TestSkip_CheckMayNotSignal(t *testing.T) {
 	require.NotErrorIs(t, out.err, runbook.ErrSkipRun, "the signal is not passed on")
 	assert.Equal(t, runbook.StatusFailed, out.state.Element("p/a").Status)
 	assert.Equal(t, runbook.StatusNotReached, out.state.Element("p/b").Status)
+}
+
+// A run-wide skip signalled after an earlier failure in a continuing group
+// still marks everything not started as run-skipped. The failure stands.
+func TestSkipRun_AfterAFailureInAContinuingGroup(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		runbook.Group("outer",
+			runbook.Group("inner",
+				runbook.Effect("broken", fail("boom")),
+				runbook.Effect("signal", signals(runbook.ErrSkipRun)),
+			).ContinueOnError(),
+			runbook.Effect("next", ok()),
+		),
+		runbook.Effect("after", ok()),
+	))
+
+	require.ErrorContains(t, out.err, "p/outer/inner/broken: boom")
+	assert.Equal(t, map[string]string{
+		"p/outer/inner": "failed",
+		"p/outer/next":  "skipped/run-skipped",
+		"p/after":       "skipped/run-skipped",
+	}, statuses(out.state, "p/outer/inner", "p/outer/next", "p/after"))
+}
+
+// In a bounded parallel group, a signal that arrives after a failure has
+// stopped admission still marks the queued children skipped.
+func TestSkipGroup_SignalAfterAFailureStoppedAdmission(t *testing.T) {
+	t.Parallel()
+
+	failed := make(chan struct{})
+
+	out := runPlan(t, t.Context(), mustPlan(t, runbook.Group("g",
+		runbook.Effect("broken", runbook.StepFunc(func(context.Context, *runbook.StepContext) error {
+			defer close(failed)
+
+			return errors.New("boom")
+		})),
+		runbook.Effect("signal", runbook.StepFunc(func(context.Context, *runbook.StepContext) error {
+			<-failed
+
+			return runbook.ErrSkipGroup
+		})),
+		runbook.Effect("queued-1", ok()),
+		runbook.Effect("queued-2", ok()),
+	).Parallel(2)))
+
+	require.ErrorContains(t, out.err, "p/g/broken: boom")
+	assert.Equal(t, map[string]string{
+		"p/g/queued-1": "skipped/group-skipped",
+		"p/g/queued-2": "skipped/group-skipped",
+		"p/g":          "failed",
+	}, statuses(out.state, "p/g/queued-1", "p/g/queued-2", "p/g"))
+}
+
+// Replay keeps a step's signal through later skips, so resume can apply it;
+// it changes only when Run finishes again.
+func TestReplay_KeepsTheSignalThroughLaterSkips(t *testing.T) {
+	t.Parallel()
+
+	signalled := runbook.Event{
+		Kind: runbook.EventStepFinished, Run: "r1", Path: "p/a",
+		Outcome: runbook.OutcomePassed, Signal: runbook.SignalSkipGroup,
+	}
+
+	s := replay(t,
+		runStarted("r1", 1), started("r1", "p/a"), signalled,
+		runStarted("r2", 2), finished("r2", "p/a", runbook.OutcomeSkipped, runbook.ReasonEarlierAttempt),
+		runStarted("r3", 3), finished("r3", "p/a", runbook.OutcomeSkipped, runbook.ReasonRunSkipped),
+	)
+	assert.Equal(t, runbook.SignalSkipGroup, s.Element("p/a").Signal)
+
+	s = replay(t,
+		runStarted("r1", 1), started("r1", "p/a"), signalled,
+		runStarted("r2", 2), started("r2", "p/a"), finished("r2", "p/a", runbook.OutcomePassed, ""),
+	)
+	assert.Empty(t, s.Element("p/a").Signal, "Run finished again without signalling")
 }
