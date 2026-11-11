@@ -2,7 +2,7 @@
 
 ## Setup
 
-Requires Go 1.25+, [just](https://github.com/casey/just), and
+Requires Go 1.26+, [just](https://github.com/casey/just), and
 [golangci-lint](https://golangci-lint.run) (version pinned in CI).
 
 The repo is a Go workspace: the core module at the root, `observers/terminal`

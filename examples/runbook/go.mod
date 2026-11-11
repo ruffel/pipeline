@@ -1,6 +1,6 @@
 module github.com/ruffel/pipeline/examples/runbook
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/ruffel/pipeline v0.1.4

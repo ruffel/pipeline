@@ -59,7 +59,7 @@ func New(w io.Writer) *Observer {
 }
 
 // OnEvent implements [pipeline.Observer].
-func (o *Observer) OnEvent(ctx context.Context, event pipeline.Event) { //nolint:cyclop,funlen
+func (o *Observer) OnEvent(ctx context.Context, event pipeline.Event) { //nolint:cyclop
 	o.runID = pipeline.RunIDFrom(ctx)
 
 	switch e := event.(type) {
@@ -74,9 +74,7 @@ func (o *Observer) OnEvent(ctx context.Context, event pipeline.Event) { //nolint
 		o.write("PipelinePassed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), nil)
 
 	case pipeline.PipelineFailedEvent:
-		o.write("PipelineFailed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), fields{
-			"error": e.Err.Error(),
-		})
+		o.write("PipelineFailed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), errorFields(e.Err))
 
 	case pipeline.StageStartedEvent:
 		o.starts[e.Location] = e.Timestamp
@@ -86,9 +84,7 @@ func (o *Observer) OnEvent(ctx context.Context, event pipeline.Event) { //nolint
 		o.write("StagePassed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), nil)
 
 	case pipeline.StageFailedEvent:
-		o.write("StageFailed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), fields{
-			"error": e.Err.Error(),
-		})
+		o.write("StageFailed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), errorFields(e.Err))
 
 	case pipeline.StageSkippedEvent:
 		o.write("StageSkipped", e.Location, e.Timestamp, 0, fields{
@@ -103,9 +99,7 @@ func (o *Observer) OnEvent(ctx context.Context, event pipeline.Event) { //nolint
 		o.write("StepPassed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), nil)
 
 	case pipeline.StepFailedEvent:
-		o.write("StepFailed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), fields{
-			"error": e.Err.Error(),
-		})
+		o.write("StepFailed", e.Location, e.Timestamp, o.duration(e.Location, e.Timestamp), errorFields(e.Err))
 
 	case pipeline.StepSkippedEvent:
 		o.write("StepSkipped", e.Location, e.Timestamp, 0, fields{
@@ -148,6 +142,11 @@ func (o *Observer) OnEvent(ctx context.Context, event pipeline.Event) { //nolint
 
 // fields is a shorthand for ad-hoc key-value pairs merged into the envelope.
 type fields map[string]any
+
+// errorFields carries a failure's error as a string.
+func errorFields(err error) fields {
+	return fields{"error": err.Error()}
+}
 
 // envelope is the JSON structure written for each event.
 type envelope struct {
