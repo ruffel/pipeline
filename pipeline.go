@@ -11,6 +11,7 @@ type StepFn func(ctx context.Context) error
 
 // ConditionFn is the function signature for condition checking. A non-empty
 // return value causes the executor to skip the stage or step with that reason.
+// A panic in a ConditionFn fails the stage or step instead of skipping it.
 type ConditionFn func(ctx context.Context) string
 
 // Pipeline represents a sequence of stages to be executed.

@@ -46,7 +46,9 @@ unvisited stages can diff the definition against the events received.
 
 ## Panic Recovery
 
-**Decision:** The executor recovers panics during `Step.Run`, but does NOT recover panics in observers or executor scaffolding.
+**Decision:** The executor recovers panics during `Step.Run` and in stage and step `Condition` functions, but does NOT recover panics in observers or executor scaffolding.
+
+A panic in a condition fails its stage or step like an error from `Run` would: a started event, then a failed event. A step's condition runs on an executor goroutine in a parallel stage, where an unrecovered panic kills the process and the caller can't recover it.
 
 - **Reason for catching panics within steps:**
   A pipeline is often the backbone for an installer, CI runner, or orchestrator, executing arbitrary user-defined steps. A nil-pointer crash or logic bug in a single user-supplied step must NOT crash the entire execution engine. The engine must survive to wrap the panic as an error, gracefully fail the stage, and emit the final failure event so observers (and users) know what went wrong. Do not flag the `defer func() { if r := recover() ... }` block in `executor.go` as a "swallowed panic"—it is an intentional fault boundary to protect the lifecycle loop.
