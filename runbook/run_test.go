@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1035,3 +1038,118 @@ func (c *tickingClock) Now() time.Time {
 }
 
 func (c *tickingClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// -----------------------------------------------------------------------------
+// Output
+// -----------------------------------------------------------------------------
+
+// outputOf returns "stream: line" for every output event, and the warnings.
+func outputOf(events []runbook.Event) ([]string, []string) {
+	var lines, warnings []string
+
+	for _, e := range events {
+		switch {
+		case e.Kind == runbook.EventOutput:
+			lines = append(lines, e.Stream+": "+e.Line)
+		case e.Kind == runbook.EventMessage && e.Level == "warn":
+			warnings = append(warnings, e.Message)
+		}
+	}
+
+	return lines, warnings
+}
+
+func TestRun_StdoutAndStderrAreRecordedLineByLine(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", runbook.StepFunc(
+		func(_ context.Context, s *runbook.StepContext) error {
+			_, _ = io.WriteString(s.Stdout(), "one\r\ntw")
+			_, _ = io.WriteString(s.Stderr(), "oops\n")
+			_, _ = io.WriteString(s.Stdout(), "o\n\r10%\r20%\rno newline")
+
+			return nil
+		}))))
+
+	require.NoError(t, out.err)
+
+	lines, warnings := outputOf(out.events)
+	assert.Equal(t, []string{
+		"stdout: one", "stderr: oops", "stdout: two", "stdout: 10%", "stdout: 20%", "stdout: no newline",
+	}, lines)
+	assert.Empty(t, warnings)
+
+	// The unterminated tail is recorded before the step finishes.
+	tail := slices.IndexFunc(out.events, func(e runbook.Event) bool { return e.Line == "no newline" })
+	finished := slices.IndexFunc(out.events, func(e runbook.Event) bool { return e.Kind == runbook.EventStepFinished })
+	assert.Less(t, tail, finished)
+}
+
+func TestRun_SubprocessOutputWithAnOverLongLine(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("needs sh")
+	}
+
+	out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", runbook.StepFunc(
+		func(ctx context.Context, s *runbook.StepContext) error {
+			cmd := exec.CommandContext(ctx, "sh", "-c",
+				`echo before; head -c 40000 /dev/zero | tr '\0' a; echo; echo after >&2`)
+			cmd.Stdout, cmd.Stderr = s.Stdout(), s.Stderr()
+
+			return cmd.Run()
+		}))))
+
+	require.NoError(t, out.err)
+
+	var pieces []runbook.Event
+
+	for _, e := range out.events {
+		if e.Kind == runbook.EventOutput && strings.HasPrefix(e.Line, "aaa") {
+			pieces = append(pieces, e)
+		}
+	}
+
+	require.Len(t, pieces, 3, "40000 bytes in pieces of 16 KiB")
+	assert.False(t, pieces[0].Continued)
+	assert.True(t, pieces[1].Continued)
+	assert.True(t, pieces[2].Continued)
+	assert.Len(t, pieces[0].Line, runbook.MaxOutputLine)
+
+	lines, warnings := outputOf(out.events)
+	assert.Equal(t, "stdout: before", lines[0])
+	assert.Contains(t, lines, "stderr: after")
+	assert.Len(t, warnings, 1, "one warning for the one long line")
+}
+
+func TestRun_WritesAfterTheStepReturnsFail(t *testing.T) {
+	t.Parallel()
+
+	leaked := make(chan io.Writer, 1)
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		runbook.Effect("a", runbook.StepFunc(func(_ context.Context, s *runbook.StepContext) error {
+			leaked <- s.Stdout()
+
+			return nil
+		})),
+		runbook.Effect("b", runbook.StepFunc(func(context.Context, *runbook.StepContext) error {
+			if _, err := io.WriteString(<-leaked, "late\n"); !errors.Is(err, runbook.ErrStepReturned) {
+				return fmt.Errorf("write after return: %w", err)
+			}
+
+			return nil
+		})),
+	))
+
+	require.NoError(t, out.err)
+
+	lines, _ := outputOf(out.events)
+	assert.Empty(t, lines)
+
+	var zero runbook.StepContext
+
+	_, err := zero.Stdout().Write([]byte("x\n"))
+	require.ErrorIs(t, err, runbook.ErrStepReturned)
+}

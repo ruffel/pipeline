@@ -39,6 +39,9 @@ type config struct {
 	observers []Observer
 	labels    L
 	clock     Clock
+
+	// outputBudget is MaxStepOutput, except in tests.
+	outputBudget int
 }
 
 // WithObservers adds observers to the run. Nil observers are ignored.

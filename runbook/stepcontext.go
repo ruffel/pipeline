@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"sync"
+
+	"github.com/ruffel/pipeline/internal/linesplit"
 )
 
 // Size limits on what a step writes, so the journal stays quick to replay.
@@ -14,10 +17,16 @@ const (
 	MaxRecordBytes = 64 << 10
 	// MaxCustomBytes caps the encoded data of one custom event.
 	MaxCustomBytes = 64 << 10
+	// MaxOutputLine is the longest output line recorded as one event. Longer
+	// lines are recorded in pieces, all but the first marked Continued.
+	MaxOutputLine = 16 << 10
+	// MaxStepOutput caps the output one step records in one attempt. Lines
+	// past it are dropped and counted.
+	MaxStepOutput = 16 << 20
 )
 
 // StepContext gives a running step access to the run: messages, progress,
-// per-target results, recorded values and custom events. The executor makes
+// output, per-target results, recorded values and custom events. The executor makes
 // one for each step, shared by its Check and Run and all their tries.
 //
 // A StepContext stops working when its step returns. Later calls record
@@ -31,6 +40,11 @@ type StepContext struct {
 	mu       sync.Mutex
 	closed   bool
 	recorded int
+
+	// Output writers, created on first use, and the step's output so far.
+	stdout, stderr *linesplit.Writer
+	outBytes       int
+	dropped        int
 }
 
 // Path returns the step's path, such as "upgrade/node7/packages".
@@ -62,12 +76,12 @@ func (s *StepContext) Attempt() int {
 
 // Info records an informational message. It is best-effort.
 func (s *StepContext) Info(msg string) {
-	_ = s.emit(Event{Kind: EventMessage, Level: "info", Message: msg})
+	_ = s.emit(Event{Kind: EventMessage, Level: LevelInfo, Message: msg})
 }
 
 // Warn records a warning. It is best-effort.
 func (s *StepContext) Warn(msg string) {
-	_ = s.emit(Event{Kind: EventMessage, Level: "warn", Message: msg})
+	_ = s.emit(Event{Kind: EventMessage, Level: LevelWarn, Message: msg})
 }
 
 // Progress reports progress on the task named key. A total of zero means the
@@ -185,6 +199,81 @@ func (s *StepContext) Custom(typ string, data any) error {
 	return s.emit(Event{Kind: EventCustom, Type: typ, Data: raw})
 }
 
+// Stdout returns a writer for the step's standard output, such as a
+// subprocess's: cmd.Stdout = s.Stdout(). Each line is recorded as an output
+// event, best-effort. A line ends at "\n", "\r\n" or a lone "\r", so progress
+// that redraws a line is recorded once per update. What is left without a
+// line break is recorded when the step returns. Writes after that fail with
+// [ErrStepReturned].
+func (s *StepContext) Stdout() io.Writer {
+	return s.writer(&s.stdout, "stdout")
+}
+
+// Stderr is [StepContext.Stdout] for standard error.
+func (s *StepContext) Stderr() io.Writer {
+	return s.writer(&s.stderr, "stderr")
+}
+
+func (s *StepContext) writer(w **linesplit.Writer, stream string) io.Writer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if *w == nil {
+		*w = linesplit.NewWriter(MaxOutputLine, func(l linesplit.Line) { s.output(stream, l) })
+	}
+
+	return &stepWriter{s: s, w: *w}
+}
+
+// output records one line from a writer. It is called with the writer's lock
+// held, and takes the context's.
+func (s *StepContext) output(stream string, l linesplit.Line) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.r == nil {
+		return
+	}
+
+	if s.outBytes+len(l.Text) > s.r.budget {
+		if s.dropped == 0 {
+			_ = s.emitLocked(Event{Kind: EventMessage, Level: LevelWarn, Message: fmt.Sprintf(
+				"output past %d bytes is dropped", s.r.budget)})
+		}
+
+		s.dropped++
+
+		return
+	}
+
+	s.outBytes += len(l.Text)
+
+	if l.Warn {
+		_ = s.emitLocked(Event{Kind: EventMessage, Level: LevelWarn, Message: fmt.Sprintf(
+			"output line longer than %d bytes was split into pieces", MaxOutputLine)})
+	}
+
+	_ = s.emitLocked(Event{Kind: EventOutput, Stream: stream, Line: l.Text, Continued: l.Continued})
+}
+
+// stepWriter refuses writes once its step has returned.
+type stepWriter struct {
+	s *StepContext
+	w *linesplit.Writer
+}
+
+func (sw *stepWriter) Write(p []byte) (int, error) {
+	sw.s.mu.Lock()
+	returned := sw.s.closed || sw.s.r == nil
+	sw.s.mu.Unlock()
+
+	if returned {
+		return 0, ErrStepReturned
+	}
+
+	return sw.w.Write(p)
+}
+
 func (s *StepContext) emit(e Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -202,10 +291,28 @@ func (s *StepContext) emitLocked(e Event) error {
 	return s.r.emit(e)
 }
 
-// close makes the context inert, after waiting for any write in flight.
+// close records what is left in the output writers, then makes the context
+// inert, after waiting for any write in flight.
 func (s *StepContext) close() {
 	s.mu.Lock()
+	writers := []*linesplit.Writer{s.stdout, s.stderr}
+	s.mu.Unlock()
+
+	// Flushing records lines through output, which takes s.mu, so it must
+	// happen before s.mu is held here.
+	for _, w := range writers {
+		if w != nil {
+			w.Flush()
+		}
+	}
+
+	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.dropped > 0 && !s.closed && s.r != nil {
+		_ = s.emitLocked(Event{Kind: EventMessage, Level: LevelWarn, Message: fmt.Sprintf(
+			"dropped %d output lines past the step's %d-byte budget", s.dropped, s.r.budget)})
+	}
 
 	s.closed = true
 }

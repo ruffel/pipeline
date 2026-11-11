@@ -35,7 +35,7 @@ type Result struct {
 // The journal must be new: resuming a journal that has attempts is not
 // supported yet ([ErrResumeNotSupported]).
 func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, error) {
-	cfg := config{clock: systemClock{}}
+	cfg := config{clock: systemClock{}, outputBudget: MaxStepOutput}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -64,6 +64,7 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		runDone:   runCtx.Done(),
 		prev:      prev,
 		values:    map[string]map[string]json.RawMessage{},
+		budget:    cfg.outputBudget,
 	}
 
 	return r.run(runCtx, cfg.labels)
@@ -91,6 +92,9 @@ type runner struct {
 	observers []Observer
 	obsCtx    context.Context //nolint:containedctx // Handed to observers on every event.
 	fatal     error
+
+	// budget caps each step's output, in bytes.
+	budget int
 
 	// valuesMu guards values recorded during this attempt.
 	valuesMu sync.Mutex
@@ -429,7 +433,7 @@ func (r *runner) deliver(e Event) {
 	r.observers = kept
 
 	for _, msg := range panicked {
-		_ = r.emitLocked(Event{Kind: EventMessage, Level: "warn", Message: msg})
+		_ = r.emitLocked(Event{Kind: EventMessage, Level: LevelWarn, Message: msg})
 	}
 }
 
