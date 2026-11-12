@@ -96,6 +96,7 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		prev:      prev,
 		prior:     prior,
 		trust:     cfg.resume == ResumeTrust,
+		redact:    &redactor{fn: cfg.redact},
 		forced:    cfg.force && len(prev.Attempts) > 0,
 		values:    map[string]map[string]json.RawMessage{},
 		budget:    cfg.outputBudget,
@@ -119,6 +120,9 @@ type runner struct {
 	prior  *State
 	trust  bool
 	forced bool
+
+	// redact removes secrets from the text of every event and returned error.
+	redact *redactor
 
 	// runDone is closed when the run is cancelled. cut records that a cancel
 	// of the run stopped something: a step it interrupted, or children it
@@ -485,7 +489,7 @@ func (r *runner) step(ctx context.Context, n *node) error {
 	}
 
 	if err != nil {
-		return &StepError{Path: n.path, Err: err}
+		return &StepError{Path: n.path, Err: r.redact.err(err)}
 	}
 
 	return r.signalled(signal)
@@ -642,7 +646,7 @@ func (r *runner) emitLocked(e Event) error {
 		e.TS = r.clock.Now().UTC()
 	}
 
-	stored, err := r.journal.append(e)
+	stored, err := r.journal.append(r.redact.event(e))
 	if err != nil {
 		r.fatal = err
 		r.cancel(r.fatal)

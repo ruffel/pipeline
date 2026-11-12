@@ -54,6 +54,7 @@ type config struct {
 	clock     Clock
 	resume    ResumeMode
 	force     bool
+	redact    func(string) string
 
 	// outputBudget is MaxStepOutput, except in tests.
 	outputBudget int
@@ -96,6 +97,26 @@ func WithResume(mode ResumeMode) Option {
 func Force() Option {
 	return func(c *config) {
 		c.force = true
+	}
+}
+
+// WithRedactor sets a function that removes secrets from text. It is applied
+// to every message, output line, error message and panic stack, and to every
+// string inside a custom event's data, before the event is written to the
+// journal or given to an observer. So secrets a step prints never reach
+// either.
+//
+// The error [Run] returns carries the redacted message too, and still
+// unwraps to the step's own error.
+//
+// Names, paths, labels, item IDs and recorded values are not redacted: they
+// must simply never be secret.
+//
+// The function is called from several goroutines, and must be safe for
+// that. If it panics, the text it was given is replaced whole.
+func WithRedactor(fn func(string) string) Option {
+	return func(c *config) {
+		c.redact = fn
 	}
 }
 
