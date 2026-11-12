@@ -98,24 +98,40 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 		}
 	case EventGroupFinished, EventStepFinished:
 		o.printf("%s%s %s%s%s%s\n", indent, mark(e.Outcome), name(e.Path), reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
-	case EventOutput:
-		o.detail(indent, e.Path, e.Line)
-	case EventMessage:
-		o.detail(indent, e.Path, fmt.Sprintf("[%s] %s", strings.ToUpper(string(e.Level)), e.Message))
-	case EventProgress:
-		if e.Total > 0 {
-			o.detail(indent, e.Path, fmt.Sprintf("%s (%d/%d)", e.Message, e.Current, e.Total))
-		} else {
-			o.detail(indent, e.Path, e.Message)
+	case EventOutput, EventMessage, EventProgress, EventItem, EventCustom, EventStepRetry:
+		o.detail(indent, e.Path, detailText(e))
+	case EventStopRequested:
+		by := ""
+		if e.Who != "" {
+			by = " by " + e.Who
 		}
-	case EventItem:
-		o.detail(indent, e.Path, fmt.Sprintf("%s %s%s", e.Item, e.Status, dash(e.Message)))
-	case EventCustom:
-		o.detail(indent, e.Path, fmt.Sprintf("[%s] %s", e.Type, e.Data))
-	case EventStepRetry:
-		o.detail(indent, e.Path, fmt.Sprintf("try %d failed%s, retrying", e.Try, errorText(e.Error)))
+
+		o.printf("■ stop requested%s; running steps will finish\n", by)
 	case EventStepRunning, EventValue:
 		// Bookkeeping for resume and rollback; nothing for a reader.
+	}
+}
+
+// detailText is what a step's output, message, progress, item, custom event
+// or retry shows.
+func detailText(e Event) string {
+	switch e.Kind { //nolint:exhaustive // Only the kinds shown under a step.
+	case EventMessage:
+		return fmt.Sprintf("[%s] %s", strings.ToUpper(string(e.Level)), e.Message)
+	case EventProgress:
+		if e.Total > 0 {
+			return fmt.Sprintf("%s (%d/%d)", e.Message, e.Current, e.Total)
+		}
+
+		return e.Message
+	case EventItem:
+		return fmt.Sprintf("%s %s%s", e.Item, e.Status, dash(e.Message))
+	case EventCustom:
+		return fmt.Sprintf("[%s] %s", e.Type, e.Data)
+	case EventStepRetry:
+		return fmt.Sprintf("try %d failed%s, retrying", e.Try, errorText(e.Error))
+	default:
+		return e.Line
 	}
 }
 
@@ -166,7 +182,9 @@ func mark(o Outcome) string {
 		return "✓"
 	case OutcomeSkipped:
 		return "⊘"
-	case OutcomeFailed, OutcomeCancelled, OutcomeStopped:
+	case OutcomeStopped:
+		return "■"
+	case OutcomeFailed, OutcomeCancelled:
 		return "✗"
 	default:
 		return "?"

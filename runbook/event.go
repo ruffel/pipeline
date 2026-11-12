@@ -39,6 +39,9 @@ const (
 	EventCustom   EventKind = "custom"
 	// EventStepRetry records a failed try that will be retried.
 	EventStepRetry EventKind = "step.retry"
+
+	// EventStopRequested records that the run was asked to stop.
+	EventStopRequested EventKind = "stop.requested"
 )
 
 // Durable reports whether events of this kind must be stored before the run
@@ -46,7 +49,7 @@ const (
 func (k EventKind) Durable() bool {
 	switch k {
 	case EventRunStarted, EventRunFinished, EventGroupStarted, EventGroupFinished,
-		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem:
+		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem, EventStopRequested:
 		return true
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
 		return false
@@ -198,4 +201,9 @@ type Event struct {
 	// custom.
 	Type string          `json:"type,omitempty"`
 	Data json.RawMessage `json:"data,omitempty"`
+
+	// stop.requested: how the run was asked to stop, how, and by whom.
+	Mode StopMode `json:"mode,omitempty"`
+	By   string   `json:"by,omitempty"`
+	Who  string   `json:"who,omitempty"`
 }
