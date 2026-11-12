@@ -177,3 +177,28 @@ func TestPlainObserver_AttributesInterleavedOutput(t *testing.T) {
         │ nodes/node1/stop: [INFO] done
 `, buf.String())
 }
+
+func TestPlainObserver_AStoppedRun(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := runbook.NewPlainObserver(&buf)
+
+	for _, e := range []runbook.Event{
+		{Kind: runbook.EventRunStarted, Path: "upgrade"},
+		{Kind: runbook.EventGroupStarted, Path: "upgrade/DC1"},
+		{Kind: runbook.EventStopRequested, Path: "upgrade", Mode: runbook.StopGraceful, By: "stopper", Who: "alice"},
+		{Kind: runbook.EventGroupFinished, Path: "upgrade/DC1", Outcome: runbook.OutcomeStopped},
+		{Kind: runbook.EventRunFinished, Path: "upgrade", Outcome: runbook.OutcomeStopped},
+	} {
+		obs.OnEvent(t.Context(), e)
+	}
+
+	assert.Equal(t, `▶ upgrade
+  ▶ DC1
+■ stop requested by alice; running steps will finish
+  ■ DC1
+■ upgrade stopped
+`, buf.String())
+}

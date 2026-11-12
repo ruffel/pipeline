@@ -19,7 +19,7 @@ func TestPeekEvent_AgreesWithTheJournalsOwnEncoding(t *testing.T) {
 	kinds := []EventKind{
 		EventRunStarted, EventRunFinished, EventGroupStarted, EventGroupFinished,
 		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem,
-		EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry,
+		EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry, EventStopRequested,
 	}
 
 	for _, kind := range kinds {

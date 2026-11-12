@@ -57,6 +57,7 @@ type config struct {
 	redact    func(string) string
 	inputs    any
 	newInputs bool
+	stopper   *Stopper
 
 	// outputBudget is MaxStepOutput, except in tests.
 	outputBudget int

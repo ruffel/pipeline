@@ -20,6 +20,9 @@ const (
 	StatusPassed  Status = "passed"
 	StatusSkipped Status = "skipped"
 	StatusFailed  Status = "failed"
+	// StatusStopped means a stop kept some of the group's children from
+	// starting, and none of those that ran failed.
+	StatusStopped Status = "stopped"
 )
 
 // State is a journal replayed: the plan, every attempt, and where each
@@ -57,6 +60,8 @@ type AttemptState struct {
 	// Outcome is empty while the attempt is running, or if it was
 	// interrupted.
 	Outcome Outcome
+	// Stop is the stop the attempt was asked for, if any.
+	Stop *StopRequest
 }
 
 // ElementState is where one group or step stands.
@@ -211,21 +216,8 @@ func (s *State) addLine(line []byte) error {
 
 func (s *State) apply(e Event) {
 	switch e.Kind {
-	case EventRunStarted:
-		if e.Forced {
-			s.startOver()
-		}
-
-		s.Plan = e.Plan
-		s.Fingerprint = e.Fingerprint
-		s.Labels = e.Labels
-		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
-		s.Attempts = append(s.Attempts, AttemptState{Run: e.Run, Attempt: e.Attempt, Started: e.TS})
-	case EventRunFinished:
-		if n := len(s.Attempts); n > 0 && s.Attempts[n-1].Run == e.Run {
-			s.Attempts[n-1].Finished = e.TS
-			s.Attempts[n-1].Outcome = e.Outcome
-		}
+	case EventRunStarted, EventRunFinished, EventStopRequested:
+		s.applyAttempt(e)
 	case EventGroupStarted, EventStepStarted:
 		el := s.elements[e.Path]
 		el.Status, el.Reason, el.Error, el.Run = StatusStarted, "", nil, e.Run
@@ -250,6 +242,37 @@ func (s *State) apply(e Event) {
 		s.items[e.Path][e.Item] = ItemState{Status: e.Status, Message: e.Message, Run: e.Run}
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
 		// Best-effort chatter: viewers render it, but it changes no state.
+	}
+}
+
+// applyAttempt applies an event about the attempt as a whole.
+func (s *State) applyAttempt(e Event) {
+	if e.Kind == EventRunStarted {
+		if e.Forced {
+			s.startOver()
+		}
+
+		s.Plan = e.Plan
+		s.Fingerprint = e.Fingerprint
+		s.Labels = e.Labels
+		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
+		s.Attempts = append(s.Attempts, AttemptState{Run: e.Run, Attempt: e.Attempt, Started: e.TS})
+
+		return
+	}
+
+	// The rest belong to the attempt that is open.
+	n := len(s.Attempts)
+	if n == 0 || s.Attempts[n-1].Run != e.Run {
+		return
+	}
+
+	switch e.Kind { //nolint:exhaustive // Only the attempt's own events reach here.
+	case EventRunFinished:
+		s.Attempts[n-1].Finished = e.TS
+		s.Attempts[n-1].Outcome = e.Outcome
+	case EventStopRequested:
+		s.Attempts[n-1].Stop = &StopRequest{Mode: e.Mode, By: e.By, Who: e.Who}
 	}
 }
 
@@ -286,7 +309,9 @@ func (s *State) finish(e Event) {
 		if e.Reason == ReasonDone || e.Reason == ReasonEarlierAttempt || e.Reason == ReasonSettled {
 			el.Done = true
 		}
-	case OutcomeFailed, OutcomeStopped, OutcomeCancelled:
+	case OutcomeStopped:
+		el.Status, el.Done = StatusStopped, false
+	case OutcomeFailed, OutcomeCancelled:
 		el.Status, el.Done = StatusFailed, false
 	}
 

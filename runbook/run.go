@@ -34,6 +34,11 @@ type Result struct {
 // Cancelling ctx cancels running steps, which are recorded as failed, and
 // starts nothing new. The run's outcome is then [OutcomeCancelled].
 //
+// A [Stopper] given with [WithStopper] stops the run gracefully instead:
+// running steps finish, nothing new starts, the outcome is
+// [OutcomeStopped], and Run returns [ErrStopped] (joined with the errors
+// of any steps that failed).
+//
 // If the journal already has attempts, Run resumes: it makes a new attempt
 // that does only what is left.
 //
@@ -105,6 +110,7 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		trust:     cfg.resume == ResumeTrust,
 		redact:    &redactor{fn: cfg.redact, secrets: in.secrets},
 		inputs:    in,
+		stopper:   cfg.stopper,
 		forced:    cfg.force && len(prev.Attempts) > 0,
 		values:    map[string]map[string]json.RawMessage{},
 		budget:    cfg.outputBudget,
@@ -146,6 +152,13 @@ type runner struct {
 	// skipRun is set when a step returns ErrSkipRun: no element starts after.
 	skipRun atomic.Bool
 
+	// stopper, if set, can stop the run gracefully. stopNoted records the
+	// request once; halted records that the stop kept something from
+	// happening.
+	stopper   *Stopper
+	stopNoted sync.Once
+	halted    atomic.Bool
+
 	// mu serialises journal writes and observer calls, so observers see
 	// events in journal order.
 	mu        sync.Mutex
@@ -175,16 +188,20 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 		return &Result{Run: r.id, Attempt: r.attempt, Outcome: OutcomeFailed}, err
 	}
 
-	err = r.children(ctx, r.plan.root)
+	err = r.work(ctx)
 
 	outcome := OutcomePassed
 
-	// The run is cancelled only if the cancel stopped something. A cancel that
-	// arrived after the work ended (even after a failure) changes nothing.
+	// The run is cancelled or stopped only if the cancel or stop kept
+	// something from happening. One that came after the work ended (even
+	// after a failure) changes nothing.
 	switch {
 	case err == nil:
 	case r.cut.Load():
 		outcome = OutcomeCancelled
+	case r.halted.Load():
+		outcome = OutcomeStopped
+		err = stoppedErr(err)
 	default:
 		outcome = OutcomeFailed
 	}
@@ -200,6 +217,38 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	}
 
 	return &Result{Run: r.id, Attempt: r.attempt, Outcome: outcome}, err
+}
+
+// work runs the plan's elements, recording a stop request as soon as it is
+// made, and before the run finishes if it was made at all.
+func (r *runner) work(ctx context.Context) error {
+	done := make(chan struct{})
+
+	var watcher sync.WaitGroup
+
+	watcher.Go(func() { r.watchStop(done) })
+
+	err := r.children(ctx, r.plan.root)
+
+	close(done)
+	watcher.Wait()
+
+	_ = r.stopping()
+
+	return err
+}
+
+// stoppedErr is the error a stopped run returns: ErrStopped alone if nothing
+// failed, or joined with the failures.
+func stoppedErr(err error) error {
+	switch {
+	case onlyStopped(err):
+		return ErrStopped
+	case errors.Is(err, ErrStopped):
+		return err
+	default:
+		return errors.Join(err, ErrStopped)
+	}
 }
 
 // element runs one group or step and returns its failure, if any.
@@ -243,7 +292,12 @@ func (r *runner) group(ctx context.Context, n *node) error {
 	err := r.children(ctx, n)
 
 	outcome := OutcomePassed
-	if err != nil {
+
+	switch {
+	case err == nil:
+	case onlyStopped(err):
+		outcome = OutcomeStopped
+	default:
 		outcome = OutcomeFailed
 	}
 
@@ -257,9 +311,10 @@ func (r *runner) group(ctx context.Context, n *node) error {
 }
 
 // children runs a group's children under its failure policy. Children not
-// started because of a failure or a cancel get no events: replay reports
-// them as not reached. A group cut short by a cancel returns the context's
-// error, even if no child failed.
+// started because of a failure, a cancel or a stop get no events: replay
+// reports them as not reached. A group cut short by a cancel returns the
+// context's error, and one cut short by a stop returns ErrStopped, even if
+// no child failed.
 func (r *runner) children(ctx context.Context, n *node) error {
 	if n.parallel {
 		return r.parallel(ctx, n)
@@ -279,6 +334,14 @@ children:
 			errs = append(errs, context.Cause(ctx))
 
 			r.markCut()
+
+			break
+		}
+
+		if r.stopping() {
+			errs = append(errs, ErrStopped)
+
+			r.halt()
 
 			break
 		}
@@ -332,6 +395,7 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 			select {
 			case slots <- struct{}{}:
 			case <-ctx.Done():
+			case <-r.stopDone():
 			}
 		}
 
@@ -371,21 +435,30 @@ type parallelGroup struct {
 	skip    Reason // a child signalled: record the rest as skipped
 }
 
-// admit reports whether the next child must not start. A cancel that stops
-// it is recorded.
+// admit reports whether the next child must not start. A cancel or stop
+// that keeps it from starting is recorded.
 func (g *parallelGroup) admit(ctx context.Context, r *runner) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	skip := g.skip != "" || r.skipRun.Load()
-
-	if !g.stopped && !skip && ctx.Err() != nil {
+	switch {
+	case g.stopped || g.skip != "" || r.skipRun.Load():
+		return true
+	case ctx.Err() != nil:
 		g.errs = append(g.errs, context.Cause(ctx))
 
 		r.markCut()
-	}
 
-	return g.stopped || skip || ctx.Err() != nil
+		return true
+	case r.stopping():
+		g.errs = append(g.errs, ErrStopped)
+
+		r.halt()
+
+		return true
+	default:
+		return false
+	}
 }
 
 // skipReason returns why children that never started are skipped, if a child
@@ -411,6 +484,10 @@ func (g *parallelGroup) finished(err error, policy FailurePolicy, cancel context
 	defer g.mu.Unlock()
 
 	switch {
+	case onlyStopped(err):
+		// A child a stop cut short has not failed: the failure policy does
+		// not apply, and the stop itself keeps anything new from starting.
+		g.errs = append(g.errs, err)
 	case errors.Is(err, ErrSkipRun):
 		g.skip = ReasonRunSkipped
 	case errors.Is(err, ErrSkipGroup):
@@ -584,11 +661,34 @@ func (r *runner) tries(
 			return OutcomeFailed, "", "", eerr
 		}
 
-		select {
-		case <-ctx.Done():
-			return OutcomeFailed, "", "", errors.Join(err, ctx.Err())
-		case <-r.clock.After(n.backoff):
+		if werr := r.backoff(ctx, n, err); werr != nil {
+			return OutcomeFailed, "", "", werr
 		}
+	}
+}
+
+// backoff waits before the step's next try. If a cancel or stop cuts the
+// wait short, it returns what the step fails with: under a stop, its last
+// error.
+func (r *runner) backoff(ctx context.Context, n *node, err error) error {
+	select {
+	case <-ctx.Done():
+		return errors.Join(err, ctx.Err())
+	case <-r.stopDone():
+		r.noteStop()
+		r.halt()
+
+		return err
+	case <-r.clock.After(n.backoff):
+		// The stop may have come at the same moment, and select picks either
+		// of two ready cases: never start another try after one.
+		if r.stopping() {
+			r.halt()
+
+			return err
+		}
+
+		return nil
 	}
 }
 
