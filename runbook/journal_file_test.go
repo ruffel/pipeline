@@ -461,7 +461,7 @@ func TestOpenJournal_ChecksOutputLinesThatInspectPassesOver(t *testing.T) {
 	next := written[len(written)-1].Seq + 1
 
 	appendBytes(t, path, fmt.Sprintf(
-		`{"v":1,"seq":%d,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"quote " never closed}`+"\n", next))
+		`{"v":1,"seq":%d,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"a bad \x escape"}`+"\n", next))
 
 	state, err := runbook.Inspect(path)
 	require.NoError(t, err)
@@ -469,4 +469,30 @@ func TestOpenJournal_ChecksOutputLinesThatInspectPassesOver(t *testing.T) {
 
 	_, err = runbook.OpenJournal(path)
 	require.ErrorIs(t, err, runbook.ErrJournalCorrupt)
+}
+
+// A line that sets its sequence number twice: the decoder uses the later
+// one, and so must every reader, fast path or not.
+func TestInspect_ALaterDuplicateKeyIsReadAsTheDecoderReadsIt(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	written := runToFile(t, path, mustPlan(t, runbook.Effect("a", ok())))
+	last := written[len(written)-1].Seq
+
+	appendBytes(t, path, fmt.Sprintf(
+		`{"v":1,"seq":%d,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"x","seq":%d}`+"\n", last+1, last+50))
+
+	state, err := runbook.Inspect(path)
+	require.NoError(t, err)
+	assert.Equal(t, last+50, state.LastSeq, "Inspect")
+
+	j, err := runbook.OpenJournal(path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = j.Close() })
+
+	state, err = j.State()
+	require.NoError(t, err)
+	assert.Equal(t, last+50, state.LastSeq, "Journal.State")
 }

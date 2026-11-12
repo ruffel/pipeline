@@ -143,8 +143,8 @@ func BenchmarkOpenJournal(b *testing.B) {
 // The replay target, as a property that holds on any machine: replaying a
 // journal must not cost an allocation per output line, nor hold the journal
 // in memory. Before replay streamed, a 256 MiB journal cost 3 GB of
-// allocations and ran at 126 MB/s; it now costs about 0.5 MB and runs at
-// several GB/s (see BenchmarkInspect).
+// allocations and ran at 124 MB/s; it now costs about 0.5 MB and runs at
+// about 2 GB/s (see BenchmarkInspect).
 //
 // It is not parallel: it counts the process's allocations.
 //
