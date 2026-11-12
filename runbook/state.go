@@ -88,26 +88,23 @@ type ItemState struct {
 // order. It refuses events from a newer schema version, and events whose
 // sequence numbers don't increase.
 func Replay(events []Event) (*State, error) {
-	s := &State{
+	s := newState()
+
+	for _, e := range events {
+		if err := s.add(e); err != nil {
+			return nil, err
+		}
+	}
+
+	return s, nil
+}
+
+func newState() *State {
+	return &State{
 		elements: map[string]ElementState{},
 		values:   map[string]map[string]json.RawMessage{},
 		items:    map[string]map[string]ItemState{},
 	}
-
-	for _, e := range events {
-		if e.V > SchemaVersion {
-			return nil, fmt.Errorf("runbook: event %d: schema version %d is newer than this reader's %d", e.Seq, e.V, SchemaVersion)
-		}
-
-		if e.Seq <= s.LastSeq {
-			return nil, fmt.Errorf("runbook: event %d follows event %d: sequence numbers must increase", e.Seq, s.LastSeq)
-		}
-
-		s.LastSeq = e.Seq
-		s.apply(e)
-	}
-
-	return s, nil
 }
 
 // Element returns where the element at path stands. An element no attempt
@@ -162,6 +159,54 @@ func (s *State) Unfinished() bool {
 	}
 
 	return s.Attempts[len(s.Attempts)-1].Outcome != OutcomePassed
+}
+
+// add replays one more event, which must follow the last one.
+func (s *State) add(e Event) error {
+	if err := s.follows(e.V, e.Seq); err != nil {
+		return err
+	}
+
+	s.LastSeq = e.Seq
+	s.apply(e)
+
+	return nil
+}
+
+// follows checks an event's version and place in the sequence.
+func (s *State) follows(v int, seq int64) error {
+	if v > SchemaVersion {
+		return fmt.Errorf("runbook: event %d: schema version %d is newer than this reader's %d", seq, v, SchemaVersion)
+	}
+
+	if seq <= s.LastSeq {
+		return fmt.Errorf("runbook: event %d follows event %d: sequence numbers must increase", seq, s.LastSeq)
+	}
+
+	return nil
+}
+
+// addLine replays one more journal line. Output, progress, messages, custom
+// events and retries change no state, so they are recognised from the start
+// of the line and passed over without being decoded; everything else is
+// decoded and applied.
+func (s *State) addLine(line []byte) error {
+	if env, ok := peekEvent(line); ok && env.chatter {
+		if err := s.follows(env.v, env.seq); err != nil {
+			return err
+		}
+
+		s.LastSeq = env.seq
+
+		return nil
+	}
+
+	e, err := decodeEvent(line)
+	if err != nil {
+		return err
+	}
+
+	return s.add(e)
 }
 
 func (s *State) apply(e Event) {

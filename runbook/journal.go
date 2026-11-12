@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"sync"
 )
 
@@ -44,15 +43,22 @@ func (e *JournalBusyError) Is(target error) bool {
 // writerPID returns the PID recorded by the latest run in the journal at
 // path, or 0.
 func writerPID(path string) int {
-	events, _ := readJournal(path)
+	pid := 0
 
-	for _, e := range slices.Backward(events) {
-		if e.Kind == EventRunStarted {
-			return e.PID
+	// Only run.started lines matter, so the rest are passed over undecoded.
+	_, _ = scanJournal(path, func(line []byte) error {
+		if env, ok := peekEvent(line); ok && env.chatter {
+			return nil
 		}
-	}
 
-	return 0
+		if e, err := decodeEvent(line); err == nil && e.Kind == EventRunStarted {
+			pid = e.PID
+		}
+
+		return nil
+	})
+
+	return pid
 }
 
 // Journal is the durable record of a plan's runs. Every outcome is written to
@@ -84,7 +90,9 @@ func WithWriteHook(hook func(Event) error) JournalOption {
 // lines; the memory store just keeps them.
 type store interface {
 	append(line []byte, durable bool) error
-	lines() ([][]byte, error)
+	// scan calls fn with each stored line, in order. fn must not keep the
+	// line: it is only valid during the call.
+	scan(fn func(line []byte) error) error
 	close() error
 }
 
@@ -105,33 +113,38 @@ func (j *Journal) Events() ([]Event, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	lines, err := j.store.lines()
-	if err != nil {
-		return nil, err
-	}
+	var events []Event
 
-	events := make([]Event, 0, len(lines))
-
-	for i, line := range lines {
+	err := j.store.scan(func(line []byte) error {
 		e, err := decodeEvent(line)
 		if err != nil {
-			return nil, fmt.Errorf("runbook: journal line %d: %w", i+1, err)
+			return err
 		}
 
 		events = append(events, e)
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return events, nil
 }
 
-// State replays the journal. See [Replay].
+// State replays the journal. See [Replay]. It reads the journal as it
+// replays, without holding its events in memory.
 func (j *Journal) State() (*State, error) {
-	events, err := j.Events()
-	if err != nil {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	state := newState()
+
+	if err := j.store.scan(state.addLine); err != nil {
 		return nil, err
 	}
 
-	return Replay(events)
+	return state, nil
 }
 
 // Close closes the journal. Later writes fail with [ErrJournalClosed].
@@ -213,8 +226,14 @@ func (m *memoryStore) append(line []byte, _ bool) error {
 	return nil
 }
 
-func (m *memoryStore) lines() ([][]byte, error) {
-	return append([][]byte(nil), m.data...), nil
+func (m *memoryStore) scan(fn func(line []byte) error) error {
+	for i, line := range m.data {
+		if err := fn(line); err != nil {
+			return fmt.Errorf("runbook: journal line %d: %w", i+1, err)
+		}
+	}
+
+	return nil
 }
 
 func (m *memoryStore) close() error {

@@ -48,10 +48,14 @@ func (r *journalReader) next(fn func(line []byte) error) error {
 		return fmt.Errorf("runbook: journal: read %s: %w", r.path, err)
 	}
 
-	br := bufio.NewReader(f)
+	br := bufio.NewReaderSize(f, scanBuffer)
 
 	for {
-		line, err := br.ReadBytes('\n')
+		// The line is only valid until the next read: fn must not keep it.
+		line, err := br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			line, err = longLine(br, line)
+		}
 
 		switch {
 		case errors.Is(err, io.EOF):
@@ -72,6 +76,25 @@ func (r *journalReader) next(fn func(line []byte) error) error {
 
 		r.line++
 		r.offset += int64(len(line))
+	}
+}
+
+// scanBuffer is the reader's buffer. Lines that fit are handed to the
+// callback without being copied, and nearly all do: output is cut to
+// MaxOutputLine.
+const scanBuffer = 64 << 10
+
+// longLine reads the rest of a line that did not fit the reader's buffer.
+func longLine(br *bufio.Reader, start []byte) ([]byte, error) {
+	line := append([]byte(nil), start...)
+
+	for {
+		more, err := br.ReadSlice('\n')
+		line = append(line, more...)
+
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err
+		}
 	}
 }
 
@@ -117,18 +140,21 @@ func readJournal(path string) ([]Event, error) {
 // The state's Live field reports whether a process holds the journal open
 // for writing: replay alone cannot tell a run that is still going from one
 // that crashed.
+//
+// Inspect is quick on a long journal. Output, progress and messages are most
+// of one and change no state, so it reads only the start of those lines and
+// never decodes them; it does not notice damage inside one. OpenJournal
+// checks every line.
 func Inspect(path string) (*State, error) {
-	events, err := readJournal(path)
+	state := newState()
+
+	// The journal is replayed as it is read, never held in memory: a long
+	// run's journal is mostly output, which can be far larger than the state.
+	// A line that doesn't decode or doesn't follow the last one is damage,
+	// reported as OpenJournal reports it.
+	_, err := scanJournal(path, state.addLine)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
-	}
-
-	state, err := Replay(events)
-	if err != nil {
-		// Events that decode but don't replay, such as sequence numbers that
-		// go backwards, are damage too. OpenJournal reports the same file the
-		// same way.
-		return nil, fmt.Errorf("%w: %s: %w", ErrJournalCorrupt, path, err)
 	}
 
 	state.Live = journalLocked(path)
