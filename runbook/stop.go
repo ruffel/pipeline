@@ -1,6 +1,10 @@
 package runbook
 
-import "sync"
+import (
+	"context"
+	"fmt"
+	"sync"
+)
 
 // StopMode says how a run was asked to stop.
 type StopMode string
@@ -9,6 +13,9 @@ type StopMode string
 const (
 	// StopGraceful lets running steps finish and starts nothing new.
 	StopGraceful StopMode = "graceful"
+	// StopCancel cancels running steps, as cancelling the run's context
+	// does.
+	StopCancel StopMode = "cancel"
 )
 
 // Stopper asks a run to stop gracefully: no new step starts, steps already
@@ -69,24 +76,55 @@ func WithStopper(s *Stopper) Option {
 // StopRequest is a stop asked of a run.
 type StopRequest struct {
 	Mode StopMode
-	// By is how the request was made: "stopper" for a [Stopper].
+	// By is how the request was made: "stopper" for a [Stopper], "control"
+	// for [RequestStop].
 	By string
 	// Who is who or what asked, as they said.
 	Who string
+	// UID is the user that owned a [RequestStop] request's file. It is nil
+	// for a Stopper.
+	UID *int
 }
 
-// stopBy is what a Stopper's request is recorded as made by.
-const stopBy = "stopper"
+// How a stop request was made.
+const (
+	stopBy        = "stopper"
+	stopByControl = "control"
+)
+
+// stopSignal is a run's graceful stop: the first request wins, and is
+// readable once done is closed.
+type stopSignal struct {
+	once sync.Once
+	done chan struct{}
+	req  StopRequest
+}
+
+func newStopSignal() *stopSignal {
+	return &stopSignal{done: make(chan struct{})}
+}
+
+// fire asks for the stop. Only the first request counts.
+func (s *stopSignal) fire(req StopRequest) {
+	s.once.Do(func() {
+		s.req = req
+		close(s.done)
+	})
+}
 
 // stopping reports whether the run has been asked to stop, and records the
 // request the first time it is seen.
 func (r *runner) stopping() bool {
-	if r.stopper == nil {
-		return false
+	if r.stopper != nil {
+		select {
+		case <-r.stopper.Done():
+			r.stop.fire(r.stopperRequest())
+		default:
+		}
 	}
 
 	select {
-	case <-r.stopper.Done():
+	case <-r.stop.done:
 		r.noteStop()
 
 		return true
@@ -95,31 +133,55 @@ func (r *runner) stopping() bool {
 	}
 }
 
-// stopDone is closed when the run is asked to stop. It is nil, and never
-// ready, for a run with no Stopper.
+// stopDone is closed when the run is asked to stop gracefully. A Stopper's
+// request reaches it through watchStop.
 func (r *runner) stopDone() <-chan struct{} {
-	if r.stopper == nil {
-		return nil
-	}
-
-	return r.stopper.Done()
+	return r.stop.done
 }
 
-// noteStop records the stop request, once. A journal failure here is seen
-// by the run's next write.
+func (r *runner) stopperRequest() StopRequest {
+	return StopRequest{Mode: StopGraceful, By: stopBy, Who: r.stopper.requester()}
+}
+
+// noteStop records the graceful stop request, once. A journal failure here
+// is seen by the run's next write.
 func (r *runner) noteStop() {
 	r.stopNoted.Do(func() {
-		_ = r.emit(Event{
-			Kind: EventStopRequested, Path: r.plan.root.path, Mode: StopGraceful, By: stopBy, Who: r.stopper.requester(),
-		})
+		_ = r.emit(stopEvent(r.plan.root.path, r.stop.req))
 	})
+}
+
+// cancelRequested records a request to cancel the run, once, and cancels it.
+func (r *runner) cancelRequested(req StopRequest) {
+	r.cancelNoted.Do(func() {
+		_ = r.emit(stopEvent(r.plan.root.path, req))
+
+		cause := "runbook: cancel requested"
+		if req.Who != "" {
+			cause += " by " + req.Who
+		}
+
+		r.cancel(fmt.Errorf("%s: %w", cause, context.Canceled))
+	})
+}
+
+func stopEvent(path string, req StopRequest) Event {
+	return Event{Kind: EventStopRequested, Path: path, Mode: req.Mode, By: req.By, Who: req.Who, UID: req.UID}
 }
 
 // watchStop records a stop request as soon as it is made, so viewers learn
 // of it while steps are still running, until done is closed.
 func (r *runner) watchStop(done <-chan struct{}) {
+	var stopper <-chan struct{}
+	if r.stopper != nil {
+		stopper = r.stopper.Done()
+	}
+
 	select {
-	case <-r.stopDone():
+	case <-stopper:
+		r.stop.fire(r.stopperRequest())
+		r.noteStop()
+	case <-r.stop.done:
 		r.noteStop()
 	case <-done:
 	}

@@ -21,8 +21,8 @@ var (
 	// attempt passed. [Force] runs the plan again regardless.
 	ErrAlreadyComplete = errors.New("runbook: the journal's latest attempt already passed")
 
-	// ErrStopped is returned by [Run] when a [Stopper] stopped the run
-	// before its work was done. The run is unfinished, and a later Run
+	// ErrStopped is returned by [Run] when a [Stopper] or [RequestStop]
+	// stopped the run before its work was done. The run is unfinished, and a later Run
 	// resumes it.
 	ErrStopped = errors.New("runbook: the run was stopped")
 

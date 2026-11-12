@@ -77,7 +77,7 @@ func OpenJournal(path string, opts ...JournalOption) (*Journal, error) {
 		return nil, err
 	}
 
-	j := &Journal{store: &fileStore{path: path, f: f, sync: f.Sync}, seq: seq}
+	j := &Journal{store: &fileStore{path: path, f: f, sync: f.Sync}, seq: seq, path: path}
 
 	for _, o := range opts {
 		o(j)
@@ -272,4 +272,16 @@ func (s *fileStore) close() error {
 	_ = flock(s.f, syscall.LOCK_UN)
 
 	return s.f.Close()
+}
+
+// fileUID returns the user that owns a file.
+func fileUID(info os.FileInfo) *int {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil
+	}
+
+	uid := int(st.Uid)
+
+	return &uid
 }

@@ -39,6 +39,11 @@ type Result struct {
 // [OutcomeStopped], and Run returns [ErrStopped] (joined with the errors
 // of any steps that failed).
 //
+// Other processes stop or cancel a run on a file journal with
+// [RequestStop]. Run makes a directory for their requests beside the
+// journal, named after it with ".control" added, that only its owner can
+// write to.
+//
 // If the journal already has attempts, Run resumes: it makes a new attempt
 // that does only what is left.
 //
@@ -92,28 +97,46 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		}
 	}
 
+	// Other processes ask a run to stop through files beside the journal.
+	var control string
+
+	if j.path != "" {
+		control = controlDir(j.path)
+
+		if err := prepareControl(control); err != nil {
+			return nil, err
+		}
+	}
+
+	if cfg.controlPoll <= 0 {
+		cfg.controlPoll = DefaultControlPoll
+	}
+
 	runCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
 	r := &runner{
-		plan:      plan,
-		journal:   j,
-		clock:     cfg.clock,
-		id:        newRunID(),
-		attempt:   len(prev.Attempts) + 1,
-		observers: cfg.observers,
-		obsCtx:    context.WithoutCancel(ctx),
-		cancel:    cancel,
-		runDone:   runCtx.Done(),
-		prev:      prev,
-		prior:     prior,
-		trust:     cfg.resume == ResumeTrust,
-		redact:    &redactor{fn: cfg.redact, secrets: in.secrets},
-		inputs:    in,
-		stopper:   cfg.stopper,
-		forced:    cfg.force && len(prev.Attempts) > 0,
-		values:    map[string]map[string]json.RawMessage{},
-		budget:    cfg.outputBudget,
+		plan:        plan,
+		journal:     j,
+		clock:       cfg.clock,
+		id:          newRunID(),
+		attempt:     len(prev.Attempts) + 1,
+		observers:   cfg.observers,
+		obsCtx:      context.WithoutCancel(ctx),
+		cancel:      cancel,
+		runDone:     runCtx.Done(),
+		prev:        prev,
+		prior:       prior,
+		trust:       cfg.resume == ResumeTrust,
+		redact:      &redactor{fn: cfg.redact, secrets: in.secrets},
+		inputs:      in,
+		stopper:     cfg.stopper,
+		stop:        newStopSignal(),
+		control:     control,
+		controlPoll: cfg.controlPoll,
+		forced:      cfg.force && len(prev.Attempts) > 0,
+		values:      map[string]map[string]json.RawMessage{},
+		budget:      cfg.outputBudget,
 	}
 
 	res, err := r.run(runCtx, cfg.labels)
@@ -152,12 +175,20 @@ type runner struct {
 	// skipRun is set when a step returns ErrSkipRun: no element starts after.
 	skipRun atomic.Bool
 
-	// stopper, if set, can stop the run gracefully. stopNoted records the
-	// request once; halted records that the stop kept something from
-	// happening.
-	stopper   *Stopper
-	stopNoted sync.Once
-	halted    atomic.Bool
+	// stop is the run's graceful stop, asked for by stopper, if set, or by
+	// a control file. stopNoted records the request once; halted records
+	// that the stop kept something from happening. cancelNoted records a
+	// control file's request to cancel.
+	stopper     *Stopper
+	stop        *stopSignal
+	stopNoted   sync.Once
+	halted      atomic.Bool
+	cancelNoted sync.Once
+
+	// control is the directory other processes write requests to, if the
+	// journal is a file; controlPoll is how often it is read.
+	control     string
+	controlPoll time.Duration
 
 	// mu serialises journal writes and observer calls, so observers see
 	// events in journal order.
@@ -220,13 +251,18 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 }
 
 // work runs the plan's elements, recording a stop request as soon as it is
-// made, and before the run finishes if it was made at all.
+// made, and before the run finishes if it was made at all. While it runs,
+// it reads requests that other processes leave in the control directory.
 func (r *runner) work(ctx context.Context) error {
 	done := make(chan struct{})
 
 	var watcher sync.WaitGroup
 
 	watcher.Go(func() { r.watchStop(done) })
+
+	if r.control != "" {
+		watcher.Go(func() { r.watchControl(done) })
+	}
 
 	err := r.children(ctx, r.plan.root)
 

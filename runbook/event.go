@@ -202,8 +202,10 @@ type Event struct {
 	Type string          `json:"type,omitempty"`
 	Data json.RawMessage `json:"data,omitempty"`
 
-	// stop.requested: how the run was asked to stop, how, and by whom.
+	// stop.requested: how the run was asked to stop, how, and by whom. UID
+	// is the user that owned a control file's request.
 	Mode StopMode `json:"mode,omitempty"`
 	By   string   `json:"by,omitempty"`
 	Who  string   `json:"who,omitempty"`
+	UID  *int     `json:"uid,omitempty"`
 }
