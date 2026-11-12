@@ -444,7 +444,7 @@ func TestApprove_ErrNotRunning(t *testing.T) {
 }
 
 // A stop ends a gate's wait without releasing it, so an approval waiting to
-// be read is not answered.
+// be read is not answered: the gate is no longer waiting.
 func TestApprove_AGateAStopInterrupted(t *testing.T) {
 	t.Parallel()
 
@@ -468,5 +468,5 @@ func TestApprove_AGateAStopInterrupted(t *testing.T) {
 
 	stopper.Stop("bob")
 	assert.Equal(t, runbook.ErrStopped, lr.wait(t).err)
-	require.ErrorIs(t, <-done, runbook.ErrNotRunning)
+	require.ErrorIs(t, <-done, runbook.ErrGateNotWaiting)
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ruffel/pipeline/runbook"
+	"github.com/ruffel/pipeline/runbook/runbooktest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -419,4 +420,124 @@ func TestPlainObserver_AGate(t *testing.T) {
   ▶ go approved by alice (control)
   ▶ go timed out: continue
 `, buf.String())
+}
+
+// A stop or cancel already pending when an approval arrives wins: the gate
+// is not released, and a cancel outranks a stop.
+func TestGate_APendingStopOrCancelOutranksAnApproval(t *testing.T) {
+	t.Parallel()
+
+	// What ends the wait is chosen at random among what is ready, so each
+	// case runs often enough to lose that draw.
+	const tries = 50
+
+	gate := func(a runbook.Approver) *runbook.Plan {
+		return mustPlan(t,
+			runbook.Gate("go", runbook.GateOptions{Approvers: []runbook.Approver{a}}),
+			runbook.Effect("after", ok()),
+		)
+	}
+
+	t.Run("stop", func(t *testing.T) {
+		t.Parallel()
+
+		for range tries {
+			stopper := runbook.NewStopper()
+			a := approver{name: "test", wait: func(context.Context, runbook.GateInfo) (string, error) {
+				stopper.Stop("alice")
+
+				return "bob", nil
+			}}
+
+			out := runPlan(t, t.Context(), gate(a), runbook.WithStopper(stopper))
+
+			require.Equal(t, runbook.ErrStopped, out.err)
+			require.Empty(t, kinds(out.events, runbook.EventGateReleased), "the gate is not released")
+			require.Equal(t, runbook.StatusStopped, out.state.Element("p/go").Status)
+		}
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		t.Parallel()
+
+		for range tries {
+			ctx, cancel := context.WithCancel(t.Context())
+			stopper := runbook.NewStopper()
+			a := approver{name: "test", wait: func(context.Context, runbook.GateInfo) (string, error) {
+				stopper.Stop("alice")
+				cancel()
+
+				return "bob", nil
+			}}
+
+			out := runPlan(t, ctx, gate(a), runbook.WithStopper(stopper))
+
+			require.ErrorIs(t, out.err, context.Canceled)
+			require.Equal(t, runbook.OutcomeCancelled, out.res.Outcome)
+			require.Empty(t, kinds(out.events, runbook.EventGateReleased), "the gate is not released")
+			require.Equal(t, runbook.ErrorCancelled, out.state.Element("p/go").Error.Kind)
+		}
+	})
+}
+
+// A crash after a gate is released, before it finishes, doesn't ask again on
+// resume. One its timeout declined does wait again, as declining fails it.
+func TestGate_ACrashAfterItsReleaseKeepsIt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("approved", func(t *testing.T) {
+		t.Parallel()
+
+		var asked atomic.Int32
+
+		a := approver{name: "test", wait: func(context.Context, runbook.GateInfo) (string, error) {
+			asked.Add(1)
+
+			return "alice", nil
+		}}
+		plan := mustPlan(t,
+			runbook.Gate("go", runbook.GateOptions{Approvers: []runbook.Approver{a}}),
+			runbook.Effect("after", ok()),
+		)
+
+		crash := runbooktest.CrashAfter("p/go", runbooktest.GateReleased)
+		_, err := runbook.Run(t.Context(), plan, crash.Journal)
+		require.ErrorIs(t, err, runbooktest.ErrCrashed)
+
+		state, err := crash.Journal.State()
+		require.NoError(t, err)
+		assert.True(t, state.Element("p/go").Done)
+
+		crash.Restart()
+
+		second := resumeOn(t, crash.Journal, plan)
+		require.NoError(t, second.err)
+		assert.Equal(t, int32(1), asked.Load())
+		assert.Contains(t, trace(second.events), "step.finished p/go skipped/earlier-attempt")
+	})
+
+	t.Run("declined", func(t *testing.T) {
+		t.Parallel()
+
+		plan := mustPlan(t,
+			runbook.Gate("go", runbook.GateOptions{
+				Approvers: []runbook.Approver{never(nil)}, Timeout: time.Hour, OnTimeout: runbook.TimeoutDecline,
+			}),
+			runbook.Effect("after", ok()),
+		)
+
+		crash := runbooktest.CrashAfter("p/go", runbooktest.GateReleased)
+		_, err := runbook.Run(t.Context(), plan, crash.Journal, runbook.WithClock(readyClock{}))
+		require.ErrorIs(t, err, runbooktest.ErrCrashed)
+
+		state, err := crash.Journal.State()
+		require.NoError(t, err)
+		assert.False(t, state.Element("p/go").Done)
+
+		crash.Restart()
+
+		second := resumeOn(t, crash.Journal, plan, runbook.WithClock(readyClock{}))
+		require.ErrorIs(t, second.err, runbook.ErrGateDeclined)
+		assert.Contains(t, trace(second.events), "gate.waiting p/go", "the gate waits again")
+	})
 }

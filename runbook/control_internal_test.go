@@ -510,3 +510,32 @@ func TestTakeRequest_AnApprovalMustNameItsGateTwice(t *testing.T) {
 		assert.False(t, ok, name)
 	}
 }
+
+// A gate that finishes without being released, while its run goes on,
+// answers the approval: the gate is no longer waiting.
+func TestApproveRequester_TheGateFinishedUnreleased(t *testing.T) {
+	t.Parallel()
+
+	q := newApprover(t)
+
+	var seq int64
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventRunStarted, Run: "r1"},
+		Event{Kind: EventGateWaiting, Run: "r1", Path: "p/go"},
+	)
+
+	done, err := q.step()
+	require.NoError(t, err)
+	require.False(t, done)
+	assert.Equal(t, []string{"r1"}, approvalsFor(t, q))
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventStopRequested, Run: "r1", Path: "p", Mode: StopGraceful},
+		Event{Kind: EventStepFinished, Run: "r1", Path: "p/go", Outcome: OutcomeStopped},
+	)
+
+	done, err = q.step()
+	require.True(t, done)
+	require.ErrorIs(t, err, ErrGateNotWaiting)
+}

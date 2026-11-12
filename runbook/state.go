@@ -71,8 +71,9 @@ type ElementState struct {
 	Error  *ErrorInfo
 	// Run is the attempt that last started or finished the element.
 	Run string
-	// Done means the element's work is complete: it passed, or was skipped
-	// because it was already done. A later failure clears it.
+	// Done means the element's work is complete: it passed, was skipped
+	// because it was already done, or is a gate that was released and not
+	// declined. A later failure clears it.
 	Done bool
 	// RunCalled means some attempt called the step's Run, so it may have
 	// changed the system.
@@ -229,6 +230,12 @@ func (s *State) apply(e Event) {
 	case EventGateWaiting, EventGateReleased:
 		el := s.elements[e.Path]
 		el.Waiting = e.Kind == EventGateWaiting
+		// A gate's work is done once it is released, even if the run
+		// ends before the gate finishes, unless its timeout declined it.
+		if e.Kind == EventGateReleased && e.Policy != TimeoutDecline {
+			el.Done = true
+		}
+
 		s.elements[e.Path] = el
 	case EventStepRunning:
 		el := s.elements[e.Path]

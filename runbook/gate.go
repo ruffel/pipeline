@@ -178,7 +178,22 @@ func (r *runner) gate(ctx context.Context, n *node) error {
 		return err
 	}
 
-	return r.released(ctx, n, rel, start)
+	return r.released(ctx, n, r.prevailing(ctx, rel), start)
+}
+
+// prevailing is how the wait ended once anything else already pending is
+// counted. The wait takes whichever of its cases is ready first, at random
+// if several are, but a cancel outranks a stop, and either outranks a
+// release.
+func (r *runner) prevailing(ctx context.Context, rel gateRelease) gateRelease {
+	switch {
+	case ctx.Err() != nil:
+		return gateRelease{end: gateCancelled}
+	case rel.end != gateStopped && r.stopping():
+		return gateRelease{end: gateStopped}
+	default:
+		return rel
+	}
 }
 
 // await waits for the first of: an approval, the timeout, a stop or a

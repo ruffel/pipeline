@@ -513,9 +513,10 @@ func writeRequest(dir, name string, data []byte) error {
 // attempt starts first, the approval is made again once that attempt's gate
 // is waiting.
 //
-// Approve returns [ErrGateNotWaiting] when the gate is not waiting, or is
-// released by its timeout instead, and [ErrNotRunning] when no run is in
-// progress, or the run finished first. It returns the context's error when
+// Approve returns [ErrGateNotWaiting] when the gate is not waiting, or stops
+// waiting without an approval (its timeout released it, or a stop or cancel
+// ended its wait), and [ErrNotRunning] when no run is in progress, or the
+// run finished first. It returns the context's error when
 // ctx is done first; the approval may still be acted on.
 func Approve(ctx context.Context, path, gate, who string) error {
 	path, data, err := newRequest(path, controlRequest{Who: who, Gate: gate})
@@ -544,12 +545,13 @@ type approveRequester struct {
 
 	// latest is the latest attempt's run, and open whether it has not
 	// finished. In that attempt, the gate is waiting, or was released, and if
-	// so whether by an approval.
+	// so whether by an approval, or finished.
 	latest   string
 	open     bool
 	waiting  bool
 	released bool
 	approved bool
+	finished bool
 	// issued is the run the approval was last written for.
 	issued string
 }
@@ -565,7 +567,10 @@ func (q *approveRequester) step() (bool, error) {
 	}
 
 	switch {
-	case q.released && q.issued == q.latest:
+	case (q.released || q.finished) && q.issued == q.latest:
+		// The gate the approval was issued to is through waiting. Unless
+		// it was approved, by this call or another approver, it never will
+		// be in this attempt.
 		if q.approved {
 			return true, nil
 		}
@@ -607,7 +612,7 @@ func (q *approveRequester) read() error {
 		}
 
 		if e.Kind == EventRunStarted {
-			q.latest, q.open, q.waiting, q.released, q.approved = e.Run, true, false, false, false
+			q.latest, q.open, q.waiting, q.released, q.approved, q.finished = e.Run, true, false, false, false, false
 
 			return nil
 		}
@@ -621,7 +626,7 @@ func (q *approveRequester) read() error {
 			q.open = false
 		case EventGateWaiting:
 			if e.Path == q.gate {
-				q.waiting, q.released = true, false
+				q.waiting, q.released, q.approved, q.finished = true, false, false, false
 			}
 		case EventGateReleased:
 			if e.Path == q.gate {
@@ -629,7 +634,7 @@ func (q *approveRequester) read() error {
 			}
 		case EventStepFinished:
 			if e.Path == q.gate {
-				q.waiting = false
+				q.waiting, q.finished = false, true
 			}
 		}
 
