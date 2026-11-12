@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -111,6 +112,7 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	err := r.emit(Event{
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
 		Plan: &spec, Fingerprint: r.plan.Fingerprint(), Labels: labels,
+		PID: os.Getpid(), Host: hostname(),
 	})
 	if err != nil {
 		return &Result{Run: r.id, Attempt: r.attempt, Outcome: OutcomeFailed}, err
@@ -619,6 +621,12 @@ func safely(fn func() error) (err error) {
 
 // runIDBytes is the size of a run ID before hex encoding.
 const runIDBytes = 8
+
+func hostname() string {
+	host, _ := os.Hostname()
+
+	return host
+}
 
 func newRunID() string {
 	b := make([]byte, runIDBytes)

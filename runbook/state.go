@@ -35,6 +35,9 @@ type State struct {
 	// LastSeq is the sequence number of the last event replayed. A viewer
 	// follows the journal from the event after it.
 	LastSeq int64
+	// Live reports whether a process held the journal open for writing when
+	// [Inspect] read it. It is false for states from other sources.
+	Live bool
 
 	elements map[string]ElementState
 	values   map[string]map[string]json.RawMessage
