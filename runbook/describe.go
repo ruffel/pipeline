@@ -83,6 +83,12 @@ func describeNotes(n *node) []string {
 		if n.tries > 1 {
 			notes = append(notes, fmt.Sprintf("%d tries", n.tries))
 		}
+	case KindGate:
+		notes = append(notes, string(n.kind))
+
+		if n.gate.timeout > 0 {
+			notes = append(notes, fmt.Sprintf("%s after %s", n.gate.onTimeout, n.gate.timeout))
+		}
 	}
 
 	return notes

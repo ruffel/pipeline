@@ -102,6 +102,8 @@ func errorInfo(err error) *ErrorInfo {
 		info.Kind = ErrorTimeout
 	case errors.Is(err, context.Canceled):
 		info.Kind = ErrorCancelled
+	case errors.Is(err, ErrGateDeclined):
+		info.Kind = ErrorDeclined
 	}
 
 	return info

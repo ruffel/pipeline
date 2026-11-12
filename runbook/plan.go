@@ -39,6 +39,9 @@ type node struct {
 	tries    int
 	backoff  time.Duration
 	timeout  time.Duration
+
+	// Gate fields.
+	gate *gateSettings
 }
 
 // NewPlan validates elems and returns them as a plan named name. The plan is
@@ -46,7 +49,8 @@ type node struct {
 //
 // It reports every problem it finds, each prefixed with the path of the
 // element at fault: an invalid or duplicate name, a nil step, a negative
-// limit, retry count or timeout, or an Observe step that has Check or Undo.
+// limit, retry count or timeout, an Observe step that has Check or Undo, or
+// a gate with a nil approver or a timeout and policy that don't go together.
 // Empty groups are allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
 	b := &builder{}
@@ -105,6 +109,10 @@ type NodeSpec struct {
 	Tries   int           `json:"tries,omitempty"`
 	Backoff time.Duration `json:"backoff,omitempty"`
 	Timeout time.Duration `json:"timeout,omitempty"`
+
+	// Gate fields. Timeout above is the gate's.
+	Prompt    string        `json:"prompt,omitempty"`
+	OnTimeout TimeoutPolicy `json:"onTimeout,omitempty"`
 }
 
 func (n *node) spec() NodeSpec {
@@ -123,6 +131,10 @@ func (n *node) spec() NodeSpec {
 		Timeout:     n.timeout,
 	}
 
+	if n.gate != nil {
+		s.Prompt, s.Timeout, s.OnTimeout = n.gate.prompt, n.gate.timeout, n.gate.onTimeout
+	}
+
 	if n.kind == KindGroup {
 		s.Failure = n.failure
 
@@ -134,11 +146,11 @@ func (n *node) spec() NodeSpec {
 	return s
 }
 
-// canSettle reports whether n has an Effect or Ensure step beneath it. A
-// group of only Observe steps has nothing to finish, so it runs on every
+// canSettle reports whether n has an Effect, Ensure or Gate step beneath it.
+// A group of only Observe steps has nothing to finish, so it runs on every
 // attempt.
 func (n *node) canSettle() bool {
-	if n.kind == KindEffect || n.kind == KindEnsure {
+	if n.kind == KindEffect || n.kind == KindEnsure || n.kind == KindGate {
 		return true
 	}
 
@@ -208,6 +220,8 @@ func (b *builder) group(parent *node, g GroupNode) *node {
 			c = b.group(n, el)
 		case StepNode:
 			c = b.step(n, el)
+		case GateNode:
+			c = b.gate(n, el)
 		default:
 			b.failf(n.path, "unsupported element %T", e)
 
@@ -256,14 +270,49 @@ func (b *builder) step(parent *node, s StepNode) *node {
 	return n
 }
 
+func (b *builder) gate(parent *node, g GateNode) *node {
+	n := b.base(parent, g.name, g.description, KindGate, g.labels)
+	o := g.opts
+	n.gate = &gateSettings{prompt: o.Prompt, approvers: o.Approvers, timeout: o.Timeout, onTimeout: o.OnTimeout}
+
+	for i, a := range o.Approvers {
+		if isNilValue(a) {
+			b.failf(n.path, "approver %d is nil", i)
+		}
+	}
+
+	switch {
+	case o.Timeout < 0:
+		b.failf(n.path, "timeout may not be negative")
+	case o.Timeout > 0 && o.OnTimeout == "":
+		b.failf(n.path, "a timeout needs OnTimeout")
+	case o.Timeout == 0 && o.OnTimeout != "":
+		b.failf(n.path, "OnTimeout needs a timeout")
+	}
+
+	switch o.OnTimeout {
+	case "", TimeoutContinue, TimeoutDecline, TimeoutStop:
+	default:
+		b.failf(n.path, "unknown timeout policy %q", o.OnTimeout)
+	}
+
+	return n
+}
+
 // isNil reports whether step is nil, or holds a nil func, pointer, map,
 // slice, channel or interface, any of which would panic when Run is called.
 func isNil(step Step) bool {
-	if step == nil {
+	return isNilValue(step)
+}
+
+// isNilValue reports whether x is nil, or holds a nil func, pointer, map,
+// slice, channel or interface.
+func isNilValue(x any) bool {
+	if x == nil {
 		return true
 	}
 
-	v := reflect.ValueOf(step)
+	v := reflect.ValueOf(x)
 
 	switch v.Kind() { //nolint:exhaustive // Only nil-capable kinds can hold nil.
 	case reflect.Func, reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Interface:

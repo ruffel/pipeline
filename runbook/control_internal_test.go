@@ -38,9 +38,13 @@ func newRequester(t *testing.T, mode StopMode) *stopRequester {
 	path := filepath.Join(t.TempDir(), "test.journal")
 	require.NoError(t, os.Mkdir(controlDir(path), controlDirMode))
 
+	kind, err := controlFile(mode)
+	require.NoError(t, err)
+
 	return &stopRequester{
 		reader: journalReader{path: path},
 		dir:    controlDir(path),
+		kind:   kind,
 		mode:   mode,
 		data:   []byte(`{"who":"alice"}`),
 		locked: func(string) bool { return true },
@@ -60,7 +64,7 @@ func requestFor(t *testing.T, q *stopRequester) []string {
 	for _, e := range entries {
 		req, ok := takeRequest(q.dir, e.Name())
 		require.True(t, ok, e.Name())
-		assert.Equal(t, q.mode, req.mode)
+		assert.Equal(t, q.kind, req.kind)
 		assert.Equal(t, "alice", req.Who)
 
 		runs = append(runs, req.run)
@@ -192,7 +196,7 @@ func TestTakeRequest_LeavesNothingBehind(t *testing.T) {
 
 	req, ok := takeRequest(dir, "stop.r1")
 	require.True(t, ok)
-	assert.Equal(t, controlRequest{Who: "alice", mode: StopGraceful, run: "r1", uid: req.uid}, req)
+	assert.Equal(t, controlRequest{Who: "alice", kind: requestStop, run: "r1", uid: req.uid}, req)
 
 	_, ok = takeRequest(dir, "stop.r1")
 	assert.False(t, ok, "a request is taken once")
@@ -246,7 +250,7 @@ func TestStopRequester_AStaleCallerLeavesTheCurrentRequest(t *testing.T) {
 
 	reqs := takeRequests(current.dir, "r2")
 	require.Len(t, reqs, 1, "the request for the running attempt is still there")
-	assert.Equal(t, StopGraceful, reqs[0].mode)
+	assert.Equal(t, requestStop, reqs[0].kind)
 
 	entries, err := os.ReadDir(current.dir)
 	require.NoError(t, err)
@@ -317,8 +321,8 @@ func TestTakeRequests_CancelsFirstAndOnlyForTheRun(t *testing.T) {
 func TestRequestName_RefusesARunThatIsNotAName(t *testing.T) {
 	t.Parallel()
 
-	for _, run := range []string{"", "../r1", "a/b", "a\\b", "a\x00b"} {
-		_, err := requestName(StopGraceful, run)
+	for _, run := range []string{"", "../r1", "a/b", "a\\b", "a\x00b", "r1.r2"} {
+		_, err := requestName(requestStop, run, "")
 		assert.Error(t, err, run)
 	}
 }
@@ -340,4 +344,198 @@ func TestCheckControlDir_RefusesAnotherUsersDirectory(t *testing.T) {
 
 	require.NoError(t, checkControlDir(dir, info, *uid))
 	require.ErrorContains(t, checkControlDir(dir, info, *uid+1), "belongs to user")
+}
+
+func newApprover(t *testing.T) *approveRequester {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "test.journal")
+	require.NoError(t, os.Mkdir(controlDir(path), controlDirMode))
+
+	return &approveRequester{
+		reader: journalReader{path: path},
+		dir:    controlDir(path),
+		gate:   "p/go",
+		data:   []byte(`{"who":"alice","gate":"p/go"}`),
+		locked: func(string) bool { return true },
+	}
+}
+
+// approvalsFor takes the approvals in place, and returns the runs they are
+// for.
+func approvalsFor(t *testing.T, q *approveRequester) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(q.dir)
+	require.NoError(t, err)
+
+	runs := make([]string, 0, len(entries))
+
+	for _, e := range entries {
+		req, ok := takeRequest(q.dir, e.Name())
+		require.True(t, ok, e.Name())
+		assert.Equal(t, requestApprove, req.kind)
+		assert.Equal(t, "p/go", req.Gate)
+
+		runs = append(runs, req.run)
+	}
+
+	return runs
+}
+
+// A re-exec before the gate is approved asks again, once the new attempt's
+// gate is waiting.
+func TestApproveRequester_AsksANewAttemptAgain(t *testing.T) {
+	t.Parallel()
+
+	q := newApprover(t)
+
+	var seq int64
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventRunStarted, Run: "r1"},
+		Event{Kind: EventGateWaiting, Run: "r1", Path: "p/go"},
+	)
+
+	done, err := q.step()
+	require.NoError(t, err)
+	require.False(t, done)
+	assert.Equal(t, []string{"r1"}, approvalsFor(t, q))
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventStepFinished, Run: "r1", Path: "p/go", Outcome: OutcomeStopped},
+		Event{Kind: EventRunFinished, Run: "r1", Outcome: OutcomeStopped},
+		Event{Kind: EventRunStarted, Run: "r2"},
+	)
+
+	done, err = q.step()
+	require.NoError(t, err)
+	require.False(t, done, "the new attempt hasn't reached the gate yet")
+	assert.Empty(t, approvalsFor(t, q))
+
+	journalLines(t, q.reader.path, &seq, Event{Kind: EventGateWaiting, Run: "r2", Path: "p/go"})
+
+	done, err = q.step()
+	require.NoError(t, err)
+	require.False(t, done)
+	assert.Equal(t, []string{"r2"}, approvalsFor(t, q))
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventGateReleased, Run: "r2", Path: "p/go", By: "control", Who: "alice"},
+	)
+
+	done, err = q.step()
+	require.True(t, done)
+	require.NoError(t, err)
+}
+
+// A gate released by its timeout was never approved.
+func TestApproveRequester_TheGateTimedOutFirst(t *testing.T) {
+	t.Parallel()
+
+	q := newApprover(t)
+
+	var seq int64
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventRunStarted, Run: "r1"},
+		Event{Kind: EventGateWaiting, Run: "r1", Path: "p/go"},
+	)
+
+	done, err := q.step()
+	require.NoError(t, err)
+	require.False(t, done)
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventGateReleased, Run: "r1", Path: "p/go", By: "timeout", Policy: TimeoutContinue},
+	)
+
+	done, err = q.step()
+	require.True(t, done)
+	require.ErrorIs(t, err, ErrGateNotWaiting)
+}
+
+// Another approver releasing the gate answers the approval: the gate is
+// approved.
+func TestApproveRequester_AnotherApproverWasFirst(t *testing.T) {
+	t.Parallel()
+
+	q := newApprover(t)
+
+	var seq int64
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventRunStarted, Run: "r1"},
+		Event{Kind: EventGateWaiting, Run: "r1", Path: "p/go"},
+	)
+
+	done, err := q.step()
+	require.NoError(t, err)
+	require.False(t, done)
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventGateReleased, Run: "r1", Path: "p/go", By: "stdin", Who: "bob"},
+		Event{Kind: EventRunFinished, Run: "r1", Outcome: OutcomePassed},
+	)
+
+	done, err = q.step()
+	require.True(t, done)
+	require.NoError(t, err)
+}
+
+func TestTakeRequest_AnApprovalMustNameItsGateTwice(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	key := gateKey("p/go")
+
+	write := func(name, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+	}
+
+	write("approve.r1."+key, `{"who":"alice","gate":"p/go"}`)
+
+	req, ok := takeRequest(dir, "approve.r1."+key)
+	require.True(t, ok)
+	assert.Equal(t, controlRequest{Who: "alice", Gate: "p/go", kind: requestApprove, run: "r1", uid: req.uid}, req)
+
+	for name, body := range map[string]string{
+		"approve.r1." + key:            `{"who":"alice","gate":"p/other"}`,
+		"approve.r1." + gateKey("p/x"): `{"who":"alice","gate":"p/go"}`,
+		"approve.r1":                   `{"who":"alice","gate":"p/go"}`,
+	} {
+		write(name, body)
+
+		_, ok := takeRequest(dir, name)
+		assert.False(t, ok, name)
+	}
+}
+
+// A gate that finishes without being released, while its run goes on,
+// answers the approval: the gate is no longer waiting.
+func TestApproveRequester_TheGateFinishedUnreleased(t *testing.T) {
+	t.Parallel()
+
+	q := newApprover(t)
+
+	var seq int64
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventRunStarted, Run: "r1"},
+		Event{Kind: EventGateWaiting, Run: "r1", Path: "p/go"},
+	)
+
+	done, err := q.step()
+	require.NoError(t, err)
+	require.False(t, done)
+	assert.Equal(t, []string{"r1"}, approvalsFor(t, q))
+
+	journalLines(t, q.reader.path, &seq,
+		Event{Kind: EventStopRequested, Run: "r1", Path: "p", Mode: StopGraceful},
+		Event{Kind: EventStepFinished, Run: "r1", Path: "p/go", Outcome: OutcomeStopped},
+	)
+
+	done, err = q.step()
+	require.True(t, done)
+	require.ErrorIs(t, err, ErrGateNotWaiting)
 }

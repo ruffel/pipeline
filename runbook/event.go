@@ -28,6 +28,13 @@ const (
 	EventStepRunning  EventKind = "step.running"
 	EventStepFinished EventKind = "step.finished"
 
+	// EventGateWaiting records a gate starting to wait, with its deadline.
+	EventGateWaiting EventKind = "gate.waiting"
+	// EventGateReleased records what released a gate: an approval, or its
+	// timeout under the policy given. A gate a stop interrupts is not
+	// released.
+	EventGateReleased EventKind = "gate.released"
+
 	// EventValue is a value recorded by a step with Record.
 	EventValue EventKind = "value"
 	// EventItem is a step's result for one target.
@@ -49,7 +56,8 @@ const (
 func (k EventKind) Durable() bool {
 	switch k {
 	case EventRunStarted, EventRunFinished, EventGroupStarted, EventGroupFinished,
-		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem, EventStopRequested:
+		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem, EventStopRequested,
+		EventGateWaiting, EventGateReleased:
 		return true
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
 		return false
@@ -116,6 +124,8 @@ const (
 	ErrorCancelled ErrorKind = "cancelled"
 	ErrorTimeout   ErrorKind = "timeout"
 	ErrorPanic     ErrorKind = "panic"
+	// ErrorDeclined is a gate that timed out under [TimeoutDecline].
+	ErrorDeclined ErrorKind = "declined"
 )
 
 // ErrorInfo is an error as data, the same in the journal, in observers and in
@@ -202,8 +212,15 @@ type Event struct {
 	Type string          `json:"type,omitempty"`
 	Data json.RawMessage `json:"data,omitempty"`
 
-	// stop.requested: how the run was asked to stop, how, and by whom. UID
-	// is the user that owned a control file's request.
+	// gate.waiting: what the gate asks, and when it times out, if it does.
+	Prompt   string    `json:"prompt,omitempty"`
+	Deadline time.Time `json:"deadline,omitzero"`
+	// gate.released: the timeout policy applied, if it timed out. By and Who
+	// below say what released it otherwise.
+	Policy TimeoutPolicy `json:"policy,omitempty"`
+
+	// stop.requested and gate.released: how the run was asked to stop, how,
+	// and by whom. UID is the user that owned a control file's request.
 	Mode StopMode `json:"mode,omitempty"`
 	By   string   `json:"by,omitempty"`
 	Who  string   `json:"who,omitempty"`

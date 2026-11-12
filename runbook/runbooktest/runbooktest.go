@@ -53,6 +53,16 @@ const (
 	GroupFinished Point = "group.finished"
 )
 
+// The points a gate passes through, besides a step's.
+const (
+	// GateWaiting is just after gate.waiting: the gate is waiting for
+	// approval.
+	GateWaiting Point = "gate.waiting"
+	// GateReleased is just after gate.released: the gate is released, and
+	// has not finished.
+	GateReleased Point = "gate.released"
+)
+
 // Value is the point just after the step records key with Record.
 func Value(key string) Point {
 	return Point("value:" + key)

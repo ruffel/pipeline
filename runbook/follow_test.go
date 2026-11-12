@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"slices"
 	"testing"
 	"time"
 
@@ -32,10 +31,6 @@ func chatty(line string) runbook.Step {
 
 		return nil
 	})
-}
-
-func kinds(events []runbook.Event, kind runbook.EventKind) []runbook.Event {
-	return slices.DeleteFunc(slices.Clone(events), func(e runbook.Event) bool { return e.Kind != kind })
 }
 
 func TestFollow_AFinishedRunIsReplayedAndFollowReturns(t *testing.T) {
