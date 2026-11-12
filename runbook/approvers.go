@@ -3,6 +3,7 @@ package runbook
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -26,11 +27,12 @@ const defaultFilePoll = time.Second
 //
 // The file approves whenever it is there, including if it was created
 // before the gate started waiting. The approver removes the file when it
-// approves, so one file approves one gate. The file's first line, if any,
-// is recorded as who approved.
+// approves, so one file approves one gate, even if several gates watch it
+// at once. The file's first line, if any, is recorded as who approved.
 //
-// If the file can't be read or removed, the approver withdraws, which the
-// run logs as a warning; the gate goes on waiting for its other approvers.
+// If the file can't be removed, or read, the approver withdraws and leaves
+// the file where it was. The run logs that as a warning, and the gate goes
+// on waiting for its other approvers.
 func FileApprover(path string, poll time.Duration) Approver {
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
@@ -73,10 +75,11 @@ func (a *fileApprover) Wait(ctx context.Context, _ GateInfo) (string, error) {
 	}
 }
 
-// take reads and removes the file, if it is there, and returns its first
-// line.
+// take takes the file, if it is there, and returns its first line. The
+// file is taken by renaming it away: of approvers racing for one file, only
+// one rename succeeds, and only that one approves.
 func (a *fileApprover) take() (string, bool, error) {
-	f, err := os.Open(a.path)
+	info, err := os.Stat(a.path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", false, nil
 	}
@@ -85,20 +88,44 @@ func (a *fileApprover) take() (string, bool, error) {
 		return "", false, fmt.Errorf("runbook: file approver: %w", err)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(f, maxControlRequest))
-	_ = f.Close()
+	if !info.Mode().IsRegular() {
+		return "", false, fmt.Errorf("runbook: file approver: %s is not a regular file", a.path)
+	}
 
+	taken := filepath.Join(filepath.Dir(a.path), "."+filepath.Base(a.path)+".taken-"+rand.Text())
+
+	if err := os.Rename(a.path, taken); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil // Another approver took it.
+		}
+
+		return "", false, fmt.Errorf("runbook: file approver: %w", err)
+	}
+
+	data, err := readTaken(taken)
 	if err != nil {
+		// Put it back: a file that wasn't read hasn't approved anything.
+		_ = os.Rename(taken, a.path)
+
 		return "", false, fmt.Errorf("runbook: file approver: read %s: %w", a.path, err)
 	}
 
-	if err := os.Remove(a.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", false, fmt.Errorf("runbook: file approver: %w", err)
-	}
+	_ = os.Remove(taken)
 
 	first, _, _ := strings.Cut(string(data), "\n")
 
 	return strings.TrimSpace(first), true, nil
+}
+
+func readTaken(path string) ([]byte, error) {
+	f, err := os.Open(path) //nolint:gosec // The approver's own file, renamed.
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = f.Close() }()
+
+	return io.ReadAll(io.LimitReader(f, maxControlRequest))
 }
 
 // lineBacklog is how many lines a waiting [StdinApprover] holds before it
@@ -155,6 +182,11 @@ func (a *lineApprover) Wait(ctx context.Context, gate GateInfo) (string, error) 
 				return a.who(), nil
 			}
 		case <-a.in.done:
+			// Lines read before the input ended still count.
+			if a.drain(lines) {
+				return a.who(), nil
+			}
+
 			return "", fmt.Errorf("runbook: %s: %w", a.name, a.in.err)
 		case <-ctx.Done():
 			// End the unanswered question's line.
@@ -164,6 +196,20 @@ func (a *lineApprover) Wait(ctx context.Context, gate GateInfo) (string, error) 
 		}
 
 		question = "Type yes to approve " + gate.Path + ": "
+	}
+}
+
+// drain reports whether any line already delivered says yes.
+func (a *lineApprover) drain(lines <-chan string) bool {
+	for {
+		select {
+		case line := <-lines:
+			if yes(line) {
+				return true
+			}
+		default:
+			return false
+		}
 	}
 }
 
@@ -204,8 +250,6 @@ func newLineReader(r io.Reader) *lineReader {
 // join waits for lines, and returns where they arrive and a function to
 // stop waiting.
 func (l *lineReader) join() (<-chan string, func()) {
-	l.once.Do(func() { go l.read() })
-
 	// A few lines can wait to be taken, so none typed ahead is lost while
 	// the waiter asks again.
 	ch := make(chan string, lineBacklog)
@@ -213,6 +257,10 @@ func (l *lineReader) join() (<-chan string, func()) {
 	l.mu.Lock()
 	l.waiters = append(l.waiters, ch)
 	l.mu.Unlock()
+
+	// Reading starts once someone waits, so the first line has somewhere
+	// to go.
+	l.once.Do(func() { go l.read() })
 
 	return ch, func() {
 		l.mu.Lock()

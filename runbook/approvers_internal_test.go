@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +25,26 @@ func TestFileApprover_WithdrawsIfItCannotTakeTheFile(t *testing.T) {
 		// A directory opens, on some systems, but doesn't read.
 		_, err := FileApprover(t.TempDir(), time.Millisecond).Wait(t.Context(), GateInfo{})
 		require.Error(t, err)
+	})
+
+	t.Run("not openable", func(t *testing.T) {
+		t.Parallel()
+
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("needs a file this user can't open")
+		}
+
+		dir := t.TempDir()
+		flag := filepath.Join(dir, "continue")
+		require.NoError(t, os.WriteFile(flag, []byte("alice"), 0o000))
+
+		_, err := FileApprover(flag, time.Millisecond).Wait(t.Context(), GateInfo{})
+		require.ErrorContains(t, err, "permission denied")
+		assert.FileExists(t, flag, "a file it can't read is put back")
+
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Len(t, entries, 1, "nothing else is left behind")
 	})
 
 	t.Run("not removable", func(t *testing.T) {
@@ -213,5 +235,106 @@ func TestYes(t *testing.T) {
 
 	for _, line := range []string{"", "no", "n", "yess", "ye s", "ok"} {
 		assert.False(t, yes(line), strings.TrimSpace(line))
+	}
+}
+
+// Approvers watching the same file race for it, and only the one that takes
+// it approves.
+func TestFileApprover_OneFileApprovesOnce(t *testing.T) {
+	t.Parallel()
+
+	flag := filepath.Join(t.TempDir(), "continue")
+
+	for range 200 {
+		require.NoError(t, os.WriteFile(flag, []byte("alice"), 0o600))
+
+		var (
+			wg       sync.WaitGroup
+			approved atomic.Int32
+		)
+
+		errs := make(chan error, 4)
+
+		for range 4 {
+			wg.Go(func() {
+				_, ok, err := (&fileApprover{path: flag}).take()
+				if ok {
+					approved.Add(1)
+				}
+
+				errs <- err
+			})
+		}
+
+		wg.Wait()
+		close(errs)
+
+		for err := range errs {
+			require.NoError(t, err)
+		}
+
+		require.Equal(t, int32(1), approved.Load())
+		require.NoFileExists(t, flag)
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(flag))
+	require.NoError(t, err)
+	assert.Empty(t, entries, "nothing taken is left behind")
+}
+
+// An answer read just before the input ends still approves.
+func TestStdinApprover_AnAnswerBeforeTheEndApproves(t *testing.T) {
+	t.Parallel()
+
+	for range 50 {
+		in := newLineReader(nil)
+		in.once.Do(func() {}) // The test reads for it.
+
+		out := pausedWriter{asking: make(chan struct{}), resume: make(chan struct{})}
+		a := &lineApprover{name: "stdin", in: in, out: out, who: func() string { return "alice" }}
+		done := waitIn(t.Context(), a, GateInfo{Path: "p/go"})
+
+		// While the approver asks, the answer arrives and the input ends.
+		<-out.asking
+		in.deliver("yes")
+		in.err = io.EOF
+		close(in.done)
+
+		out.resume <- struct{}{}
+
+		got := <-done
+		require.NoError(t, got.err)
+		require.Equal(t, "alice", got.who)
+	}
+}
+
+// pausedWriter holds each write until the test lets it go on.
+type pausedWriter struct {
+	asking chan struct{}
+	resume chan struct{}
+}
+
+func (w pausedWriter) Write(p []byte) (int, error) {
+	w.asking <- struct{}{}
+
+	<-w.resume
+
+	return len(p), nil
+}
+
+// The first gate to ask can't lose an answer already waiting to be read.
+func TestStdinApprover_TheFirstGateGetsInputAlreadyThere(t *testing.T) {
+	t.Parallel()
+
+	for range 2000 {
+		out := make(writes, 1)
+		a := &lineApprover{
+			name: "stdin", in: newLineReader(strings.NewReader("yes\n")), out: out,
+			who: func() string { return "alice" },
+		}
+
+		who, err := a.Wait(t.Context(), GateInfo{Path: "p/go"})
+		require.NoError(t, err)
+		require.Equal(t, "alice", who)
 	}
 }
