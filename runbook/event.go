@@ -159,6 +159,11 @@ type Event struct {
 	Plan        *NodeSpec `json:"plan,omitempty"`
 	Fingerprint string    `json:"fingerprint,omitempty"`
 	Labels      L         `json:"labels,omitempty"`
+	// Inputs is what the attempt was given with WithInputs, with every
+	// Secret left out. InputsDigest identifies it: a hash of Inputs without
+	// its null and empty members.
+	Inputs       json.RawMessage `json:"inputs,omitempty"`
+	InputsDigest string          `json:"inputsDigest,omitempty"`
 	// Forced marks an attempt made with Force.
 	Forced bool `json:"forced,omitempty"`
 	// PID and Host say which process wrote the run.

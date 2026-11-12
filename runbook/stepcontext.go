@@ -129,6 +129,17 @@ func (s *StepContext) PreviousItems() map[string]ItemState {
 	return s.r.prior.Items(s.n.path)
 }
 
+// Inputs returns the value the run was given with [WithInputs], or nil. It
+// is the value itself, not a decoded copy, so its Secret fields hold their
+// values.
+func (s *StepContext) Inputs() any {
+	if s.r == nil {
+		return nil
+	}
+
+	return s.r.inputs.live
+}
+
 // Prior returns where the group or step at path stood when this attempt
 // started: whether an earlier attempt reached it, finished it, or called its
 // Run. It does not change during the attempt. It is for steps that bring the

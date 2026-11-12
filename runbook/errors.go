@@ -12,6 +12,11 @@ var (
 	// new journal for a new plan.
 	ErrPlanChanged = errors.New("runbook: the plan has changed since the journal's last attempt")
 
+	// ErrInputsChanged is returned by [Run] when the inputs differ from those
+	// the journal's latest attempt recorded. [WithNewInputs] accepts the
+	// change. Secrets are not compared: they are never recorded.
+	ErrInputsChanged = errors.New("runbook: the inputs have changed since the journal's last attempt")
+
 	// ErrAlreadyComplete is returned by [Run] when the journal's latest
 	// attempt passed. [Force] runs the plan again regardless.
 	ErrAlreadyComplete = errors.New("runbook: the journal's latest attempt already passed")
