@@ -172,6 +172,10 @@ func (f *follower) read(ctx context.Context) error {
 			return halt(err)
 		}
 
+		if f.passOver(line) {
+			return nil
+		}
+
 		e, err := decodeEvent(line)
 		if err != nil {
 			return err
@@ -205,6 +209,25 @@ func (f *follower) read(ctx context.Context) error {
 	}
 
 	return ctx.Err()
+}
+
+// passOver reports whether line is old output that the viewer asked to skip,
+// and if so takes its place in the sequence without decoding it. Anything
+// unusual about the line is left to the decoder to report. The reader's
+// offset is still where the line starts.
+func (f *follower) passOver(line []byte) bool {
+	if f.opts.History != HistoryLifecycle || f.reader.offset >= f.history {
+		return false
+	}
+
+	env, ok := peekEvent(line)
+	if !ok || !env.chatter || env.v > SchemaVersion || env.seq <= f.seq {
+		return false
+	}
+
+	f.seq = env.seq
+
+	return true
 }
 
 func (f *follower) deliver(ctx context.Context, e Event) error {

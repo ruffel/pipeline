@@ -391,3 +391,82 @@ func TestOpenJournal_ResumeAcrossAReopen(t *testing.T) {
 	assert.False(t, state.Unfinished())
 	assert.False(t, state.Live)
 }
+
+// State computed by passing over output undecoded must equal the state
+// computed by decoding every event.
+func TestInspect_FastReplayMatchesAFullDecode(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	failing := true
+
+	plan := mustPlan(t,
+		runbook.Group("g",
+			runbook.Effect("chatty", runbook.StepFunc(func(_ context.Context, s *runbook.StepContext) error {
+				s.Info(`a message with "kind":"run.finished" in it`)
+				s.Warn(strings.Repeat("long ", 30000)) // longer than the reader's buffer
+				s.Progress("copy", "copying", 1, 2)
+				_, _ = s.Stdout().Write([]byte("line one\nline two\n"))
+
+				if err := s.Custom("x.y", map[string]any{"kind": "step.finished"}); err != nil {
+					return err
+				}
+
+				if err := s.Item("node1", runbook.ItemFailed, "busy"); err != nil {
+					return err
+				}
+
+				return s.Record("dir", "/var/backups/42")
+			})),
+			runbook.Effect("flaky", counted(&calls{}, "flaky", &failing)).Retry(2, time.Millisecond),
+		),
+	)
+
+	j, err := runbook.OpenJournal(path)
+	require.NoError(t, err)
+
+	_, err = runbook.Run(t.Context(), plan, j)
+	require.Error(t, err)
+
+	failing = false
+
+	_, err = runbook.Run(t.Context(), plan, j)
+	require.NoError(t, err)
+
+	events, err := j.Events()
+	require.NoError(t, err)
+
+	decoded, err := runbook.Replay(events)
+	require.NoError(t, err)
+
+	fromJournal, err := j.State()
+	require.NoError(t, err)
+	require.NoError(t, j.Close())
+
+	inspected, err := runbook.Inspect(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, decoded, fromJournal, "Journal.State")
+	assert.Equal(t, decoded, inspected, "Inspect")
+}
+
+// Damage inside an output line: OpenJournal, which checks every line before
+// a run builds on the journal, refuses it. Inspect reads only the envelope of
+// output lines, and passes over it.
+func TestOpenJournal_ChecksOutputLinesThatInspectPassesOver(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	written := runToFile(t, path, mustPlan(t, runbook.Effect("a", ok())))
+	next := written[len(written)-1].Seq + 1
+
+	appendBytes(t, path, fmt.Sprintf(
+		`{"v":1,"seq":%d,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"quote " never closed}`+"\n", next))
+
+	state, err := runbook.Inspect(path)
+	require.NoError(t, err)
+	assert.Equal(t, next, state.LastSeq)
+
+	_, err = runbook.OpenJournal(path)
+	require.ErrorIs(t, err, runbook.ErrJournalCorrupt)
+}

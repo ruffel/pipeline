@@ -3,6 +3,7 @@
 package runbook
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -124,16 +125,20 @@ func repairJournal(path string, f *os.File) (int64, error) {
 	var seq int64
 
 	valid, err := scanJournal(path, func(line []byte) error {
-		e, err := decodeEvent(line)
+		v, lineSeq, err := checkLine(line)
 		if err != nil {
 			return err
 		}
 
-		if e.Seq <= seq {
-			return fmt.Errorf("sequence number %d follows %d", e.Seq, seq)
+		if v > SchemaVersion {
+			return fmt.Errorf("schema version %d is newer than this reader's %d", v, SchemaVersion)
 		}
 
-		seq = e.Seq
+		if lineSeq <= seq {
+			return fmt.Errorf("sequence number %d follows %d", lineSeq, seq)
+		}
+
+		seq = lineSeq
 
 		return nil
 	})
@@ -159,6 +164,29 @@ func repairJournal(path string, f *os.File) (int64, error) {
 	}
 
 	return seq, nil
+}
+
+// checkLine validates one journal line and returns its schema version and
+// sequence number. Output and other chatter is checked to be well-formed
+// JSON with a proper envelope, which is several times faster than decoding
+// it; everything else is decoded.
+func checkLine(line []byte) (int, int64, error) {
+	if env, ok := peekEvent(line); ok && env.chatter {
+		if !json.Valid(line) {
+			return 0, 0, errors.New("not valid JSON")
+		}
+
+		return env.v, env.seq, nil
+	}
+
+	var e Event
+
+	// Not decodeEvent: the caller reports a newer version itself.
+	if err := json.Unmarshal(line, &e); err != nil {
+		return 0, 0, err
+	}
+
+	return e.V, e.Seq, nil
 }
 
 func syncDir(dir string) error {
@@ -231,16 +259,10 @@ func (s *fileStore) append(line []byte, durable bool) error {
 	return nil
 }
 
-func (s *fileStore) lines() ([][]byte, error) {
-	var lines [][]byte
+func (s *fileStore) scan(fn func(line []byte) error) error {
+	_, err := scanJournal(s.path, fn)
 
-	_, err := scanJournal(s.path, func(line []byte) error {
-		lines = append(lines, line)
-
-		return nil
-	})
-
-	return lines, err
+	return err
 }
 
 func (s *fileStore) close() error {
