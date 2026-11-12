@@ -106,8 +106,11 @@ func Force() Option {
 // journal or given to an observer. So secrets a step prints never reach
 // either.
 //
-// The error [Run] returns carries the redacted message too, and still
-// unwraps to the step's own error.
+// Every error [Run] returns carries a redacted message too, and still
+// unwraps to the original error.
+//
+// Output is redacted a line at a time, before a long line is split into
+// pieces. A line of [MaxRedactLine] bytes or more is replaced by a notice.
 //
 // Names, paths, labels, item IDs and recorded values are not redacted: they
 // must simply never be secret.

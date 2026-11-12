@@ -102,7 +102,11 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		budget:    cfg.outputBudget,
 	}
 
-	return r.run(runCtx, cfg.labels)
+	res, err := r.run(runCtx, cfg.labels)
+
+	// Every error leaves redacted, not only step failures: a cancel's cause
+	// or a journal failure can carry a secret too.
+	return res, r.redact.err(err)
 }
 
 // runner holds one attempt's state.

@@ -206,3 +206,123 @@ func TestRedactor_WithoutOneNothingChanges(t *testing.T) {
 	require.ErrorAs(t, out.err, &se)
 	assert.Same(t, sentinel, se.Err, "with no redactor the step's error is not wrapped")
 }
+
+// outputText joins a step's output events back into lines: a continued
+// piece belongs to the line before it.
+func outputText(events []runbook.Event) []string {
+	var lines []string
+
+	for _, e := range events {
+		if e.Kind != runbook.EventOutput {
+			continue
+		}
+
+		if e.Continued && len(lines) > 0 {
+			lines[len(lines)-1] += e.Line
+
+			continue
+		}
+
+		lines = append(lines, e.Line)
+	}
+
+	return lines
+}
+
+// A secret that straddles the point where a long line is split must still be
+// redacted: the redactor has to see the line whole.
+func TestRedactor_SeesALongOutputLineWholeBeforeItIsSplit(t *testing.T) {
+	t.Parallel()
+
+	filler := strings.Repeat("x", runbook.MaxOutputLine-2)
+
+	out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", runbook.StepFunc(
+		func(_ context.Context, s *runbook.StepContext) error {
+			_, err := s.Stdout().Write([]byte(filler + secret + "\nnext line\n"))
+
+			return err
+		}))), runbook.WithRedactor(hideSecret))
+
+	require.NoError(t, out.err)
+
+	lines := outputText(out.events)
+	require.Len(t, lines, 2)
+	assert.Equal(t, filler+"***", lines[0], "redacted whole, then split")
+	assert.Equal(t, "next line", lines[1])
+
+	for _, e := range out.events {
+		assert.LessOrEqual(t, len(e.Line), runbook.MaxOutputLine, "pieces still respect the line cap")
+	}
+}
+
+// A line too long to hold whole can't be redacted safely, so it is hidden.
+func TestRedactor_HidesAnOutputLineTooLongToRedact(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", runbook.StepFunc(
+		func(_ context.Context, s *runbook.StepContext) error {
+			w := s.Stdout()
+
+			_, _ = w.Write([]byte(strings.Repeat("y", runbook.MaxRedactLine-3)))
+			_, _ = w.Write([]byte(secret + strings.Repeat("z", 100) + "\n"))
+			_, err := w.Write([]byte("after\n"))
+
+			return err
+		}))), runbook.WithRedactor(hideSecret))
+
+	require.NoError(t, out.err)
+
+	lines := outputText(out.events)
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[0], "too long to redact")
+	assert.Equal(t, "after", lines[1])
+
+	for _, e := range out.events {
+		line, err := json.Marshal(e)
+		require.NoError(t, err)
+		assert.NotContains(t, string(line), "hu", "not even part of the secret")
+		assert.NotContains(t, string(line), "yyyy")
+	}
+}
+
+// Every error Run returns is redacted, not only step failures.
+func TestRedactor_CoversEveryErrorRunReturns(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a cancel cause", func(t *testing.T) {
+		t.Parallel()
+
+		cause := errors.New("aborted by operator with token " + secret)
+		ctx, cancel := context.WithCancelCause(t.Context())
+
+		out := runPlan(t, ctx, mustPlan(t,
+			runbook.Effect("a", runbook.StepFunc(func(context.Context, *runbook.StepContext) error {
+				cancel(cause)
+
+				return nil
+			})),
+			runbook.Effect("b", ok()),
+		), runbook.WithRedactor(hideSecret))
+
+		require.ErrorIs(t, out.err, cause, "the cause is still reachable")
+		assert.NotContains(t, out.err.Error(), secret)
+		assert.Contains(t, out.err.Error(), "token ***")
+	})
+
+	t.Run("a journal failure", func(t *testing.T) {
+		t.Parallel()
+
+		diskErr := errors.New("write /mnt/" + secret + "/journal: disk full")
+		j := runbook.MemoryJournal(runbook.WithWriteHook(func(e runbook.Event) error {
+			if e.Kind == runbook.EventStepStarted {
+				return diskErr
+			}
+
+			return nil
+		}))
+
+		_, err := runbook.Run(t.Context(), mustPlan(t, runbook.Effect("a", ok())), j, runbook.WithRedactor(hideSecret))
+		require.ErrorIs(t, err, diskErr)
+		assert.NotContains(t, err.Error(), secret)
+	})
+}

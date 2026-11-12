@@ -172,3 +172,26 @@ func TestWriter_IsSafeForConcurrentWrites(t *testing.T) {
 
 	assert.Equal(t, strings.Repeat("line", 400), all.String())
 }
+
+func TestChunks(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		text string
+		want []string
+	}{
+		"empty":            {"", []string{""}},
+		"fits":             {x(limit), []string{x(limit)}},
+		"one over":         {x(limit + 1), []string{x(limit), "x"}},
+		"exact multiple":   {x(2 * limit), []string{x(limit), x(limit)}},
+		"character at cut": {x(limit-1) + "é" + "tail", []string{x(limit - 1), "étail"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := linesplit.Chunks(tc.text, limit)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.text, strings.Join(got, ""), "nothing is lost")
+		})
+	}
+}

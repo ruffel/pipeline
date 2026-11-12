@@ -14,6 +14,11 @@ type redactor struct {
 	fn func(string) string
 }
 
+// active reports whether there is a redaction function to apply.
+func (r *redactor) active() bool {
+	return r != nil && r.fn != nil
+}
+
 // text redacts s. If the function panics, s is replaced whole: a string that
 // could not be checked must not be written.
 func (r *redactor) text(s string) string {

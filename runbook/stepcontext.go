@@ -20,6 +20,11 @@ const (
 	// MaxOutputLine is the longest output line recorded as one event. Longer
 	// lines are recorded in pieces, all but the first marked Continued.
 	MaxOutputLine = 16 << 10
+	// MaxRedactLine is the longest output line a redactor is shown whole.
+	// With [WithRedactor] set, a line this long or longer is replaced by a
+	// notice: split into pieces, a secret could straddle two of them and
+	// slip past the redactor.
+	MaxRedactLine = 1 << 20
 	// MaxStepOutput caps the output one step records in one attempt. Each
 	// line or piece counts its length plus one for its line break, so blank
 	// lines count too. Lines past the cap are dropped and counted.
@@ -239,7 +244,14 @@ func (s *StepContext) writer(w **linesplit.Writer, stream string) io.Writer {
 	defer s.mu.Unlock()
 
 	if *w == nil {
-		*w = linesplit.NewWriter(MaxOutputLine, func(l linesplit.Line) { s.output(stream, l) })
+		// A redactor has to see each line whole, so with one set the writer
+		// holds lines up to MaxRedactLine and output splits them afterwards.
+		limit := MaxOutputLine
+		if s.r != nil && s.r.redact.active() {
+			limit = MaxRedactLine
+		}
+
+		*w = linesplit.NewWriter(limit, func(l linesplit.Line) { s.output(stream, l) })
 	}
 
 	return &stepWriter{s: s, w: *w}
@@ -255,6 +267,43 @@ func (s *StepContext) output(stream string, l linesplit.Line) {
 		return
 	}
 
+	for _, piece := range s.pieces(l) {
+		s.recordOutput(stream, piece)
+	}
+}
+
+// pieces returns what to record for a line from a writer. With no redactor
+// that is the line itself, already cut to MaxOutputLine. With one, the line
+// arrives whole: it is redacted and then cut, so a secret that would have
+// straddled a cut is seen in one piece. A line too long to arrive whole is
+// replaced by a notice, because it cannot be redacted safely.
+func (s *StepContext) pieces(l linesplit.Line) []linesplit.Line {
+	if !s.r.redact.active() {
+		return []linesplit.Line{l}
+	}
+
+	switch {
+	case l.Continued:
+		// The rest of a line that was already replaced.
+		return nil
+	case len(l.Text) >= MaxRedactLine:
+		return []linesplit.Line{{Text: fmt.Sprintf(
+			"[output line of %d bytes or more hidden: too long to redact]", MaxRedactLine)}}
+	}
+
+	chunks := linesplit.Chunks(s.r.redact.text(l.Text), MaxOutputLine)
+	out := make([]linesplit.Line, len(chunks))
+
+	for i, c := range chunks {
+		out[i] = linesplit.Line{Text: c, Warn: i == 1, Continued: i > 0}
+	}
+
+	return out
+}
+
+// recordOutput records one line or piece, within the step's output budget.
+// The caller holds s.mu.
+func (s *StepContext) recordOutput(stream string, l linesplit.Line) {
 	// Each line or piece also costs one byte for its line break, so a flood
 	// of blank lines is bounded too.
 	cost := len(l.Text) + 1
