@@ -209,11 +209,11 @@ func (s *fileStore) append(line []byte, durable bool) error {
 	}
 
 	// One write per line, break included, so a crash leaves at most one
-	// half-written line, at the end.
-	buf := make([]byte, 0, len(line)+1)
-	buf = append(append(buf, line...), '\n')
+	// half-written line, at the end. The journal hands over the line and
+	// doesn't use it again, so the break is appended in place.
+	line = append(line, '\n')
 
-	if _, err := s.f.Write(buf); err != nil {
+	if _, err := s.f.Write(line); err != nil {
 		s.broken = err
 
 		return err
