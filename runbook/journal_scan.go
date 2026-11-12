@@ -87,7 +87,10 @@ func Inspect(path string) (*State, error) {
 
 	state, err := Replay(events)
 	if err != nil {
-		return nil, err
+		// Events that decode but don't replay, such as sequence numbers that
+		// go backwards, are damage too. OpenJournal reports the same file the
+		// same way.
+		return nil, fmt.Errorf("%w: %s: %w", ErrJournalCorrupt, path, err)
 	}
 
 	state.Live = journalLocked(path)

@@ -37,7 +37,14 @@ const (
 // progress and messages are not. If a write or sync fails, every later write
 // fails too, until the journal is opened again.
 func OpenJournal(path string, opts ...JournalOption) (*Journal, error) {
-	f, created, err := openJournalFile(path)
+	// The journal is read back by path, so fix the path now: a later change
+	// of working directory must not point reads somewhere else.
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("runbook: open journal: %w", err)
+	}
+
+	f, err := openJournalFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("runbook: open journal: %w", err)
 	}
@@ -45,16 +52,21 @@ func OpenJournal(path string, opts ...JournalOption) (*Journal, error) {
 	if err := lockJournal(f); err != nil {
 		_ = f.Close()
 
-		return nil, &JournalBusyError{Path: path, PID: writerPID(path)}
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, &JournalBusyError{Path: path, PID: writerPID(path)}
+		}
+
+		// Not a competing writer: locking is unsupported here, or failed.
+		return nil, fmt.Errorf("runbook: open journal: lock %s: %w", path, err)
 	}
 
-	if created {
-		// The file's directory entry must survive a crash too.
-		if err := syncDir(filepath.Dir(path)); err != nil {
-			_ = f.Close()
+	// The file's directory entry must survive a crash too. Whoever holds the
+	// lock syncs it, whether or not this call created the file: the creator
+	// may have lost the race for the lock and returned busy.
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		_ = f.Close()
 
-			return nil, fmt.Errorf("runbook: open journal: %w", err)
-		}
+		return nil, fmt.Errorf("runbook: open journal: %w", err)
 	}
 
 	seq, err := repairJournal(path, f)
@@ -73,33 +85,22 @@ func OpenJournal(path string, opts ...JournalOption) (*Journal, error) {
 	return j, nil
 }
 
-// openJournalFile opens path for appending, and reports whether it created
-// the file.
-func openJournalFile(path string) (*os.File, bool, error) {
-	const flags = os.O_WRONLY | os.O_APPEND
-
+// openJournalFile opens path for appending, creating it if need be.
+func openJournalFile(path string) (*os.File, error) {
 	//nolint:gosec // The journal path is the caller's to choose.
-	f, err := os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, journalFileMode)
-	if err == nil {
-		return f, true, nil
-	}
-
-	if !errors.Is(err, os.ErrExist) {
-		return nil, false, err
-	}
-
-	f, err = os.OpenFile(path, flags, journalFileMode) //nolint:gosec // As above.
-
-	return f, false, err
+	return os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, journalFileMode)
 }
 
-// lockJournal takes the exclusive lock, retrying briefly.
+// lockJournal takes the exclusive lock. While another holder has it, it
+// retries briefly and then returns EWOULDBLOCK. Any other failure is returned
+// at once.
 func lockJournal(f *os.File) error {
 	var err error
 
 	for range lockAttempts {
-		if err = flock(f, syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-			return nil
+		err = flock(f, syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
 		}
 
 		time.Sleep(lockInterval)

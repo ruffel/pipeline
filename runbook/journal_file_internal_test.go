@@ -5,6 +5,7 @@ package runbook
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -128,4 +129,47 @@ func TestOpenJournal_MissingDirectory(t *testing.T) {
 
 	_, err := OpenJournal(filepath.Join(t.TempDir(), "no-such-dir", "test.journal"))
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// Only a lock someone else holds means busy. Any other locking failure is
+// reported as what it is.
+func TestOpenJournal_OnlyAHeldLockIsBusy(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "test.journal")
+
+	held, err := OpenJournal(path)
+	require.NoError(t, err)
+
+	f, err := openJournalFile(path)
+	require.NoError(t, err)
+	require.ErrorIs(t, lockJournal(f), syscall.EWOULDBLOCK, "held by another open file")
+	require.NoError(t, f.Close())
+	require.NoError(t, held.Close())
+
+	// flock on a closed file fails with EBADF, at once and not as "busy".
+	closed, err := openJournalFile(path)
+	require.NoError(t, err)
+	require.NoError(t, closed.Close())
+
+	err = lockJournal(closed)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, syscall.EWOULDBLOCK)
+}
+
+// The lock holder syncs the journal's directory even when it did not create
+// the file: opening an existing journal must still work, and does the sync.
+func TestOpenJournal_ExistingFile(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "test.journal")
+	require.NoError(t, os.WriteFile(path, nil, journalFileMode))
+
+	j, err := OpenJournal(path)
+	require.NoError(t, err)
+
+	fs, ok := j.store.(*fileStore)
+	require.True(t, ok)
+	assert.True(t, filepath.IsAbs(fs.path))
+	require.NoError(t, j.Close())
 }

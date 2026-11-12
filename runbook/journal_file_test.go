@@ -4,6 +4,7 @@ package runbook_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,6 +205,45 @@ func TestOpenJournal_RefusesACorruptJournal(t *testing.T) {
 	}
 }
 
+// A journal opened by a relative path keeps reading the same file after the
+// process changes directory. It is not parallel: it changes that directory.
+func TestOpenJournal_RelativePathSurvivesChdir(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	j, err := runbook.OpenJournal("upgrade.journal")
+	require.NoError(t, err)
+
+	_, err = runbook.Run(t.Context(), mustPlan(t, runbook.Effect("a", ok())), j)
+	require.NoError(t, err)
+
+	t.Chdir(t.TempDir())
+
+	events, err := j.Events()
+	require.NoError(t, err, "reads still find the journal")
+	assert.Len(t, events, 5)
+	require.NoError(t, j.Close())
+
+	_, err = os.Stat(filepath.Join(dir, "upgrade.journal"))
+	require.NoError(t, err)
+}
+
+// Inspect and OpenJournal call the same damage the same thing.
+func TestInspect_ReportsReplayDamageAsCorrupt(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	runToFile(t, path, mustPlan(t, runbook.Effect("a", ok())))
+	appendBytes(t, path, `{"v":1,"seq":1,"kind":"run.finished"}`+"\n")
+
+	_, err := runbook.Inspect(path)
+	require.ErrorIs(t, err, runbook.ErrJournalCorrupt)
+	require.ErrorContains(t, err, "sequence numbers must increase")
+
+	_, err = runbook.OpenJournal(path)
+	require.ErrorIs(t, err, runbook.ErrJournalCorrupt)
+}
+
 // The child half of TestOpenJournal_SurvivesAKilledWriter: it runs a plan
 // against the journal named in the environment, and never returns.
 //
@@ -224,7 +264,12 @@ func TestOpenJournal_KilledWriterChild(t *testing.T) {
 				return err
 			}
 
-			select {} // changing the system, until killed
+			// "Changing the system" until killed. A timer, not a bare select:
+			// with every goroutine blocked and no timer pending, the runtime
+			// can end the process itself as deadlocked.
+			time.Sleep(10 * time.Minute)
+
+			return errors.New("the child was never killed")
 		})),
 	), j)
 }
