@@ -30,8 +30,12 @@ type State struct {
 	Plan        *NodeSpec
 	Fingerprint string
 	// Labels are the run labels of the latest attempt.
-	Labels   L
-	Attempts []AttemptState
+	Labels L
+	// Inputs is what the latest attempt was given with WithInputs, encoded,
+	// with every Secret left out. InputsDigest identifies it.
+	Inputs       json.RawMessage
+	InputsDigest string
+	Attempts     []AttemptState
 	// LastSeq is the sequence number of the last event replayed. A viewer
 	// follows the journal from the event after it.
 	LastSeq int64
@@ -132,6 +136,23 @@ func (s *State) Items(path string) map[string]ItemState {
 	return out
 }
 
+// DecodeInputs decodes into v the inputs the latest attempt recorded, and
+// reports whether there were any. A tool resuming a run calls it on the
+// state from [Inspect] to get back the answers the plan was built from,
+// instead of asking again. Every [Secret] comes back empty and has to be
+// supplied again.
+func (s *State) DecodeInputs(v any) (bool, error) {
+	if len(s.Inputs) == 0 {
+		return false, nil
+	}
+
+	if err := json.Unmarshal(s.Inputs, v); err != nil {
+		return true, fmt.Errorf("runbook: decode inputs: %w", err)
+	}
+
+	return true, nil
+}
+
 // Unfinished reports whether the latest attempt did anything but pass: it is
 // still running, crashed, failed, was stopped or was cancelled. Any of these
 // can leave the system part-way through the plan.
@@ -153,6 +174,7 @@ func (s *State) apply(e Event) {
 		s.Plan = e.Plan
 		s.Fingerprint = e.Fingerprint
 		s.Labels = e.Labels
+		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
 		s.Attempts = append(s.Attempts, AttemptState{Run: e.Run, Attempt: e.Attempt, Started: e.TS})
 	case EventRunFinished:
 		if n := len(s.Attempts); n > 0 && s.Attempts[n-1].Run == e.Run {

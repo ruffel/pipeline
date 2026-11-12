@@ -3,6 +3,7 @@ package runbook
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 )
 
 // redactionFailed replaces a string the redactor could not process. The
@@ -12,17 +13,28 @@ const redactionFailed = "[redaction failed]"
 // redactor applies a consumer's redaction function, safely.
 type redactor struct {
 	fn func(string) string
+	// secrets are the values of the run's input secrets, longest first. They
+	// are masked wherever they appear, before fn is applied.
+	secrets []string
 }
 
-// active reports whether there is a redaction function to apply.
+// active reports whether there is anything to redact with.
 func (r *redactor) active() bool {
-	return r != nil && r.fn != nil
+	return r != nil && (r.fn != nil || len(r.secrets) > 0)
 }
 
 // text redacts s. If the function panics, s is replaced whole: a string that
 // could not be checked must not be written.
 func (r *redactor) text(s string) string {
-	if r == nil || r.fn == nil || s == "" {
+	if !r.active() || s == "" {
+		return s
+	}
+
+	for _, secret := range r.secrets {
+		s = strings.ReplaceAll(s, secret, secretMask)
+	}
+
+	if r.fn == nil {
 		return s
 	}
 
@@ -42,7 +54,7 @@ func (r *redactor) text(s string) string {
 // recorded values are left alone: they are the plan's and the step's own
 // data, which must not be secret.
 func (r *redactor) event(e Event) Event {
-	if r == nil || r.fn == nil {
+	if !r.active() {
 		return e
 	}
 
@@ -126,7 +138,7 @@ func (e *redactedError) Unwrap() error {
 
 // err returns err with its message redacted.
 func (r *redactor) err(err error) error {
-	if r == nil || r.fn == nil || err == nil {
+	if !r.active() || err == nil {
 		return err
 	}
 

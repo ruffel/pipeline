@@ -55,6 +55,8 @@ type config struct {
 	resume    ResumeMode
 	force     bool
 	redact    func(string) string
+	inputs    any
+	newInputs bool
 
 	// outputBudget is MaxStepOutput, except in tests.
 	outputBudget int
@@ -97,6 +99,31 @@ func WithResume(mode ResumeMode) Option {
 func Force() Option {
 	return func(c *config) {
 		c.force = true
+	}
+}
+
+// WithInputs records v as the run's inputs: the answers, flags, defaults and
+// discovery results the plan was built from. It is encoded as JSON and
+// stored with the attempt, so a later resume can read it back with
+// [State.DecodeInputs] and build the same plan without asking again.
+//
+// Fields of type [Secret] are never stored, and the values of those secrets
+// are masked wherever they appear in what steps write.
+//
+// A resume must be given the same inputs: if they differ from the latest
+// attempt's, [Run] returns [ErrInputsChanged] unless [WithNewInputs] is
+// given. Secrets are not part of the comparison.
+func WithInputs(v any) Option {
+	return func(c *config) {
+		c.inputs = v
+	}
+}
+
+// WithNewInputs lets a resume go ahead with inputs that differ from the
+// latest attempt's. The new inputs are recorded with the new attempt.
+func WithNewInputs() Option {
+	return func(c *config) {
+		c.newInputs = true
 	}
 }
 

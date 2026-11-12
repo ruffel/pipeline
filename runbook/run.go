@@ -58,6 +58,11 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		o(&cfg)
 	}
 
+	in, err := newInputs(cfg.inputs)
+	if err != nil {
+		return nil, err
+	}
+
 	prev, err := j.State()
 	if err != nil {
 		return nil, err
@@ -71,6 +76,8 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		switch {
 		case prev.Fingerprint != plan.Fingerprint():
 			return nil, ErrPlanChanged
+		case prev.InputsDigest != in.digest && !cfg.newInputs:
+			return nil, ErrInputsChanged
 		case cfg.force:
 			if prior, err = Replay(nil); err != nil {
 				return nil, err
@@ -96,7 +103,8 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		prev:      prev,
 		prior:     prior,
 		trust:     cfg.resume == ResumeTrust,
-		redact:    &redactor{fn: cfg.redact},
+		redact:    &redactor{fn: cfg.redact, secrets: in.secrets},
+		inputs:    in,
 		forced:    cfg.force && len(prev.Attempts) > 0,
 		values:    map[string]map[string]json.RawMessage{},
 		budget:    cfg.outputBudget,
@@ -127,6 +135,7 @@ type runner struct {
 
 	// redact removes secrets from the text of every event and returned error.
 	redact *redactor
+	inputs *inputs
 
 	// runDone is closed when the run is cancelled. cut records that a cancel
 	// of the run stopped something: a step it interrupted, or children it
@@ -159,6 +168,7 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	err := r.emit(Event{
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
 		Plan: &spec, Fingerprint: r.plan.Fingerprint(), Labels: labels,
+		Inputs: r.inputs.encoded, InputsDigest: r.inputs.digest,
 		Forced: r.forced, PID: os.Getpid(), Host: hostname(),
 	})
 	if err != nil {
