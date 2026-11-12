@@ -70,12 +70,37 @@ func Follow(ctx context.Context, path string, opts FollowOptions, observers ...O
 		reader:    journalReader{path: path},
 		opts:      opts,
 		observers: observers,
-		history:   true,
+		locked:    journalLocked,
 	}
 
-	poll := opts.Poll
+	return f.run(ctx)
+}
+
+// follower is one Follow call's progress through the journal.
+type follower struct {
+	reader    journalReader
+	opts      FollowOptions
+	observers []Observer
+	// locked reports whether a process holds the journal at a path.
+	locked func(path string) bool
+
+	// history is where the journal ended when Follow began. Events that
+	// start before it are history; the History option applies to those only.
+	history int64
+	// seq is the last sequence number read; open is whether the latest
+	// attempt has started and not finished.
+	seq  int64
+	open bool
+}
+
+func (f *follower) run(ctx context.Context) error {
+	poll := f.opts.Poll
 	if poll <= 0 {
 		poll = DefaultFollowPoll
+	}
+
+	if info, err := os.Stat(f.reader.path); err == nil {
+		f.history = info.Size()
 	}
 
 	for {
@@ -83,23 +108,17 @@ func Follow(ctx context.Context, path string, opts FollowOptions, observers ...O
 			return err
 		}
 
-		// Everything in the journal when Follow was called has been read.
-		f.history = false
+		next, err := f.afterRead(ctx)
 
-		if !journalLocked(path) {
-			// The runner may have written its last events and closed between
-			// that read and this check, so read once more before deciding.
-			if err := f.read(ctx); err != nil {
-				return err
-			}
-
-			if !opts.KeepFollowing {
-				if f.open {
-					return ErrRunnerGone
-				}
-
-				return nil
-			}
+		switch {
+		case err != nil:
+			return err
+		case next == followAgain:
+			continue
+		case next == followEnd && f.open:
+			return ErrRunnerGone
+		case next == followEnd:
+			return nil
 		}
 
 		select {
@@ -110,24 +129,49 @@ func Follow(ctx context.Context, path string, opts FollowOptions, observers ...O
 	}
 }
 
-// follower is one Follow call's progress through the journal.
-type follower struct {
-	reader    journalReader
-	opts      FollowOptions
-	observers []Observer
+// What to do after a read has reached the end of the journal.
+const (
+	followWait  = iota // wait a poll interval, then read again
+	followAgain        // read again at once
+	followEnd          // nothing more will come
+)
 
-	// history is true while reading what the journal held when Follow began.
-	history bool
-	// seq is the last sequence number read; open is whether the latest
-	// attempt has started and not finished.
-	seq  int64
-	open bool
+// afterRead decides what follows a read that reached the end of the journal.
+func (f *follower) afterRead(ctx context.Context) (int, error) {
+	if f.locked(f.reader.path) {
+		return followWait, nil
+	}
+
+	// Nobody held the journal at that moment. Read once more before
+	// deciding: the runner may have written its last events and closed
+	// between the read and the check.
+	before := f.seq
+
+	if err := f.read(ctx); err != nil {
+		return followWait, err
+	}
+
+	switch {
+	case f.seq != before:
+		// Something was written in between, perhaps by a new runner that now
+		// holds the journal. Look again from the top.
+		return followAgain, nil
+	case f.opts.KeepFollowing:
+		return followWait, nil
+	default:
+		return followEnd, nil
+	}
 }
 
 // read delivers the complete events written since the last read. A journal
-// that does not exist yet has none.
+// that does not exist yet has none. It returns the context's error as soon
+// as the context is done, leaving the rest unread.
 func (f *follower) read(ctx context.Context) error {
 	err := f.reader.next(func(line []byte) error {
+		if err := ctx.Err(); err != nil {
+			return halt(err)
+		}
+
 		e, err := decodeEvent(line)
 		if err != nil {
 			return err
@@ -146,28 +190,28 @@ func (f *follower) read(ctx context.Context) error {
 			f.open = false
 		}
 
-		if e.Seq <= f.opts.After || (f.history && f.opts.History == HistoryLifecycle && !e.Kind.Durable()) {
+		// The reader's offset is still where this line starts.
+		old := f.reader.offset < f.history
+
+		if e.Seq <= f.opts.After || (old && f.opts.History == HistoryLifecycle && !e.Kind.Durable()) {
 			return nil
 		}
 
 		return f.deliver(ctx, e)
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 
-	if p, ok := errors.AsType[*observerPanicError](err); ok {
-		// An observer's panic is not damage to the journal.
-		return p
-	}
-
-	return err
+	return ctx.Err()
 }
 
 func (f *follower) deliver(ctx context.Context, e Event) error {
 	for _, o := range f.observers {
 		if v := observe(ctx, o, e); v != nil {
-			return &observerPanicError{observer: o, value: v}
+			// An observer's panic is not damage to the journal.
+			return halt(&observerPanicError{observer: o, value: v})
 		}
 	}
 

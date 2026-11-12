@@ -63,12 +63,31 @@ func (r *journalReader) next(fn func(line []byte) error) error {
 		}
 
 		if err := fn(line[:len(line)-1]); err != nil {
+			if h, ok := errors.AsType[*haltError](err); ok {
+				return h.err
+			}
+
 			return fmt.Errorf("%w: %s line %d: %w", ErrJournalCorrupt, r.path, r.line+1, err)
 		}
 
 		r.line++
 		r.offset += int64(len(line))
 	}
+}
+
+// haltError lets a reader's callback stop the read for a reason that is not
+// the line's fault, such as a cancelled context. The line is not consumed,
+// and the reason is returned as it is, not as [ErrJournalCorrupt].
+type haltError struct {
+	err error
+}
+
+func (h *haltError) Error() string {
+	return h.err.Error()
+}
+
+func halt(err error) error {
+	return &haltError{err: err}
 }
 
 // readJournal decodes the events in the journal file at path, ignoring a

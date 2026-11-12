@@ -5,6 +5,7 @@ package runbook_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -313,4 +314,64 @@ func TestFollow_AnObserverPanicEndsFollowWithAnError(t *testing.T) {
 	err := runbook.Follow(t.Context(), path, fast(runbook.FollowOptions{}), bad)
 	require.ErrorContains(t, err, "renderer bug")
 	require.NotErrorIs(t, err, runbook.ErrJournalCorrupt, "the journal is fine; the viewer is not")
+}
+
+// Output written while the viewer is still replaying history is live output:
+// the history filter covers only what the journal held when Follow began.
+func TestFollow_HistoryEndsWhereTheJournalStoodAtTheStart(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	written := runToFile(t, path, mustPlan(t, runbook.Effect("a", chatty("old output"))))
+	last := written[len(written)-1].Seq
+
+	rec := &recorder{}
+	appended := false
+
+	// The "runner" writes a new line while the viewer handles its first
+	// replayed event.
+	duringReplay := runbook.ObserverFunc(func(ctx context.Context, e runbook.Event) {
+		if !appended {
+			appended = true
+
+			appendBytes(t, path, fmt.Sprintf(`{"v":1,"seq":%d,"kind":"output","path":"p/a","line":"live output"}`+"\n", last+1))
+		}
+
+		rec.OnEvent(ctx, e)
+	})
+
+	opts := fast(runbook.FollowOptions{History: runbook.HistoryLifecycle})
+	require.NoError(t, runbook.Follow(t.Context(), path, opts, duringReplay))
+
+	output := kinds(rec.all(), runbook.EventOutput)
+	require.Len(t, output, 1, "old output is skipped; output written during the replay is not")
+	assert.Equal(t, "live output", output[0].Line)
+}
+
+// Cancelling stops delivery at the next event, and is not journal damage.
+func TestFollow_CancellationStopsDeliveryAtOnce(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	runToFile(t, path, mustPlan(t, runbook.Effect("a", chatty("hello")), runbook.Effect("b", ok())))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	rec := &recorder{}
+
+	cancelOnFirst := runbook.ObserverFunc(func(ctx context.Context, e runbook.Event) {
+		rec.OnEvent(ctx, e)
+		cancel()
+	})
+
+	err := runbook.Follow(ctx, path, fast(runbook.FollowOptions{}), cancelOnFirst)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, runbook.ErrJournalCorrupt)
+	assert.Len(t, rec.all(), 1, "nothing is delivered after the cancel")
+
+	// Already cancelled: nothing is delivered, and the answer is the cancel,
+	// not "the run has ended".
+	rec = &recorder{}
+	err = runbook.Follow(ctx, path, fast(runbook.FollowOptions{}), rec)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, rec.all())
 }
