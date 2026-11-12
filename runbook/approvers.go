@@ -139,7 +139,8 @@ var stdin = newLineReader(os.Stdin) //nolint:gochecknoglobals // There is one st
 // StdinApprover returns an [Approver] that asks on standard error, and
 // approves when a line read from standard input is "yes" or "y", in any
 // case. Who approved is recorded as the user the process runs as. Any other
-// line asks again: to say no, stop the run.
+// line asks again: to say no, stop the run, as [HandleSignals] lets Ctrl-C
+// do.
 //
 // It withdraws when standard input ends or fails to read, which is what a
 // lost terminal produces, and when it can't write its question. Run

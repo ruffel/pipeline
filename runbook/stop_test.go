@@ -341,3 +341,55 @@ func TestStop_ANestedGroupCutShortDoesNotCancelParallelSiblings(t *testing.T) {
 	assert.Equal(t, runbook.StatusStopped, out.state.Element("p/par/g").Status)
 	assert.Equal(t, runbook.StatusStopped, out.state.Element("p/par").Status)
 }
+
+// A Stopper's cancel cancels running steps, and is recorded with who asked.
+func TestStopper_CancelCancelsTheRun(t *testing.T) {
+	t.Parallel()
+
+	for _, stopFirst := range []bool{false, true} {
+		stopper := runbook.NewStopper()
+		cancelWhileRunning := runbook.ObserverFunc(func(_ context.Context, e runbook.Event) {
+			if e.Kind == runbook.EventStepRunning {
+				if stopFirst {
+					stopper.Stop("bob")
+				}
+
+				stopper.Cancel("alice")
+			}
+		})
+
+		var c calls
+
+		out := runPlan(t, t.Context(), mustPlan(t,
+			runbook.Effect("wait", waitForCancel()),
+			runbook.Effect("after", counted(&c, "after", nil)),
+		), runbook.WithStopper(stopper), runbook.WithObservers(cancelWhileRunning))
+
+		require.ErrorIs(t, out.err, context.Canceled)
+		assert.Equal(t, runbook.OutcomeCancelled, out.res.Outcome)
+		assert.Equal(t, &runbook.StopRequest{
+			Mode: runbook.StopCancel, By: "stopper", Who: "alice",
+		}, out.state.Attempts[0].Stop, "a cancel outranks a stop")
+		assert.Equal(t, runbook.ErrorCancelled, out.state.Element("p/wait").Error.Kind)
+		assert.Zero(t, c.get("after"))
+	}
+}
+
+// A Stopper cancelled before the run starts nothing.
+func TestStopper_CancelledBeforeTheRun(t *testing.T) {
+	t.Parallel()
+
+	stopper := runbook.NewStopper()
+	stopper.Cancel("alice")
+
+	var c calls
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		runbook.Effect("first", counted(&c, "first", nil)),
+	), runbook.WithStopper(stopper))
+
+	require.ErrorIs(t, out.err, context.Canceled)
+	assert.Equal(t, runbook.OutcomeCancelled, out.res.Outcome)
+	assert.Zero(t, c.get("first"))
+	assert.Equal(t, runbook.StopCancel, out.state.Attempts[0].Stop.Mode)
+}

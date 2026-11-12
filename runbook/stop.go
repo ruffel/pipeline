@@ -26,19 +26,26 @@ const (
 // with its last error. Parallel steps still queued are not started. A stop
 // that comes after the work has ended changes nothing.
 //
+// It can also cancel the run, as [RequestStop] with [StopCancel] does from
+// another process.
+//
 // A stopped run is unfinished, and a later Run resumes it. A Stopper stays
 // stopped: use a new one for each run. It is safe for concurrent use.
 type Stopper struct {
 	once sync.Once
 	done chan struct{}
 
-	mu  sync.Mutex
-	who string
+	cancelOnce sync.Once
+	cancelled  chan struct{}
+
+	mu        sync.Mutex
+	who       string
+	cancelWho string
 }
 
 // NewStopper returns a Stopper that has not been stopped.
 func NewStopper() *Stopper {
-	return &Stopper{done: make(chan struct{})}
+	return &Stopper{done: make(chan struct{}), cancelled: make(chan struct{})}
 }
 
 // Stop asks the run to stop. who says who or what asked, such as an
@@ -59,11 +66,33 @@ func (s *Stopper) Done() <-chan struct{} {
 	return s.done
 }
 
+// Cancel asks the run to cancel: running steps' contexts are cancelled, as
+// cancelling the run's context does, and the run finishes with outcome
+// [OutcomeCancelled]. Unlike cancelling the context, who asked is recorded
+// in the journal. A cancel outranks a graceful stop, whether or not Stop was
+// called first. Only the first call counts.
+func (s *Stopper) Cancel(who string) {
+	s.cancelOnce.Do(func() {
+		s.mu.Lock()
+		s.cancelWho = who
+		s.mu.Unlock()
+
+		close(s.cancelled)
+	})
+}
+
 func (s *Stopper) requester() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.who
+}
+
+func (s *Stopper) cancelRequester() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.cancelWho
 }
 
 // WithStopper lets s stop the run gracefully. See [Stopper].
@@ -119,6 +148,12 @@ func (s *stopSignal) fire(req StopRequest) {
 func (r *runner) stopping() bool {
 	if r.stopper != nil {
 		select {
+		case <-r.stopper.cancelled:
+			r.cancelRequested(r.stopperCancel())
+		default:
+		}
+
+		select {
 		case <-r.stopper.Done():
 			r.stop.fire(r.stopperRequest())
 		default:
@@ -143,6 +178,10 @@ func (r *runner) stopDone() <-chan struct{} {
 
 func (r *runner) stopperRequest() StopRequest {
 	return StopRequest{Mode: StopGraceful, By: stopBy, Who: r.stopper.requester()}
+}
+
+func (r *runner) stopperCancel() StopRequest {
+	return StopRequest{Mode: StopCancel, By: stopBy, Who: r.stopper.cancelRequester()}
 }
 
 // noteStop records the graceful stop request, once. A journal failure here
@@ -172,20 +211,33 @@ func stopEvent(path string, req StopRequest) Event {
 }
 
 // watchStop records a stop request as soon as it is made, so viewers learn
-// of it while steps are still running, until done is closed.
+// of it while steps are still running, and acts on a Stopper's cancel, until
+// done is closed.
 func (r *runner) watchStop(done <-chan struct{}) {
-	var stopper <-chan struct{}
+	var stopper, cancelled <-chan struct{}
 	if r.stopper != nil {
-		stopper = r.stopper.Done()
+		stopper, cancelled = r.stopper.Done(), r.stopper.cancelled
 	}
 
-	select {
-	case <-stopper:
-		r.stop.fire(r.stopperRequest())
-		r.noteStop()
-	case <-r.stop.done:
-		r.noteStop()
-	case <-done:
+	stopped := r.stop.done
+
+	for stopper != nil || stopped != nil || cancelled != nil {
+		select {
+		case <-stopper:
+			r.stop.fire(r.stopperRequest())
+
+			stopper = nil
+		case <-stopped:
+			r.noteStop()
+
+			stopped = nil
+		case <-cancelled:
+			r.cancelRequested(r.stopperCancel())
+
+			cancelled = nil
+		case <-done:
+			return
+		}
 	}
 }
 
