@@ -19,6 +19,20 @@ type Journal struct {
 	store  store
 	seq    int64
 	closed bool
+	hook   func(Event) error
+}
+
+// JournalOption configures a journal.
+type JournalOption func(*Journal)
+
+// WithWriteHook calls hook with each event, already numbered, before the
+// journal stores it. If hook returns an error, the write fails with it
+// exactly as a storage failure would, and the run stops. It exists for fault
+// injection in tests: see the runbooktest package.
+func WithWriteHook(hook func(Event) error) JournalOption {
+	return func(j *Journal) {
+		j.hook = hook
+	}
 }
 
 // store holds the journal's encoded lines. The file store fsyncs durable
@@ -31,8 +45,14 @@ type store interface {
 
 // MemoryJournal returns a journal held in memory. It behaves like a file
 // journal, including encoding every event, but nothing survives the process.
-func MemoryJournal() *Journal {
-	return &Journal{store: &memoryStore{}}
+func MemoryJournal(opts ...JournalOption) *Journal {
+	j := &Journal{store: &memoryStore{}}
+
+	for _, o := range opts {
+		o(j)
+	}
+
+	return j
 }
 
 // Events decodes and returns every event in the journal, in order.
@@ -102,6 +122,12 @@ func (j *Journal) append(e Event) (Event, error) {
 	line, err := json.Marshal(e)
 	if err != nil {
 		return Event{}, fmt.Errorf("runbook: journal: encode %s event: %w", e.Kind, err)
+	}
+
+	if j.hook != nil {
+		if err := j.hook(e); err != nil {
+			return Event{}, fmt.Errorf("runbook: journal: write %s event: %w", e.Kind, err)
+		}
 	}
 
 	stored, err := decodeEvent(line)
