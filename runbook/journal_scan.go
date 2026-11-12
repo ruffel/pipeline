@@ -18,37 +18,56 @@ var ErrJournalCorrupt = errors.New("runbook: journal is corrupt")
 // past the last complete line: anything after it is a half-written line left
 // by a crash. A complete line that fn rejects is [ErrJournalCorrupt].
 func scanJournal(path string, fn func(line []byte) error) (int64, error) {
-	f, err := os.Open(path) //nolint:gosec // The journal path is the caller's to choose.
+	r := journalReader{path: path}
+	err := r.next(fn)
+
+	return r.offset, err
+}
+
+// journalReader reads a journal file in stages, so a viewer can come back
+// for the lines written since it last looked.
+type journalReader struct {
+	path string
+	// offset is just past the last complete line read, and line is how many
+	// have been read.
+	offset int64
+	line   int
+}
+
+// next calls fn with each complete line after the last one read. A
+// half-written line at the end is left for the next call.
+func (r *journalReader) next(fn func(line []byte) error) error {
+	f, err := os.Open(r.path)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	defer func() { _ = f.Close() }()
 
-	var (
-		r      = bufio.NewReader(f)
-		offset int64
-		n      int
-	)
+	if _, err := f.Seek(r.offset, io.SeekStart); err != nil {
+		return fmt.Errorf("runbook: journal: read %s: %w", r.path, err)
+	}
+
+	br := bufio.NewReader(f)
 
 	for {
-		line, err := r.ReadBytes('\n')
+		line, err := br.ReadBytes('\n')
 
 		switch {
 		case errors.Is(err, io.EOF):
-			// What is left, if anything, has no line break: a torn write.
-			return offset, nil
+			// What is left, if anything, has no line break: a torn write, or
+			// one still in progress.
+			return nil
 		case err != nil:
-			return offset, fmt.Errorf("runbook: journal: read %s: %w", path, err)
+			return fmt.Errorf("runbook: journal: read %s: %w", r.path, err)
 		}
-
-		n++
 
 		if err := fn(line[:len(line)-1]); err != nil {
-			return offset, fmt.Errorf("%w: %s line %d: %w", ErrJournalCorrupt, path, n, err)
+			return fmt.Errorf("%w: %s line %d: %w", ErrJournalCorrupt, r.path, r.line+1, err)
 		}
 
-		offset += int64(len(line))
+		r.line++
+		r.offset += int64(len(line))
 	}
 }
 
