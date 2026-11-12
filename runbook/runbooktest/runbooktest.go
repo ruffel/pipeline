@@ -13,6 +13,9 @@
 //	state, _ := crash.Journal.State()
 //	// state.Element("upgrade/node1/packages") is started, with RunCalled set.
 //
+//	crash.Restart()
+//	_, err = runbook.Run(ctx, plan, crash.Journal) // resumes
+//
 // Code that runs between the crash point and the run's next write still
 // runs: a crash at [Running] lets Run do its work, but nothing after it is
 // recorded. That is the moment between a step changing the system and the
@@ -62,7 +65,8 @@ type Crash struct {
 	// Journal is the journal to run against, and to inspect afterwards.
 	Journal *runbook.Journal
 
-	crashed atomic.Bool
+	crashed  atomic.Bool
+	disarmed atomic.Bool
 }
 
 // CrashAfter returns a memory journal that crashes just after the step at
@@ -76,7 +80,7 @@ func CrashAfter(path string, point Point) *Crash {
 			return ErrCrashed
 		}
 
-		if e.Path == path && matches(e, point) {
+		if !c.disarmed.Load() && e.Path == path && matches(e, point) {
 			c.crashed.Store(true)
 		}
 
@@ -89,6 +93,14 @@ func CrashAfter(path string, point Point) *Crash {
 // Crashed reports whether the crash point was reached.
 func (c *Crash) Crashed() bool {
 	return c.crashed.Load()
+}
+
+// Restart simulates the process starting again after the crash: the journal
+// accepts writes once more, and the crash point is disarmed. Run against the
+// same journal then resumes.
+func (c *Crash) Restart() {
+	c.disarmed.Store(true)
+	c.crashed.Store(false)
 }
 
 func matches(e runbook.Event, p Point) bool {

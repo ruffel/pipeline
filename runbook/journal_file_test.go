@@ -5,6 +5,7 @@ package runbook_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,7 +82,7 @@ func TestOpenJournal_WhatIsWrittenIsWhatIsReadBack(t *testing.T) {
 	assert.Equal(t, os.Getpid(), events[0].PID)
 
 	_, err = runbook.Run(t.Context(), mustPlan(t, runbook.Effect("a", ok())), j)
-	require.ErrorIs(t, err, runbook.ErrResumeNotSupported, "the attempt on disk is seen")
+	require.ErrorIs(t, err, runbook.ErrPlanChanged, "the attempt on disk is seen")
 	require.NoError(t, j.Close())
 }
 
@@ -331,4 +332,62 @@ func TestOpenJournal_SurvivesAKilledWriter(t *testing.T) {
 	require.True(t, ok, "what the step recorded before it died is there for Undo and resume")
 	assert.JSONEq(t, `"8.1.2"`, string(v))
 	require.NoError(t, j.Close())
+}
+
+// The point of the file journal: a run that failed in one process is resumed
+// by another, from what is on disk.
+func TestOpenJournal_ResumeAcrossAReopen(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	c := &calls{}
+	failing := true
+
+	plan := func() *runbook.Plan {
+		return mustPlan(t,
+			runbook.Effect("a", runbook.StepFunc(func(_ context.Context, s *runbook.StepContext) error {
+				c.add("a")
+
+				return s.Record("dir", "/var/backups/42")
+			})),
+			runbook.Effect("b", counted(c, "b", &failing)),
+			runbook.Effect("c", runbook.StepFunc(func(_ context.Context, s *runbook.StepContext) error {
+				var dir string
+
+				if found, err := s.Recorded("p/a", "dir", &dir); err != nil || !found || dir != "/var/backups/42" {
+					return fmt.Errorf("recorded dir: found=%v dir=%q: %w", found, dir, err)
+				}
+
+				return nil
+			})),
+		)
+	}
+
+	first, err := runbook.OpenJournal(path)
+	require.NoError(t, err)
+
+	_, err = runbook.Run(t.Context(), plan(), first)
+	require.ErrorContains(t, err, "p/b: b failed")
+	require.NoError(t, first.Close())
+
+	failing = false
+
+	second, err := runbook.OpenJournal(path)
+	require.NoError(t, err)
+
+	res, err := runbook.Run(t.Context(), plan(), second)
+	require.NoError(t, err)
+	assert.Equal(t, 2, res.Attempt)
+	require.NoError(t, second.Close())
+
+	assert.Equal(t, 1, c.get("a"), "a ran in the first process only")
+	assert.Equal(t, 2, c.get("b"))
+
+	state, err := runbook.Inspect(path)
+	require.NoError(t, err)
+	require.Len(t, state.Attempts, 2)
+	assert.Equal(t, runbook.OutcomeFailed, state.Attempts[0].Outcome)
+	assert.Equal(t, runbook.OutcomePassed, state.Attempts[1].Outcome)
+	assert.False(t, state.Unfinished())
+	assert.False(t, state.Live)
 }

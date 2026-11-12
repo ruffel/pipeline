@@ -7,9 +7,14 @@ import (
 )
 
 var (
-	// ErrResumeNotSupported is returned by [Run] for a journal that already has
-	// attempts. Resuming arrives with the file journal.
-	ErrResumeNotSupported = errors.New("runbook: the journal already has attempts; resuming is not supported yet")
+	// ErrPlanChanged is returned by [Run] when the journal's attempts were
+	// made with a plan of a different shape: its fingerprint differs. Start a
+	// new journal for a new plan.
+	ErrPlanChanged = errors.New("runbook: the plan has changed since the journal's last attempt")
+
+	// ErrAlreadyComplete is returned by [Run] when the journal's latest
+	// attempt passed. [Force] runs the plan again regardless.
+	ErrAlreadyComplete = errors.New("runbook: the journal's latest attempt already passed")
 
 	// ErrStepReturned is returned by [StepContext] methods called after the
 	// step has returned, for example from a goroutine it left running.

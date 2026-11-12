@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,4 +200,98 @@ func TestTrace(t *testing.T) {
 		"run.started p", "step.started p/a", "step.running p/a", "step.finished p/a passed", "run.finished p passed",
 	}, runbooktest.Trace(events))
 	assert.Contains(t, runbooktest.Trace(events, runbook.EventMessage), "message p/a")
+}
+
+// applied is the system a plan changes: how many times each step's work
+// was done.
+type applied struct {
+	mu   sync.Mutex
+	done map[string]int
+}
+
+func (a *applied) count(name string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return a.done[name]
+}
+
+// realWork does its work once, and has a Check that looks at the system.
+type realWork struct {
+	sys  *applied
+	name string
+}
+
+func (w realWork) Check(context.Context, *runbook.StepContext) (bool, error) {
+	return w.sys.count(w.name) > 0, nil
+}
+
+func (w realWork) Run(_ context.Context, s *runbook.StepContext) error {
+	w.sys.mu.Lock()
+	w.sys.done[w.name]++
+	w.sys.mu.Unlock()
+
+	if err := s.Record("k", "v"); err != nil {
+		return err
+	}
+
+	return s.Item("n", runbook.ItemPassed, "")
+}
+
+// Whatever point a run crashes at, resuming it finishes the plan with every
+// step's work done exactly once: nothing repeated, nothing missed.
+func TestCrashAfter_ResumeFromEveryPoint(t *testing.T) {
+	t.Parallel()
+
+	points := []runbooktest.Point{
+		runbooktest.Started, runbooktest.Running, runbooktest.Value("k"), runbooktest.Item("n"), runbooktest.Finished,
+	}
+
+	for i := range 10 {
+		for _, point := range points {
+			path := fmt.Sprintf("p/g/s%d", i)
+
+			t.Run(fmt.Sprintf("%s/%s", path, point), func(t *testing.T) {
+				t.Parallel()
+
+				sys := &applied{done: map[string]int{}}
+
+				steps := make([]runbook.Element, 0, 10)
+
+				for n := range 10 {
+					name := fmt.Sprintf("s%d", n)
+					steps = append(steps, runbook.Effect(name, realWork{sys: sys, name: name}))
+				}
+
+				plan, err := runbook.NewPlan("p", runbook.Group("g", steps...))
+				require.NoError(t, err)
+
+				crash := runbooktest.CrashAfter(path, point)
+
+				_, err = runbook.Run(t.Context(), plan, crash.Journal)
+				require.ErrorIs(t, err, runbooktest.ErrCrashed)
+
+				crash.Restart()
+
+				res, err := runbook.Run(t.Context(), plan, crash.Journal)
+				require.NoError(t, err)
+				assert.Equal(t, 2, res.Attempt)
+				assert.Equal(t, runbook.OutcomePassed, res.Outcome)
+
+				for n := range 10 {
+					assert.Equal(t, 1, sys.count(fmt.Sprintf("s%d", n)), "step s%d's work", n)
+				}
+
+				state, err := crash.Journal.State()
+				require.NoError(t, err)
+				assert.False(t, state.Unfinished())
+
+				// The step that was mid-Run when the process died is recorded
+				// as recovered: its Check found the work done.
+				if point != runbooktest.Started && point != runbooktest.Finished {
+					assert.Equal(t, runbook.ReasonRecovered, state.Element(path).Reason)
+				}
+			})
+		}
+	}
 }

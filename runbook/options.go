@@ -35,10 +35,25 @@ type Clock interface {
 // Option configures [Run].
 type Option func(*config)
 
+// ResumeMode says how a resumed run treats an Effect step that an earlier
+// attempt finished.
+type ResumeMode int
+
+// The resume modes.
+const (
+	// ResumeVerify runs the step's Check again, and its Run if the work is
+	// no longer done. A step with no Check is skipped. It is the default.
+	ResumeVerify ResumeMode = iota
+	// ResumeTrust skips the step without calling Check.
+	ResumeTrust
+)
+
 type config struct {
 	observers []Observer
 	labels    L
 	clock     Clock
+	resume    ResumeMode
+	force     bool
 
 	// outputBudget is MaxStepOutput, except in tests.
 	outputBudget int
@@ -60,6 +75,25 @@ func WithObservers(observers ...Observer) Option {
 func WithRunLabels(l L) Option {
 	return func(c *config) {
 		c.labels = maps.Clone(l)
+	}
+}
+
+// WithResume sets how a resumed run treats Effect steps that an earlier
+// attempt finished. The default is [ResumeVerify].
+func WithResume(mode ResumeMode) Option {
+	return func(c *config) {
+		c.resume = mode
+	}
+}
+
+// Force runs the whole plan again, whatever the journal says: nothing is
+// skipped because an earlier attempt did it, and a journal whose latest
+// attempt passed is accepted. Check still decides whether each Run is
+// needed, and values recorded by earlier attempts stay readable. The attempt
+// is recorded as forced.
+func Force() Option {
+	return func(c *config) {
+		c.force = true
 	}
 }
 

@@ -989,7 +989,7 @@ func TestRun_ObserverCallsAreSerialised(t *testing.T) {
 // Journal rules
 // -----------------------------------------------------------------------------
 
-func TestRun_RefusesAJournalWithAttempts(t *testing.T) {
+func TestRun_RefusesAJournalWhoseLatestAttemptPassed(t *testing.T) {
 	t.Parallel()
 
 	j := runbook.MemoryJournal()
@@ -999,7 +999,7 @@ func TestRun_RefusesAJournalWithAttempts(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = runbook.Run(t.Context(), plan, j)
-	require.ErrorIs(t, err, runbook.ErrResumeNotSupported)
+	require.ErrorIs(t, err, runbook.ErrAlreadyComplete)
 }
 
 func TestRun_TimestampsComeFromTheClock(t *testing.T) {
