@@ -166,6 +166,20 @@ func runeBoundary(piece []byte) int {
 	return n
 }
 
+// Chunks splits text into pieces of at most maxLen bytes, never inside a
+// UTF-8 character. Text that fits is returned as one piece.
+func Chunks(text string, maxLen int) []string {
+	var pieces []string
+
+	for len(text) > maxLen {
+		cut := runeBoundary([]byte(text[:maxLen]))
+		pieces = append(pieces, text[:cut])
+		text = text[cut:]
+	}
+
+	return append(pieces, text)
+}
+
 // Line is one line, or one piece of a long line, from a [Writer].
 type Line struct {
 	Text string
