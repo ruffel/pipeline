@@ -243,6 +243,10 @@ func (s *fileStore) lines() ([][]byte, error) {
 }
 
 func (s *fileStore) close() error {
-	// Closing the file releases the lock.
+	// Unlock explicitly. Closing would release the lock only once every copy
+	// of the file is closed, and a subprocess this process is starting holds
+	// one between its fork and its exec.
+	_ = flock(s.f, syscall.LOCK_UN)
+
 	return s.f.Close()
 }
