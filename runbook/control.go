@@ -1,6 +1,7 @@
 package runbook
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -56,13 +59,30 @@ func controlFile(mode StopMode) (string, error) {
 	}
 }
 
-// controlRequest is what a request file holds: the run it is for, and who
-// asked. uid is the user that owned the file.
+// A request file is named for what it asks and the run it asks it of, such
+// as "stop.<run>", so a caller that read an earlier attempt can't replace a
+// request made of the attempt now running. It holds who asked.
 type controlRequest struct {
-	Run string `json:"run"`
 	Who string `json:"who,omitempty"`
 
-	uid *int
+	// From the file: its name, and the user that owned it.
+	mode StopMode
+	run  string
+	uid  *int
+}
+
+// requestName names the file for a request of run.
+func requestName(mode StopMode, run string) (string, error) {
+	name, err := controlFile(mode)
+	if err != nil {
+		return "", err
+	}
+
+	if run == "" || strings.ContainsAny(run, "/\\\x00") {
+		return "", fmt.Errorf("runbook: run %q can't name a request", run)
+	}
+
+	return name + "." + run, nil
 }
 
 // prepareControl makes the control directory, private to its owner. A
@@ -77,14 +97,29 @@ func prepareControl(dir string) error {
 		return fmt.Errorf("runbook: control directory: %w", err)
 	}
 
-	if !info.IsDir() {
-		return fmt.Errorf("runbook: control directory: %s is not a directory", dir)
+	if err := checkControlDir(dir, info, os.Geteuid()); err != nil {
+		return err
 	}
 
 	if info.Mode().Perm() != controlDirMode {
 		if err := os.Chmod(dir, controlDirMode); err != nil {
 			return fmt.Errorf("runbook: control directory: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// checkControlDir refuses a control directory that isn't one, or that
+// belongs to a user other than euid: making it private would not take it
+// from them, and they could read or replace requests.
+func checkControlDir(dir string, info os.FileInfo, euid int) error {
+	if !info.IsDir() {
+		return fmt.Errorf("runbook: control directory: %s is not a directory", dir)
+	}
+
+	if uid := fileUID(info); uid != nil && *uid != euid {
+		return fmt.Errorf("runbook: control directory: %s belongs to user %d, not %d", dir, *uid, euid)
 	}
 
 	return nil
@@ -107,19 +142,13 @@ func (r *runner) watchControl(done <-chan struct{}) {
 }
 
 // readControl acts on the requests for this run and deletes the rest: a
-// request left for an earlier run must not stop this one.
+// request left for an earlier run must not stop this one. A cancel is acted
+// on first.
 func (r *runner) readControl() {
-	for _, mode := range []StopMode{StopCancel, StopGraceful} {
-		name, _ := controlFile(mode)
+	for _, req := range takeRequests(r.control, r.id) {
+		stop := StopRequest{Mode: req.mode, By: stopByControl, Who: req.Who, UID: req.uid}
 
-		req, ok := takeRequest(r.control, name)
-		if !ok || req.Run != r.id {
-			continue
-		}
-
-		stop := StopRequest{Mode: mode, By: stopByControl, Who: req.Who, UID: req.uid}
-
-		if mode == StopCancel {
+		if req.mode == StopCancel {
 			r.cancelRequested(stop)
 		} else {
 			r.stop.fire(stop)
@@ -127,8 +156,46 @@ func (r *runner) readControl() {
 	}
 }
 
-// takeRequest takes the request named name from dir, if there is one, and
-// deletes it. Anything there that isn't a request is deleted too.
+// takeRequests takes every request from dir and returns those for run,
+// cancels first. Everything else there is deleted, except files whose names
+// start with a dot: requests still being written.
+func takeRequests(dir, run string) []controlRequest {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var reqs []controlRequest
+
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+
+		req, ok := takeRequest(dir, e.Name())
+		if ok && req.run == run {
+			reqs = append(reqs, req)
+		}
+	}
+
+	slices.SortStableFunc(reqs, func(a, b controlRequest) int {
+		return cmp.Compare(rank(a.mode), rank(b.mode))
+	})
+
+	return reqs
+}
+
+// rank orders requests: a cancel before a graceful stop.
+func rank(mode StopMode) int {
+	if mode == StopCancel {
+		return 0
+	}
+
+	return 1
+}
+
+// takeRequest takes the file named name from dir, deletes it, and returns
+// the request it holds, if it is one.
 func takeRequest(dir, name string) (controlRequest, bool) {
 	// Moved aside before it is read, so a request written meanwhile is left
 	// for the next look rather than deleted unread.
@@ -138,6 +205,19 @@ func takeRequest(dir, name string) (controlRequest, bool) {
 	}
 
 	defer func() { _ = os.Remove(taken) }()
+
+	kind, run, _ := strings.Cut(name, ".")
+
+	var mode StopMode
+
+	switch kind {
+	case "stop":
+		mode = StopGraceful
+	case "cancel":
+		mode = StopCancel
+	default:
+		return controlRequest{}, false
+	}
 
 	info, err := os.Lstat(taken)
 	if err != nil || !info.Mode().IsRegular() {
@@ -166,7 +246,7 @@ func takeRequest(dir, name string) (controlRequest, bool) {
 		return controlRequest{}, false
 	}
 
-	req.uid = fileUID(info)
+	req.mode, req.run, req.uid = mode, run, fileUID(info)
 
 	return req, true
 }
@@ -187,9 +267,18 @@ func takeRequest(dir, name string) (controlRequest, bool) {
 // the run finished without seeing the request. It returns the context's
 // error when ctx is done first; the request may still be acted on.
 func RequestStop(ctx context.Context, path string, mode StopMode, who string) error {
-	name, err := controlFile(mode)
-	if err != nil {
+	if _, err := controlFile(mode); err != nil {
 		return err
+	}
+
+	data, err := json.Marshal(controlRequest{Who: who})
+	if err != nil {
+		return fmt.Errorf("runbook: request stop: %w", err)
+	}
+
+	// The run would throw away a request too big to read, and never answer.
+	if len(data) > maxControlRequest {
+		return fmt.Errorf("runbook: request stop: who is too long: the request is %d bytes, at most %d", len(data), maxControlRequest)
 	}
 
 	// OpenJournal fixes the journal's path the same way, and the control
@@ -202,9 +291,8 @@ func RequestStop(ctx context.Context, path string, mode StopMode, who string) er
 	q := &stopRequester{
 		reader: journalReader{path: path},
 		dir:    controlDir(path),
-		name:   name,
 		mode:   mode,
-		who:    who,
+		data:   data,
 		locked: journalLocked,
 	}
 
@@ -230,9 +318,9 @@ func RequestStop(ctx context.Context, path string, mode StopMode, who string) er
 type stopRequester struct {
 	reader journalReader
 	dir    string
-	name   string
 	mode   StopMode
-	who    string
+	// data is the request, written for each attempt it is made of.
+	data []byte
 	// locked reports whether a process holds the journal at a path.
 	locked func(path string) bool
 
@@ -259,7 +347,9 @@ func (q *stopRequester) step() (bool, error) {
 	}
 
 	switch {
-	case q.answered:
+	case q.answered && q.issued == q.latest:
+		// The attempt this call asked recorded it, even if it has finished
+		// since.
 		return true, nil
 	case !q.open:
 		return true, ErrNotRunning
@@ -267,6 +357,9 @@ func (q *stopRequester) step() (bool, error) {
 		// The attempt never finished, and nothing holds the journal: its
 		// runner is gone. (One that took the journal since is read next.)
 		return true, ErrNotRunning
+	case q.answered:
+		// The attempt in progress was already asked to stop this way.
+		return true, nil
 	case q.issued != q.latest:
 		if err := q.write(); err != nil {
 			return true, err
@@ -317,25 +410,25 @@ func (q *stopRequester) read() error {
 // write puts the request in place for the latest attempt: written under a
 // temporary name and renamed, so the run never reads half of one.
 func (q *stopRequester) write() error {
-	data, err := json.Marshal(controlRequest{Run: q.latest, Who: q.who})
+	name, err := requestName(q.mode, q.latest)
 	if err != nil {
 		return fmt.Errorf("runbook: request stop: %w", err)
 	}
 
-	f, err := os.CreateTemp(q.dir, "."+q.name+"-*")
+	f, err := os.CreateTemp(q.dir, "."+name+"-*")
 	if err != nil {
 		return fmt.Errorf("runbook: request stop: %w", err)
 	}
 
 	tmp := f.Name()
 
-	_, err = f.Write(data)
+	_, err = f.Write(q.data)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 
 	if err == nil {
-		err = os.Rename(tmp, filepath.Join(q.dir, q.name))
+		err = os.Rename(tmp, filepath.Join(q.dir, name))
 	}
 
 	if err != nil {

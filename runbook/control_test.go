@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,8 +290,9 @@ func TestRun_IgnoresRequestsThatAreNotForIt(t *testing.T) {
 
 	require.NoError(t, os.Mkdir(dir, 0o700))
 	require.NoError(t, os.Chmod(dir, 0o777)) //nolint:gosec // The looseness under test.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "stop"), []byte(`{"run":"r-earlier","who":"alice"}`), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "cancel"), []byte(`not a request`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "stop.r-earlier"), []byte(`{"who":"alice"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cancel.r-earlier"), []byte(`{"who":"alice"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "stop"), []byte(`not a request`), 0o600))
 
 	j, err := runbook.OpenJournal(path)
 	require.NoError(t, err)
@@ -356,4 +358,24 @@ func waitFor(t *testing.T, rec *recorder, kind runbook.EventKind) {
 	require.Eventually(t, func() bool {
 		return len(kinds(rec.all(), kind)) > 0
 	}, 10*time.Second, time.Millisecond)
+}
+
+// A request too big for the run to read is refused, not left to be thrown
+// away while the caller waits.
+func TestRequestStop_RefusesARequestTooBigToRead(t *testing.T) {
+	t.Parallel()
+
+	running, release := make(chan struct{}), make(chan struct{})
+	lr := startRun(t, mustPlan(t, runbook.Effect("a", blocking(running, release))), fastControl)
+
+	<-running
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+
+	err := runbook.RequestStop(ctx, lr.path, runbook.StopGraceful, strings.Repeat("x", 5000))
+	require.ErrorContains(t, err, "too long")
+
+	close(release)
+	require.NoError(t, lr.wait(t).err)
 }
