@@ -106,7 +106,11 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 			by = " by " + e.Who
 		}
 
-		o.printf("■ stop requested%s; running steps will finish\n", by)
+		if e.Mode == StopCancel {
+			o.printf("■ cancel requested%s; running steps are cancelled\n", by)
+		} else {
+			o.printf("■ stop requested%s; running steps will finish\n", by)
+		}
 	case EventStepRunning, EventValue:
 		// Bookkeeping for resume and rollback; nothing for a reader.
 	}

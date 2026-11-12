@@ -66,8 +66,11 @@ func writerPID(path string) int {
 // replaying it. Use [MemoryJournal] for tests and tools that don't need
 // anything to survive the process.
 type Journal struct {
-	mu     sync.Mutex
-	store  store
+	mu    sync.Mutex
+	store store
+	// path is the journal file's absolute path, or empty for a journal in
+	// memory.
+	path   string
 	seq    int64
 	closed bool
 	hook   func(Event) error

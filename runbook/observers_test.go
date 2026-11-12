@@ -202,3 +202,15 @@ func TestPlainObserver_AStoppedRun(t *testing.T) {
 ■ upgrade stopped
 `, buf.String())
 }
+
+func TestPlainObserver_ACancelRequest(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	runbook.NewPlainObserver(&buf).OnEvent(t.Context(), runbook.Event{
+		Kind: runbook.EventStopRequested, Path: "upgrade", Mode: runbook.StopCancel, By: "control", Who: "bob",
+	})
+
+	assert.Equal(t, "■ cancel requested by bob; running steps are cancelled\n", buf.String())
+}

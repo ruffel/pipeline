@@ -272,7 +272,10 @@ func (s *State) applyAttempt(e Event) {
 		s.Attempts[n-1].Finished = e.TS
 		s.Attempts[n-1].Outcome = e.Outcome
 	case EventStopRequested:
-		s.Attempts[n-1].Stop = &StopRequest{Mode: e.Mode, By: e.By, Who: e.Who}
+		// A cancel outranks a graceful stop, whichever came first.
+		if cur := s.Attempts[n-1].Stop; cur == nil || cur.Mode != StopCancel {
+			s.Attempts[n-1].Stop = &StopRequest{Mode: e.Mode, By: e.By, Who: e.Who, UID: e.UID}
+		}
 	}
 }
 

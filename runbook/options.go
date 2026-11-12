@@ -49,15 +49,16 @@ const (
 )
 
 type config struct {
-	observers []Observer
-	labels    L
-	clock     Clock
-	resume    ResumeMode
-	force     bool
-	redact    func(string) string
-	inputs    any
-	newInputs bool
-	stopper   *Stopper
+	observers   []Observer
+	labels      L
+	clock       Clock
+	resume      ResumeMode
+	force       bool
+	redact      func(string) string
+	inputs      any
+	newInputs   bool
+	stopper     *Stopper
+	controlPoll time.Duration
 
 	// outputBudget is MaxStepOutput, except in tests.
 	outputBudget int
