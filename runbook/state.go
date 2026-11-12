@@ -80,6 +80,10 @@ type ElementState struct {
 	// Signal is the flow control the step's Run returned when it last
 	// finished, if any.
 	Signal Signal
+	// Waiting means a gate is waiting for approval: it has started waiting
+	// and has not been released or finished. If its runner has gone, it is
+	// waiting for nothing; see [State.Live].
+	Waiting bool
 }
 
 // ItemState is the latest result recorded for one target of a step.
@@ -220,7 +224,11 @@ func (s *State) apply(e Event) {
 		s.applyAttempt(e)
 	case EventGroupStarted, EventStepStarted:
 		el := s.elements[e.Path]
-		el.Status, el.Reason, el.Error, el.Run = StatusStarted, "", nil, e.Run
+		el.Status, el.Reason, el.Error, el.Run, el.Waiting = StatusStarted, "", nil, e.Run, false
+		s.elements[e.Path] = el
+	case EventGateWaiting, EventGateReleased:
+		el := s.elements[e.Path]
+		el.Waiting = e.Kind == EventGateWaiting
 		s.elements[e.Path] = el
 	case EventStepRunning:
 		el := s.elements[e.Path]
@@ -294,7 +302,7 @@ func (s *State) startOver() {
 
 func (s *State) finish(e Event) {
 	el := s.elements[e.Path]
-	el.Reason, el.Error, el.Run = e.Reason, e.Error, e.Run
+	el.Reason, el.Error, el.Run, el.Waiting = e.Reason, e.Error, e.Run, false
 
 	// A signal belongs to the last time Run actually finished: a passed or
 	// failed outcome sets or clears it, and a skip leaves it for resume.

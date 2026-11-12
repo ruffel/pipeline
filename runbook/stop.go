@@ -77,9 +77,10 @@ func WithStopper(s *Stopper) Option {
 type StopRequest struct {
 	Mode StopMode
 	// By is how the request was made: "stopper" for a [Stopper], "control"
-	// for [RequestStop].
+	// for [RequestStop], "timeout" for a gate's [TimeoutStop].
 	By string
-	// Who is who or what asked, as they said.
+	// Who is who or what asked, as they said: for a gate's timeout, its
+	// path.
 	Who string
 	// UID is the user that owned a [RequestStop] request's file. It is nil
 	// for a Stopper.
@@ -90,6 +91,7 @@ type StopRequest struct {
 const (
 	stopBy        = "stopper"
 	stopByControl = "control"
+	stopByTimeout = "timeout"
 )
 
 // stopSignal is a run's graceful stop: the first request wins, and is

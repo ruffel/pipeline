@@ -81,6 +81,7 @@ func trace(events []runbook.Event, kinds ...runbook.EventKind) []string {
 	want := map[runbook.EventKind]bool{
 		runbook.EventGroupStarted: true, runbook.EventGroupFinished: true,
 		runbook.EventStepStarted: true, runbook.EventStepRunning: true, runbook.EventStepFinished: true,
+		runbook.EventGateWaiting: true, runbook.EventGateReleased: true,
 	}
 	for _, k := range kinds {
 		want[k] = true
@@ -1195,4 +1196,8 @@ func TestRun_AcceptedWritesAreNeverLost(t *testing.T) {
 		lines, _ := outputOf(out.events)
 		require.Len(t, lines, int(accepted.Load()))
 	}
+}
+
+func kinds(events []runbook.Event, kind runbook.EventKind) []runbook.Event {
+	return slices.DeleteFunc(slices.Clone(events), func(e runbook.Event) bool { return e.Kind != kind })
 }

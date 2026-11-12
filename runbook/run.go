@@ -40,9 +40,9 @@ type Result struct {
 // of any steps that failed).
 //
 // Other processes stop or cancel a run on a file journal with
-// [RequestStop]. Run makes a directory for their requests beside the
-// journal, named after it with ".control" added, that only its owner can
-// write to.
+// [RequestStop], and approve its gates with [Approve]. Run makes a
+// directory for their requests beside the journal, named after it with
+// ".control" added, that only its owner can write to.
 //
 // If the journal already has attempts, Run resumes: it makes a new attempt
 // that does only what is left.
@@ -132,6 +132,7 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		inputs:      in,
 		stopper:     cfg.stopper,
 		stop:        newStopSignal(),
+		gates:       map[string]chan controlRequest{},
 		control:     control,
 		controlPoll: cfg.controlPoll,
 		forced:      cfg.force && len(prev.Attempts) > 0,
@@ -184,6 +185,11 @@ type runner struct {
 	stopNoted   sync.Once
 	halted      atomic.Bool
 	cancelNoted sync.Once
+
+	// gates are the gates waiting for approval through the control
+	// directory, by path.
+	gatesMu sync.Mutex
+	gates   map[string]chan controlRequest
 
 	// control is the directory other processes write requests to, if the
 	// journal is a file; controlPoll is how often it is read.
@@ -289,11 +295,14 @@ func stoppedErr(err error) error {
 
 // element runs one group or step and returns its failure, if any.
 func (r *runner) element(ctx context.Context, n *node) error {
-	if n.kind == KindGroup {
+	switch n.kind { //nolint:exhaustive // Every other kind is a step.
+	case KindGroup:
 		return r.group(ctx, n)
+	case KindGate:
+		return r.gate(ctx, n)
+	default:
+		return r.step(ctx, n)
 	}
-
-	return r.step(ctx, n)
 }
 
 func (r *runner) group(ctx context.Context, n *node) error {

@@ -111,9 +111,35 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 		} else {
 			o.printf("■ stop requested%s; running steps will finish\n", by)
 		}
+	case EventGateWaiting:
+		o.printf("%s⏸ %s%s%s\n", indent, name(e.Path), dash(e.Prompt), deadline(e.Deadline))
+	case EventGateReleased:
+		o.printf("%s▶ %s %s\n", indent, name(e.Path), releasedText(e))
 	case EventStepRunning, EventValue:
 		// Bookkeeping for resume and rollback; nothing for a reader.
 	}
+}
+
+// deadline says when a gate times out, if it does.
+func deadline(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+
+	return " (waiting until " + t.Format(time.RFC3339) + ")"
+}
+
+// releasedText says what released a gate.
+func releasedText(e Event) string {
+	if e.Policy != "" {
+		return fmt.Sprintf("timed out: %s", e.Policy)
+	}
+
+	if e.Who != "" {
+		return fmt.Sprintf("approved by %s (%s)", e.Who, e.By)
+	}
+
+	return "approved (" + e.By + ")"
 }
 
 // detailText is what a step's output, message, progress, item, custom event

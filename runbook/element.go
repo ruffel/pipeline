@@ -24,6 +24,10 @@ const (
 	// KindObserve only reads the system, so it runs on every attempt that
 	// enters its group.
 	KindObserve Kind = "observe"
+
+	// KindGate waits for approval. Once released, later attempts don't wait
+	// again.
+	KindGate Kind = "gate"
 )
 
 // FailurePolicy says what a group does when one of its children fails.
@@ -47,7 +51,7 @@ const (
 type L map[string]string
 
 // Element is a group or a step in a plan. Build one with [Group], [Effect],
-// [Ensure] or [Observe].
+// [Ensure], [Observe] or [Gate].
 type Element interface {
 	element()
 }

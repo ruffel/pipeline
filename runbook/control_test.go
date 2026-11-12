@@ -379,3 +379,94 @@ func TestRequestStop_RefusesARequestTooBigToRead(t *testing.T) {
 	close(release)
 	require.NoError(t, lr.wait(t).err)
 }
+
+func TestApprove_ReleasesAWaitingGate(t *testing.T) {
+	t.Parallel()
+
+	lr := startRun(t, mustPlan(t,
+		runbook.Gate("go", runbook.GateOptions{Prompt: "Go on?"}),
+		runbook.Effect("after", ok()),
+	), fastControl)
+
+	waitFor(t, lr.rec, runbook.EventGateWaiting)
+
+	state, err := runbook.Inspect(lr.path)
+	require.NoError(t, err)
+	assert.True(t, state.Element("p/go").Waiting)
+
+	require.NoError(t, runbook.Approve(t.Context(), lr.path, "p/go", "alice"))
+	require.NoError(t, lr.wait(t).err)
+
+	released := kinds(lr.rec.all(), runbook.EventGateReleased)
+	require.Len(t, released, 1)
+	assert.Equal(t, "control", released[0].By)
+	assert.Equal(t, "alice", released[0].Who)
+	assert.Equal(t, uid(), released[0].UID)
+
+	entries, err := os.ReadDir(lr.path + ".control")
+	require.NoError(t, err)
+	assert.Empty(t, entries, "the run took the approval")
+}
+
+func TestApprove_ErrGateNotWaiting(t *testing.T) {
+	t.Parallel()
+
+	running, release := make(chan struct{}), make(chan struct{})
+	lr := startRun(t, mustPlan(t,
+		runbook.Effect("before", blocking(running, release)),
+		runbook.Gate("go", runbook.GateOptions{Approvers: []runbook.Approver{approves("test", "bob")}}),
+	), fastControl)
+
+	<-running
+
+	for _, gate := range []string{"p/go", "p/before", "p/nothing"} {
+		err := runbook.Approve(t.Context(), lr.path, gate, "alice")
+		require.ErrorIs(t, err, runbook.ErrGateNotWaiting, gate)
+	}
+
+	close(release)
+	require.NoError(t, lr.wait(t).err)
+}
+
+func TestApprove_ErrNotRunning(t *testing.T) {
+	t.Parallel()
+
+	err := runbook.Approve(t.Context(), journalPath(t), "p/go", "alice")
+	require.ErrorIs(t, err, runbook.ErrNotRunning)
+
+	path := journalPath(t)
+	runToFile(t, path, mustPlan(t, runbook.Gate("go", runbook.GateOptions{
+		Approvers: []runbook.Approver{approves("test", "bob")},
+	})))
+
+	err = runbook.Approve(t.Context(), path, "p/go", "alice")
+	require.ErrorIs(t, err, runbook.ErrNotRunning)
+}
+
+// A stop ends a gate's wait without releasing it, so an approval waiting to
+// be read is not answered.
+func TestApprove_AGateAStopInterrupted(t *testing.T) {
+	t.Parallel()
+
+	stopper := runbook.NewStopper()
+	lr := startRun(t, mustPlan(t, runbook.Gate("go", runbook.GateOptions{})),
+		runbook.WithControlPoll(time.Hour), runbook.WithStopper(stopper))
+
+	waitFor(t, lr.rec, runbook.EventGateWaiting)
+
+	done := make(chan error, 1)
+
+	go func() { done <- runbook.Approve(t.Context(), lr.path, "p/go", "alice") }()
+
+	// The run won't read the approval for an hour; a stop ends the wait
+	// first, and the run.
+	require.Eventually(t, func() bool {
+		entries, err := os.ReadDir(lr.path + ".control")
+
+		return err == nil && len(entries) == 1
+	}, 10*time.Second, time.Millisecond, "the approval was written")
+
+	stopper.Stop("bob")
+	assert.Equal(t, runbook.ErrStopped, lr.wait(t).err)
+	require.ErrorIs(t, <-done, runbook.ErrNotRunning)
+}

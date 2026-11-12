@@ -3,6 +3,8 @@ package runbook
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +16,16 @@ import (
 	"time"
 )
 
-// ErrNotRunning is returned by [RequestStop] when no run is in progress on
-// the journal: none has started, the latest has finished, or the process
-// running it is gone.
-var ErrNotRunning = errors.New("runbook: no run is in progress on the journal")
+var (
+	// ErrNotRunning is returned by [RequestStop] and [Approve] when no run is
+	// in progress on the journal: none has started, the latest has finished,
+	// or the process running it is gone.
+	ErrNotRunning = errors.New("runbook: no run is in progress on the journal")
+
+	// ErrGateNotWaiting is returned by [Approve] when the gate is not waiting
+	// for approval, or stopped waiting without being approved.
+	ErrGateNotWaiting = errors.New("runbook: the gate is not waiting for approval")
+)
 
 // DefaultControlPoll is how often a run looks for requests from other
 // processes.
@@ -37,7 +45,8 @@ const (
 	controlDirMode = 0o700
 	// maxControlRequest bounds what a run reads of a request.
 	maxControlRequest = 4 << 10
-	// requestPoll is how often RequestStop reads the journal for its answer.
+	// requestPoll is how often RequestStop and Approve read the journal for
+	// their answer.
 	requestPoll = 50 * time.Millisecond
 )
 
@@ -47,13 +56,20 @@ func controlDir(path string) string {
 	return path + ".control"
 }
 
-// controlFile names the request file for a stop mode.
+// What a request asks.
+const (
+	requestStop    = "stop"
+	requestCancel  = "cancel"
+	requestApprove = "approve"
+)
+
+// controlFile names the kind of request for a stop mode.
 func controlFile(mode StopMode) (string, error) {
 	switch mode {
 	case StopGraceful:
-		return "stop", nil
+		return requestStop, nil
 	case StopCancel:
-		return "cancel", nil
+		return requestCancel, nil
 	default:
 		return "", fmt.Errorf("runbook: unknown stop mode %q", mode)
 	}
@@ -61,28 +77,38 @@ func controlFile(mode StopMode) (string, error) {
 
 // A request file is named for what it asks and the run it asks it of, such
 // as "stop.<run>", so a caller that read an earlier attempt can't replace a
-// request made of the attempt now running. It holds who asked.
+// request made of the attempt now running. An approval's name adds a hash
+// of the gate's path, as "approve.<run>.<hash>": a path can be longer than
+// a file name may be. The file holds who asked, and the gate's path.
 type controlRequest struct {
-	Who string `json:"who,omitempty"`
+	Who  string `json:"who,omitempty"`
+	Gate string `json:"gate,omitempty"`
 
 	// From the file: its name, and the user that owned it.
-	mode StopMode
+	kind string
 	run  string
 	uid  *int
 }
 
-// requestName names the file for a request of run.
-func requestName(mode StopMode, run string) (string, error) {
-	name, err := controlFile(mode)
-	if err != nil {
-		return "", err
-	}
-
-	if run == "" || strings.ContainsAny(run, "/\\\x00") {
+// requestName names the file for a request of run. key is a gate's hash,
+// for an approval.
+func requestName(kind, run, key string) (string, error) {
+	if run == "" || strings.ContainsAny(run, "./\\\x00") {
 		return "", fmt.Errorf("runbook: run %q can't name a request", run)
 	}
 
-	return name + "." + run, nil
+	if key != "" {
+		return kind + "." + run + "." + key, nil
+	}
+
+	return kind + "." + run, nil
+}
+
+// gateKey is the hash of a gate's path that names its approvals.
+func gateKey(gate string) string {
+	sum := sha256.Sum256([]byte(gate))
+
+	return hex.EncodeToString(sum[:16])
 }
 
 // prepareControl makes the control directory, private to its owner. A
@@ -142,16 +168,17 @@ func (r *runner) watchControl(done <-chan struct{}) {
 }
 
 // readControl acts on the requests for this run and deletes the rest: a
-// request left for an earlier run must not stop this one. A cancel is acted
-// on first.
+// request left for an earlier run must not stop or approve anything in this
+// one. A cancel is acted on first, and approvals last.
 func (r *runner) readControl() {
 	for _, req := range takeRequests(r.control, r.id) {
-		stop := StopRequest{Mode: req.mode, By: stopByControl, Who: req.Who, UID: req.uid}
-
-		if req.mode == StopCancel {
-			r.cancelRequested(stop)
-		} else {
-			r.stop.fire(stop)
+		switch req.kind {
+		case requestCancel:
+			r.cancelRequested(StopRequest{Mode: StopCancel, By: stopByControl, Who: req.Who, UID: req.uid})
+		case requestStop:
+			r.stop.fire(StopRequest{Mode: StopGraceful, By: stopByControl, Who: req.Who, UID: req.uid})
+		case requestApprove:
+			r.approveGate(req)
 		}
 	}
 }
@@ -179,19 +206,22 @@ func takeRequests(dir, run string) []controlRequest {
 	}
 
 	slices.SortStableFunc(reqs, func(a, b controlRequest) int {
-		return cmp.Compare(rank(a.mode), rank(b.mode))
+		return cmp.Compare(rank(a.kind), rank(b.kind))
 	})
 
 	return reqs
 }
 
-// rank orders requests: a cancel before a graceful stop.
-func rank(mode StopMode) int {
-	if mode == StopCancel {
+// rank orders requests: a cancel, then a graceful stop, then approvals.
+func rank(kind string) int {
+	switch kind {
+	case requestCancel:
 		return 0
+	case requestStop:
+		return 1
+	default:
+		return 2
 	}
-
-	return 1
 }
 
 // takeRequest takes the file named name from dir, deletes it, and returns
@@ -208,13 +238,12 @@ func takeRequest(dir, name string) (controlRequest, bool) {
 
 	kind, run, _ := strings.Cut(name, ".")
 
-	var mode StopMode
+	var key string
 
 	switch kind {
-	case "stop":
-		mode = StopGraceful
-	case "cancel":
-		mode = StopCancel
+	case requestStop, requestCancel:
+	case requestApprove:
+		run, key, _ = strings.Cut(run, ".")
 	default:
 		return controlRequest{}, false
 	}
@@ -246,7 +275,12 @@ func takeRequest(dir, name string) (controlRequest, bool) {
 		return controlRequest{}, false
 	}
 
-	req.mode, req.run, req.uid = mode, run, fileUID(info)
+	// An approval names its gate twice; the two must agree.
+	if kind == requestApprove && (req.Gate == "" || gateKey(req.Gate) != key) {
+		return controlRequest{}, false
+	}
+
+	req.kind, req.run, req.uid = kind, run, fileUID(info)
 
 	return req, true
 }
@@ -267,23 +301,12 @@ func takeRequest(dir, name string) (controlRequest, bool) {
 // the run finished without seeing the request. It returns the context's
 // error when ctx is done first; the request may still be acted on.
 func RequestStop(ctx context.Context, path string, mode StopMode, who string) error {
-	if _, err := controlFile(mode); err != nil {
+	kind, err := controlFile(mode)
+	if err != nil {
 		return err
 	}
 
-	data, err := json.Marshal(controlRequest{Who: who})
-	if err != nil {
-		return fmt.Errorf("runbook: request stop: %w", err)
-	}
-
-	// The run would throw away a request too big to read, and never answer.
-	if len(data) > maxControlRequest {
-		return fmt.Errorf("runbook: request stop: who is too long: the request is %d bytes, at most %d", len(data), maxControlRequest)
-	}
-
-	// OpenJournal fixes the journal's path the same way, and the control
-	// directory is named after it.
-	path, err = filepath.Abs(path)
+	path, data, err := newRequest(path, controlRequest{Who: who})
 	if err != nil {
 		return fmt.Errorf("runbook: request stop: %w", err)
 	}
@@ -291,17 +314,46 @@ func RequestStop(ctx context.Context, path string, mode StopMode, who string) er
 	q := &stopRequester{
 		reader: journalReader{path: path},
 		dir:    controlDir(path),
+		kind:   kind,
 		mode:   mode,
 		data:   data,
 		locked: journalLocked,
 	}
 
+	return awaitAnswer(ctx, q.step)
+}
+
+// newRequest encodes a request, refusing one too big for the run to read,
+// and returns the journal's path made absolute: OpenJournal fixes it the
+// same way, and the control directory is named after it.
+func newRequest(path string, req controlRequest) (string, []byte, error) {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// The run would throw away a request too big to read, and never answer.
+	if len(data) > maxControlRequest {
+		return "", nil, fmt.Errorf("who is too long: the request is %d bytes, at most %d", len(data), maxControlRequest)
+	}
+
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return path, data, nil
+}
+
+// awaitAnswer calls step until it reports the request settled, waiting
+// between calls, or until ctx is done.
+func awaitAnswer(ctx context.Context, step func() (bool, error)) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		done, err := q.step()
+		done, err := step()
 		if done {
 			return err
 		}
@@ -318,6 +370,7 @@ func RequestStop(ctx context.Context, path string, mode StopMode, who string) er
 type stopRequester struct {
 	reader journalReader
 	dir    string
+	kind   string
 	mode   StopMode
 	// data is the request, written for each attempt it is made of.
 	data []byte
@@ -407,35 +460,185 @@ func (q *stopRequester) read() error {
 	return err
 }
 
-// write puts the request in place for the latest attempt: written under a
-// temporary name and renamed, so the run never reads half of one.
+// write puts the request in place for the latest attempt.
 func (q *stopRequester) write() error {
-	name, err := requestName(q.mode, q.latest)
+	name, err := requestName(q.kind, q.latest, "")
+	if err == nil {
+		err = writeRequest(q.dir, name, q.data)
+	}
+
 	if err != nil {
 		return fmt.Errorf("runbook: request stop: %w", err)
 	}
 
-	f, err := os.CreateTemp(q.dir, "."+name+"-*")
+	return nil
+}
+
+// writeRequest puts a request in place: written under a temporary name and
+// renamed, so the run never reads half of one.
+func writeRequest(dir, name string, data []byte) error {
+	f, err := os.CreateTemp(dir, "."+name+"-*")
 	if err != nil {
-		return fmt.Errorf("runbook: request stop: %w", err)
+		return err
 	}
 
 	tmp := f.Name()
 
-	_, err = f.Write(q.data)
+	_, err = f.Write(data)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 
 	if err == nil {
-		err = os.Rename(tmp, filepath.Join(q.dir, name))
+		err = os.Rename(tmp, filepath.Join(dir, name))
 	}
 
 	if err != nil {
 		_ = os.Remove(tmp)
 
-		return fmt.Errorf("runbook: request stop: %w", err)
+		return err
 	}
 
 	return nil
+}
+
+// Approve approves the gate at the path gate (such as
+// "upgrade/region1/continue-DC2") in the run in progress on the journal
+// file at path, from this or any other process. who says who approved; it
+// is recorded in the journal, with the user that wrote the approval.
+//
+// The approval goes through the run's control directory, as [RequestStop]
+// does. Approve returns nil once the journal shows the gate released by an
+// approval, whichever approver gave it. If the run finishes and another
+// attempt starts first, the approval is made again once that attempt's gate
+// is waiting.
+//
+// Approve returns [ErrGateNotWaiting] when the gate is not waiting, or is
+// released by its timeout instead, and [ErrNotRunning] when no run is in
+// progress, or the run finished first. It returns the context's error when
+// ctx is done first; the approval may still be acted on.
+func Approve(ctx context.Context, path, gate, who string) error {
+	path, data, err := newRequest(path, controlRequest{Who: who, Gate: gate})
+	if err != nil {
+		return fmt.Errorf("runbook: approve: %w", err)
+	}
+
+	q := &approveRequester{
+		reader: journalReader{path: path},
+		dir:    controlDir(path),
+		gate:   gate,
+		data:   data,
+		locked: journalLocked,
+	}
+
+	return awaitAnswer(ctx, q.step)
+}
+
+// approveRequester is one Approve call's progress.
+type approveRequester struct {
+	reader journalReader
+	dir    string
+	gate   string
+	data   []byte
+	locked func(path string) bool
+
+	// latest is the latest attempt's run, and open whether it has not
+	// finished. In that attempt, the gate is waiting, or was released, and if
+	// so whether by an approval.
+	latest   string
+	open     bool
+	waiting  bool
+	released bool
+	approved bool
+	// issued is the run the approval was last written for.
+	issued string
+}
+
+// step reads what the journal has gained, and writes the approval for the
+// latest attempt if its gate is waiting and it has not been written yet. It
+// reports whether the approval is settled, and if so with what error.
+func (q *approveRequester) step() (bool, error) {
+	live := q.locked(q.reader.path)
+
+	if err := q.read(); err != nil {
+		return true, err
+	}
+
+	switch {
+	case q.released && q.issued == q.latest:
+		if q.approved {
+			return true, nil
+		}
+
+		return true, ErrGateNotWaiting
+	case !q.open:
+		return true, ErrNotRunning
+	case !live && !q.locked(q.reader.path):
+		return true, ErrNotRunning
+	case q.issued == "" && !q.waiting:
+		return true, ErrGateNotWaiting
+	case q.waiting && q.issued != q.latest:
+		name, err := requestName(requestApprove, q.latest, gateKey(q.gate))
+		if err == nil {
+			err = writeRequest(q.dir, name, q.data)
+		}
+
+		if err != nil {
+			return true, fmt.Errorf("runbook: approve: %w", err)
+		}
+
+		q.issued = q.latest
+	}
+
+	return false, nil
+}
+
+// read follows the journal's attempts and the gate. Everything else is
+// passed over, chatter without being decoded.
+func (q *approveRequester) read() error {
+	err := q.reader.next(func(line []byte) error {
+		if env, ok := peekEvent(line); ok && env.chatter {
+			return nil
+		}
+
+		e, err := decodeEvent(line)
+		if err != nil {
+			return err
+		}
+
+		if e.Kind == EventRunStarted {
+			q.latest, q.open, q.waiting, q.released, q.approved = e.Run, true, false, false, false
+
+			return nil
+		}
+
+		if e.Run != q.latest {
+			return nil
+		}
+
+		switch e.Kind { //nolint:exhaustive // Only these say where the gate stands.
+		case EventRunFinished:
+			q.open = false
+		case EventGateWaiting:
+			if e.Path == q.gate {
+				q.waiting, q.released = true, false
+			}
+		case EventGateReleased:
+			if e.Path == q.gate {
+				q.waiting, q.released, q.approved = false, true, e.Policy == ""
+			}
+		case EventStepFinished:
+			if e.Path == q.gate {
+				q.waiting = false
+			}
+		}
+
+		return nil
+	})
+
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	return err
 }
