@@ -4,11 +4,56 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 )
 
-// ErrJournalClosed is returned when writing to a closed journal.
-var ErrJournalClosed = errors.New("runbook: journal is closed")
+var (
+	// ErrJournalClosed is returned when writing to a closed journal.
+	ErrJournalClosed = errors.New("runbook: journal is closed")
+
+	// ErrJournalBusy is matched by the [JournalBusyError] that OpenJournal
+	// returns when another writer holds the journal.
+	ErrJournalBusy = errors.New("runbook: journal is in use")
+)
+
+// JournalBusyError is returned by OpenJournal when another writer holds the
+// journal file.
+type JournalBusyError struct {
+	Path string
+	// PID is the process that started the journal's latest run, which is
+	// normally the holder. It is 0 if the journal has no run yet. The lock
+	// itself cannot say who holds it.
+	PID int
+}
+
+// Error implements error.
+func (e *JournalBusyError) Error() string {
+	if e.PID == 0 {
+		return fmt.Sprintf("runbook: journal %s is in use by another process", e.Path)
+	}
+
+	return fmt.Sprintf("runbook: journal %s is in use, last written by process %d", e.Path, e.PID)
+}
+
+// Is reports whether target is [ErrJournalBusy].
+func (e *JournalBusyError) Is(target error) bool {
+	return target == ErrJournalBusy
+}
+
+// writerPID returns the PID recorded by the latest run in the journal at
+// path, or 0.
+func writerPID(path string) int {
+	events, _ := readJournal(path)
+
+	for _, e := range slices.Backward(events) {
+		if e.Kind == EventRunStarted {
+			return e.PID
+		}
+	}
+
+	return 0
+}
 
 // Journal is the durable record of a plan's runs. Every outcome is written to
 // it before observers are told, and the state of a run is computed by

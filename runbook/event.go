@@ -159,6 +159,9 @@ type Event struct {
 	Plan        *NodeSpec `json:"plan,omitempty"`
 	Fingerprint string    `json:"fingerprint,omitempty"`
 	Labels      L         `json:"labels,omitempty"`
+	// PID and Host say which process wrote the run.
+	PID  int    `json:"pid,omitempty"`
+	Host string `json:"host,omitempty"`
 
 	// *.finished and step.retry.
 	Outcome    Outcome    `json:"outcome,omitempty"`
