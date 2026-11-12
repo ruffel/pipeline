@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,8 +34,24 @@ type Result struct {
 // Cancelling ctx cancels running steps, which are recorded as failed, and
 // starts nothing new. The run's outcome is then [OutcomeCancelled].
 //
-// The journal must be new: resuming a journal that has attempts is not
-// supported yet ([ErrResumeNotSupported]).
+// If the journal already has attempts, Run resumes: it makes a new attempt
+// that does only what is left.
+//
+//   - A group that finished and passed in an earlier attempt is settled, and
+//     is skipped as a unit: none of its steps run, nor their Checks. A group
+//     with only Observe steps beneath it never settles.
+//   - Elsewhere, an Effect step that an earlier attempt finished has its
+//     Check run again, and its Run if the work is no longer done
+//     ([ResumeVerify]). With no Check, or under [ResumeTrust], it is skipped.
+//     A skipped step's ErrSkipGroup or ErrSkipRun is applied again, and so
+//     is an ErrSkipRun from inside a settled group.
+//   - Ensure and Observe steps run again whenever their group is entered.
+//   - A step whose Run was interrupted or failed, and whose Check now finds
+//     the work done, passes as recovered.
+//
+// Run refuses a journal whose attempts used a plan of a different shape
+// ([ErrPlanChanged]), and one whose latest attempt passed
+// ([ErrAlreadyComplete]) unless [Force] is given.
 func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, error) {
 	cfg := config{clock: systemClock{}, outputBudget: MaxStepOutput}
 	for _, o := range opts {
@@ -46,8 +63,21 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		return nil, err
 	}
 
-	if len(prev.Attempts) > 0 {
-		return nil, ErrResumeNotSupported
+	// prior is what decides which work is already done. A forced run decides
+	// as if nothing were, but can still read earlier attempts' values.
+	prior := prev
+
+	if n := len(prev.Attempts); n > 0 {
+		switch {
+		case prev.Fingerprint != plan.Fingerprint():
+			return nil, ErrPlanChanged
+		case cfg.force:
+			if prior, err = Replay(nil); err != nil {
+				return nil, err
+			}
+		case prev.Attempts[n-1].Outcome == OutcomePassed:
+			return nil, ErrAlreadyComplete
+		}
 	}
 
 	runCtx, cancel := context.WithCancelCause(ctx)
@@ -64,6 +94,9 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		cancel:    cancel,
 		runDone:   runCtx.Done(),
 		prev:      prev,
+		prior:     prior,
+		trust:     cfg.resume == ResumeTrust,
+		forced:    cfg.force && len(prev.Attempts) > 0,
 		values:    map[string]map[string]json.RawMessage{},
 		budget:    cfg.outputBudget,
 	}
@@ -79,7 +112,13 @@ type runner struct {
 	id      string
 	attempt int
 	cancel  context.CancelCauseFunc
-	prev    *State
+
+	// prev is the journal as it stood when the attempt started. prior is
+	// what resume decides from: prev, or nothing for a forced run.
+	prev   *State
+	prior  *State
+	trust  bool
+	forced bool
 
 	// runDone is closed when the run is cancelled. cut records that a cancel
 	// of the run stopped something: a step it interrupted, or children it
@@ -112,7 +151,7 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	err := r.emit(Event{
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
 		Plan: &spec, Fingerprint: r.plan.Fingerprint(), Labels: labels,
-		PID: os.Getpid(), Host: hostname(),
+		Forced: r.forced, PID: os.Getpid(), Host: hostname(),
 	})
 	if err != nil {
 		return &Result{Run: r.id, Attempt: r.attempt, Outcome: OutcomeFailed}, err
@@ -155,6 +194,28 @@ func (r *runner) element(ctx context.Context, n *node) error {
 }
 
 func (r *runner) group(ctx context.Context, n *node) error {
+	// A group that finished and passed in an earlier attempt is settled: it
+	// is skipped as a unit, with none of its steps or their Checks run.
+	// Deciding step by step would re-run steps that a later step in the same
+	// group reversed, such as a node's stop after its start.
+	if r.prior.Element(n.path).Done && n.canSettle() {
+		if err := r.emit(Event{
+			Kind: EventGroupFinished, Path: n.path, Outcome: OutcomeSkipped, Reason: ReasonSettled,
+		}); err != nil {
+			return err
+		}
+
+		// A step in the group that ended the run early still does: without
+		// this, a resume after a crash between the group finishing and the
+		// run finishing would run what the signal skipped. A step's
+		// ErrSkipGroup concerned only its own group, which is finished.
+		if r.signalledSkipRun(n) {
+			r.skipRun.Store(true)
+		}
+
+		return nil
+	}
+
 	start := r.clock.Now()
 
 	if err := r.emit(Event{Kind: EventGroupStarted, Path: n.path}); err != nil {
@@ -369,6 +430,21 @@ func (g *parallelGroup) err() error {
 
 // step runs a step's tries: Check, then Run if the work isn't done.
 func (r *runner) step(ctx context.Context, n *node) error {
+	prior := r.prior.Element(n.path)
+
+	// An Effect step an earlier attempt finished is trusted when it has no
+	// Check to verify it with, or the run was told to trust the journal.
+	// Ensure and Observe steps are never trusted.
+	if n.kind == KindEffect && prior.Done && (r.trust || !n.hasCheck) {
+		if err := r.emit(Event{
+			Kind: EventStepFinished, Path: n.path, Outcome: OutcomeSkipped, Reason: ReasonEarlierAttempt,
+		}); err != nil {
+			return err
+		}
+
+		return r.signalled(prior.Signal)
+	}
+
 	start := r.clock.Now()
 
 	if err := r.emit(Event{Kind: EventStepStarted, Path: n.path}); err != nil {
@@ -377,7 +453,16 @@ func (r *runner) step(ctx context.Context, n *node) error {
 
 	sc := &StepContext{r: r, n: n}
 
-	outcome, reason, signal, err := r.tries(ctx, n, sc)
+	// An earlier attempt called Run and never finished the step: if Check
+	// now finds the work done, that Run did it.
+	interrupted := prior.RunCalled && !prior.Done
+
+	outcome, reason, signal, err := r.tries(ctx, n, sc, interrupted)
+
+	// A step verified as still done keeps the signal its Run gave.
+	if outcome == OutcomeSkipped {
+		signal = prior.Signal
+	}
 
 	if signal == SignalSkipRun {
 		// Set at once, so parallel siblings start nothing new.
@@ -399,12 +484,32 @@ func (r *runner) step(ctx context.Context, n *node) error {
 		return ferr
 	}
 
-	switch {
-	case err != nil:
+	if err != nil {
 		return &StepError{Path: n.path, Err: err}
-	case signal == SignalSkipGroup:
+	}
+
+	return r.signalled(signal)
+}
+
+// signalledSkipRun reports whether a step at or beneath n returned
+// ErrSkipRun when its Run last finished.
+func (r *runner) signalledSkipRun(n *node) bool {
+	if r.prior.Element(n.path).Signal == SignalSkipRun {
+		return true
+	}
+
+	return slices.ContainsFunc(n.children, r.signalledSkipRun)
+}
+
+// signalled turns a step's signal, from this attempt or replayed from an
+// earlier one, into the error its group acts on.
+func (r *runner) signalled(signal Signal) error {
+	switch signal {
+	case SignalSkipGroup:
 		return ErrSkipGroup
-	case signal == SignalSkipRun:
+	case SignalSkipRun:
+		r.skipRun.Store(true)
+
 		return ErrSkipRun
 	default:
 		return nil
@@ -434,7 +539,9 @@ func (r *runner) skipRest(elems []*node, reason Reason) error {
 
 // tries runs the step until it passes, is found done, signals, or runs out
 // of tries. A signal from Run passes the step.
-func (r *runner) tries(ctx context.Context, n *node, sc *StepContext) (Outcome, Reason, Signal, error) {
+func (r *runner) tries(
+	ctx context.Context, n *node, sc *StepContext, interrupted bool,
+) (Outcome, Reason, Signal, error) {
 	ranOnce := false
 
 	for try := 1; ; try++ {
@@ -445,7 +552,7 @@ func (r *runner) tries(ctx context.Context, n *node, sc *StepContext) (Outcome, 
 		}
 
 		switch {
-		case err == nil && done && ranOnce:
+		case err == nil && done && (ranOnce || interrupted):
 			return OutcomePassed, ReasonRecovered, "", nil
 		case err == nil && done:
 			return OutcomeSkipped, ReasonDone, "", nil

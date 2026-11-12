@@ -159,6 +159,8 @@ type Event struct {
 	Plan        *NodeSpec `json:"plan,omitempty"`
 	Fingerprint string    `json:"fingerprint,omitempty"`
 	Labels      L         `json:"labels,omitempty"`
+	// Forced marks an attempt made with Force.
+	Forced bool `json:"forced,omitempty"`
 	// PID and Host say which process wrote the run.
 	PID  int    `json:"pid,omitempty"`
 	Host string `json:"host,omitempty"`

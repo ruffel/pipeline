@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -131,6 +132,17 @@ func (n *node) spec() NodeSpec {
 	}
 
 	return s
+}
+
+// canSettle reports whether n has an Effect or Ensure step beneath it. A
+// group of only Observe steps has nothing to finish, so it runs on every
+// attempt.
+func (n *node) canSettle() bool {
+	if n.kind == KindEffect || n.kind == KindEnsure {
+		return true
+	}
+
+	return slices.ContainsFunc(n.children, (*node).canSettle)
 }
 
 // walk calls fn on n and its descendants, depth first, in plan order.

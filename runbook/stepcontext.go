@@ -121,7 +121,21 @@ func (s *StepContext) PreviousItems() map[string]ItemState {
 		return map[string]ItemState{}
 	}
 
-	return s.r.prev.Items(s.n.path)
+	return s.r.prior.Items(s.n.path)
+}
+
+// Prior returns where the group or step at path stood when this attempt
+// started: whether an earlier attempt reached it, finished it, or called its
+// Run. It does not change during the attempt. It is for steps that bring the
+// system in line with how far an earlier attempt got, such as restoring a
+// setting on the nodes that are already finished. In a forced run, and on a
+// first attempt, nothing has been reached.
+func (s *StepContext) Prior(path string) ElementState {
+	if s.r == nil {
+		return ElementState{Status: StatusNotReached}
+	}
+
+	return s.r.prior.Element(path)
 }
 
 // Record stores a small value, durably, before it returns: a later step, a
