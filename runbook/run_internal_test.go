@@ -204,3 +204,21 @@ func TestRun_BlankLinesCountTowardsTheBudget(t *testing.T) {
 
 	assert.Equal(t, 50, blank, "each blank line costs one byte")
 }
+
+// A child that a stop cut short has not failed, whatever the group's policy:
+// it must not cancel the children still running.
+func TestParallelGroup_AStoppedChildIsNotAFailure(t *testing.T) {
+	t.Parallel()
+
+	for _, policy := range []FailurePolicy{FailureStop, FailureCancel, FailureContinue} {
+		var g parallelGroup
+
+		cancelled := false
+
+		g.finished(errors.Join(ErrStopped), policy, func() { cancelled = true })
+
+		assert.False(t, cancelled, policy)
+		assert.False(t, g.stopped, "%v: a stop is not a failure", policy)
+		assert.True(t, onlyStopped(g.err()), policy)
+	}
+}

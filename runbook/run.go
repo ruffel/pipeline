@@ -484,6 +484,10 @@ func (g *parallelGroup) finished(err error, policy FailurePolicy, cancel context
 	defer g.mu.Unlock()
 
 	switch {
+	case onlyStopped(err):
+		// A child a stop cut short has not failed: the failure policy does
+		// not apply, and the stop itself keeps anything new from starting.
+		g.errs = append(g.errs, err)
 	case errors.Is(err, ErrSkipRun):
 		g.skip = ReasonRunSkipped
 	case errors.Is(err, ErrSkipGroup):
@@ -676,6 +680,14 @@ func (r *runner) backoff(ctx context.Context, n *node, err error) error {
 
 		return err
 	case <-r.clock.After(n.backoff):
+		// The stop may have come at the same moment, and select picks either
+		// of two ready cases: never start another try after one.
+		if r.stopping() {
+			r.halt()
+
+			return err
+		}
+
 		return nil
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -268,4 +269,75 @@ func TestStop_ACancelOutranksAStop(t *testing.T) {
 
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, runbook.OutcomeCancelled, out.res.Outcome)
+}
+
+// readyClock's waits are over as soon as they begin, so a wait between tries
+// is ready at the same moment as anything else.
+type readyClock struct{}
+
+func (readyClock) Now() time.Time { return time.Now() }
+
+func (readyClock) After(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Now()
+
+	return ch
+}
+
+// No try starts after a stop, even when the wait before it is already over:
+// a select between the two would pick either.
+func TestStop_NoTryStartsAfterAStopEvenWhenTheWaitIsOver(t *testing.T) {
+	t.Parallel()
+
+	for range 100 {
+		var tries atomic.Int32
+
+		stopper := runbook.NewStopper()
+
+		out := runPlan(t, t.Context(), mustPlan(t,
+			runbook.Effect("a", runbook.StepFunc(func(context.Context, *runbook.StepContext) error {
+				tries.Add(1)
+				stopper.Stop("")
+
+				return errors.New("boom")
+			})).Retry(5, 0),
+		), runbook.WithStopper(stopper), runbook.WithClock(readyClock{}))
+
+		require.ErrorIs(t, out.err, runbook.ErrStopped)
+		require.Equal(t, int32(1), tries.Load(), "a try started after the stop")
+	}
+}
+
+// A nested group the stop cut short has not failed: a parallel parent that
+// cancels on failure must not cancel the siblings still running.
+func TestStop_ANestedGroupCutShortDoesNotCancelParallelSiblings(t *testing.T) {
+	t.Parallel()
+
+	stopper := runbook.NewStopper()
+	release := make(chan struct{})
+
+	finishedG := runbook.ObserverFunc(func(_ context.Context, e runbook.Event) {
+		if e.Kind == runbook.EventGroupFinished && e.Path == "p/par/g" {
+			close(release)
+		}
+	})
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		runbook.Group("par",
+			runbook.Group("g",
+				runbook.Effect("a", stopsWith(stopper)),
+				runbook.Effect("b", ok()),
+			),
+			runbook.Effect("sibling", runbook.StepFunc(func(ctx context.Context, _ *runbook.StepContext) error {
+				<-release
+
+				return ctx.Err()
+			})),
+		).Parallel(2).CancelOnError(),
+	), runbook.WithStopper(stopper), runbook.WithObservers(finishedG))
+
+	assert.Equal(t, runbook.ErrStopped, out.err)
+	assert.Equal(t, runbook.StatusPassed, out.state.Element("p/par/sibling").Status)
+	assert.Equal(t, runbook.StatusStopped, out.state.Element("p/par/g").Status)
+	assert.Equal(t, runbook.StatusStopped, out.state.Element("p/par").Status)
 }
