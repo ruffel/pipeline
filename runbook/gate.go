@@ -50,6 +50,9 @@ type GateOptions struct {
 //
 // ctx is done when the gate is released some other way, or the run stops or
 // is cancelled. Wait must then return; what it returns is ignored.
+//
+// [FileApprover] and [StdinApprover] are approvers for a flag file and a
+// terminal.
 type Approver interface {
 	// Name identifies the approver, such as "stdin". It is recorded as what
 	// released the gate.
