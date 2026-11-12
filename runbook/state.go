@@ -146,6 +146,10 @@ func (s *State) Unfinished() bool {
 func (s *State) apply(e Event) {
 	switch e.Kind {
 	case EventRunStarted:
+		if e.Forced {
+			s.startOver()
+		}
+
 		s.Plan = e.Plan
 		s.Fingerprint = e.Fingerprint
 		s.Labels = e.Labels
@@ -180,6 +184,19 @@ func (s *State) apply(e Event) {
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
 		// Best-effort chatter: viewers render it, but it changes no state.
 	}
+}
+
+// startOver applies a forced attempt: it does everything again, so nothing
+// done before it counts as done after it, whether or not the forced attempt
+// got that far. Element completion, signals and item results are forgotten.
+// Recorded values are kept, and so is the fact that a step's Run was once
+// called, which rollback needs.
+func (s *State) startOver() {
+	for path, el := range s.elements {
+		s.elements[path] = ElementState{Status: StatusNotReached, RunCalled: el.RunCalled}
+	}
+
+	clear(s.items)
 }
 
 func (s *State) finish(e Event) {

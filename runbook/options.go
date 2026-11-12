@@ -90,7 +90,9 @@ func WithResume(mode ResumeMode) Option {
 // skipped because an earlier attempt did it, and a journal whose latest
 // attempt passed is accepted. Check still decides whether each Run is
 // needed, and values recorded by earlier attempts stay readable. The attempt
-// is recorded as forced.
+// is recorded as forced, and later attempts resume from it alone: what was
+// done before a forced attempt no longer counts, even if the forced attempt
+// failed before redoing it.
 func Force() Option {
 	return func(c *config) {
 		c.force = true

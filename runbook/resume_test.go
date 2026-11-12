@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ruffel/pipeline/runbook"
+	"github.com/ruffel/pipeline/runbook/runbooktest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -474,4 +475,119 @@ func TestResume_PriorAndPreviousItems(t *testing.T) {
 	assert.Equal(t, runbook.StatusNotReached, got[2].node1.Status)
 	assert.Empty(t, got[2].items)
 	assert.Equal(t, "/backups/1", got[2].dir)
+}
+
+// A forced attempt starts everything over. If it fails part-way, the next
+// ordinary resume must not fall back on what was done before the force.
+func TestResume_AfterAForcedAttemptThatFailed(t *testing.T) {
+	t.Parallel()
+
+	c := &calls{}
+	failing := false
+
+	var priorDone []bool
+
+	plan := mustPlan(t,
+		runbook.Effect("first", runbook.StepFunc(func(_ context.Context, s *runbook.StepContext) error {
+			priorDone = append(priorDone, s.Prior("p/g").Done)
+
+			if failing {
+				return errors.New("first failed")
+			}
+
+			return s.Record("dir", "/backups/1")
+		})),
+		runbook.Group("g",
+			runbook.Effect("work", runbook.StepFunc(func(_ context.Context, s *runbook.StepContext) error {
+				c.add("work")
+
+				return s.Item("disk1", runbook.ItemPassed, "")
+			})),
+		),
+	)
+	j := runbook.MemoryJournal()
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+
+	// Forced, and it fails before it reaches g again.
+	failing = true
+
+	require.Error(t, resumeOn(t, j, plan, runbook.Force()).err)
+
+	failing = false
+
+	state, err := j.State()
+	require.NoError(t, err)
+	assert.False(t, state.Element("p/g").Done, "the force undid g's completion")
+	assert.Empty(t, state.Items("p/g/work"), "and its item progress")
+	assert.True(t, state.Element("p/g/work").RunCalled, "its Run was still called once, for rollback")
+
+	v, found := state.Value("p/first", "dir")
+	require.True(t, found, "recorded values are kept")
+	assert.JSONEq(t, `"/backups/1"`, string(v))
+
+	third := resumeOn(t, j, plan)
+	require.NoError(t, third.err)
+	assert.Equal(t, 2, c.get("work"), "g runs again: the forced attempt never redid it")
+	assert.Equal(t, []bool{false, false, false}, priorDone)
+	assert.Contains(t, trace(third.events), "group.started p/g")
+}
+
+// A run-wide skip recorded inside a group still applies when that group is
+// settled: if the process died after the group finished and before the run
+// did, a resume must not run what the signal skipped.
+func TestResume_ASettledGroupReappliesItsRunWideSkip(t *testing.T) {
+	t.Parallel()
+
+	c := &calls{}
+	plan := mustPlan(t,
+		runbook.Group("g",
+			runbook.Effect("signal", signals(runbook.ErrSkipRun)),
+			runbook.Effect("rest", counted(c, "rest", nil)),
+		),
+		runbook.Effect("after", counted(c, "after", nil)),
+	)
+
+	crash := runbooktest.CrashAfter("p/g", runbooktest.GroupFinished)
+
+	_, err := runbook.Run(t.Context(), plan, crash.Journal)
+	require.ErrorIs(t, err, runbooktest.ErrCrashed)
+
+	crash.Restart()
+
+	second := resumeOn(t, crash.Journal, plan)
+	require.NoError(t, second.err)
+	assert.Equal(t, runbook.OutcomePassed, second.res.Outcome)
+	assert.Equal(t, []string{
+		"group.finished p/g skipped/settled",
+		"step.finished p/after skipped/run-skipped",
+	}, trace(second.events))
+	assert.Zero(t, c.get("after"))
+	assert.Zero(t, c.get("rest"))
+}
+
+// A group-local skip inside a settled group stays inside it.
+func TestResume_ASettledGroupKeepsItsGroupSkipToItself(t *testing.T) {
+	t.Parallel()
+
+	c := &calls{}
+	failing := true
+
+	plan := mustPlan(t,
+		runbook.Group("g",
+			runbook.Effect("signal", signals(runbook.ErrSkipGroup)),
+			runbook.Effect("rest", counted(c, "rest", nil)),
+		),
+		runbook.Effect("after", counted(c, "after", &failing)),
+	)
+	j := runbook.MemoryJournal()
+
+	require.Error(t, resumeOn(t, j, plan).err)
+
+	failing = false
+
+	second := resumeOn(t, j, plan)
+	require.NoError(t, second.err)
+	assert.Equal(t, 2, c.get("after"), "after runs: the skip was only for g")
+	assert.Zero(t, c.get("rest"))
 }

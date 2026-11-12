@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,7 +43,8 @@ type Result struct {
 //   - Elsewhere, an Effect step that an earlier attempt finished has its
 //     Check run again, and its Run if the work is no longer done
 //     ([ResumeVerify]). With no Check, or under [ResumeTrust], it is skipped.
-//     A skipped step's ErrSkipGroup or ErrSkipRun is applied again.
+//     A skipped step's ErrSkipGroup or ErrSkipRun is applied again, and so
+//     is an ErrSkipRun from inside a settled group.
 //   - Ensure and Observe steps run again whenever their group is entered.
 //   - A step whose Run was interrupted or failed, and whose Check now finds
 //     the work done, passes as recovered.
@@ -197,7 +199,21 @@ func (r *runner) group(ctx context.Context, n *node) error {
 	// Deciding step by step would re-run steps that a later step in the same
 	// group reversed, such as a node's stop after its start.
 	if r.prior.Element(n.path).Done && n.canSettle() {
-		return r.emit(Event{Kind: EventGroupFinished, Path: n.path, Outcome: OutcomeSkipped, Reason: ReasonSettled})
+		if err := r.emit(Event{
+			Kind: EventGroupFinished, Path: n.path, Outcome: OutcomeSkipped, Reason: ReasonSettled,
+		}); err != nil {
+			return err
+		}
+
+		// A step in the group that ended the run early still does: without
+		// this, a resume after a crash between the group finishing and the
+		// run finishing would run what the signal skipped. A step's
+		// ErrSkipGroup concerned only its own group, which is finished.
+		if r.signalledSkipRun(n) {
+			r.skipRun.Store(true)
+		}
+
+		return nil
 	}
 
 	start := r.clock.Now()
@@ -473,6 +489,16 @@ func (r *runner) step(ctx context.Context, n *node) error {
 	}
 
 	return r.signalled(signal)
+}
+
+// signalledSkipRun reports whether a step at or beneath n returned
+// ErrSkipRun when its Run last finished.
+func (r *runner) signalledSkipRun(n *node) bool {
+	if r.prior.Element(n.path).Signal == SignalSkipRun {
+		return true
+	}
+
+	return slices.ContainsFunc(n.children, r.signalledSkipRun)
 }
 
 // signalled turns a step's signal, from this attempt or replayed from an

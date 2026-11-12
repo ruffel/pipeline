@@ -48,6 +48,9 @@ const (
 	Running Point = "step.running"
 	// Finished is just after step.finished: the outcome is recorded.
 	Finished Point = "step.finished"
+	// GroupFinished is just after a group's group.finished. Use it with the
+	// group's path.
+	GroupFinished Point = "group.finished"
 )
 
 // Value is the point just after the step records key with Record.
