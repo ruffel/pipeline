@@ -160,7 +160,8 @@ type Event struct {
 	Fingerprint string    `json:"fingerprint,omitempty"`
 	Labels      L         `json:"labels,omitempty"`
 	// Inputs is what the attempt was given with WithInputs, with every
-	// Secret left out, and InputsDigest identifies it.
+	// Secret left out. InputsDigest identifies it: a hash of Inputs without
+	// its null and empty members.
 	Inputs       json.RawMessage `json:"inputs,omitempty"`
 	InputsDigest string          `json:"inputsDigest,omitempty"`
 	// Forced marks an attempt made with Force.

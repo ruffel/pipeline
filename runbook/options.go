@@ -112,7 +112,8 @@ func Force() Option {
 //
 // A resume must be given the same inputs: if they differ from the latest
 // attempt's, [Run] returns [ErrInputsChanged] unless [WithNewInputs] is
-// given. Secrets are not part of the comparison.
+// given. Secrets are not part of the comparison, and nor is the difference
+// between a field that is null, empty, or left out.
 func WithInputs(v any) Option {
 	return func(c *config) {
 		c.inputs = v

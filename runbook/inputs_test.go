@@ -25,12 +25,12 @@ type upgradeInputs struct {
 }
 
 func someInputs() upgradeInputs {
-	token := runbook.Secret("tok-9f8e7d6c")
+	token := runbook.NewSecret("tok-9f8e7d6c")
 
 	return upgradeInputs{
 		Nodes:         []string{"node1", "node2"},
 		TargetVersion: "8.2.0",
-		AdminPassword: adminPassword,
+		AdminPassword: runbook.NewSecret(adminPassword),
 		Tokens:        map[string]*runbook.Secret{"api": &token},
 	}
 }
@@ -38,15 +38,30 @@ func someInputs() upgradeInputs {
 func TestSecret_NeverShowsItsValue(t *testing.T) {
 	t.Parallel()
 
-	s := runbook.Secret(adminPassword)
+	s := runbook.NewSecret(adminPassword)
 
-	for _, format := range []string{"%v", "%s", "%q", "%+v", "%#v", "%x", "%d"} {
-		assert.NotContains(t, fmt.Sprintf(format, s), adminPassword, format)
-		assert.NotContains(t, fmt.Sprintf(format, struct{ P runbook.Secret }{s}), adminPassword, "in a struct, "+format)
+	// %p, and a field fmt can't call methods on, are printed by fmt itself
+	// without asking the value.
+	holders := map[string]any{
+		"alone":                  s,
+		"by pointer":             &s,
+		"in a struct":            struct{ P runbook.Secret }{s},
+		"in an unexported field": struct{ p runbook.Secret }{s},
+		"behind a pointer field": struct{ p *runbook.Secret }{&s},
+		"in a slice":             []runbook.Secret{s},
+		"in a map":               map[string]any{"k": s},
 	}
 
+	for _, format := range []string{"%v", "%s", "%q", "%+v", "%#v", "%x", "%X", "%d", "%p", "%T", "%c", "%U", "%e"} {
+		for name, holder := range holders {
+			assert.NotContains(t, fmt.Sprintf(format, holder), adminPassword, "%s, %s", name, format)
+		}
+	}
+
+	assert.Equal(t, "[secret]", fmt.Sprint(s))
 	assert.Equal(t, "[secret]", s.String())
 	assert.Equal(t, adminPassword, s.Reveal())
+	assert.Empty(t, runbook.Secret{}.Reveal(), "the zero Secret is empty")
 
 	type holder struct {
 		Value runbook.Secret `json:"value"`
@@ -63,6 +78,15 @@ func TestSecret_NeverShowsItsValue(t *testing.T) {
 	text, err := s.MarshalText()
 	require.NoError(t, err)
 	assert.Equal(t, "[secret]", string(text))
+
+	// A consumer's own configuration decodes into one.
+	require.NoError(t, json.Unmarshal([]byte(`{"value": "from-a-file"}`), &back))
+	assert.Equal(t, "from-a-file", back.Value.Reveal())
+
+	require.NoError(t, json.Unmarshal([]byte(`{"value": null}`), &back))
+	assert.Equal(t, "from-a-file", back.Value.Reveal(), "null leaves it alone")
+
+	require.Error(t, json.Unmarshal([]byte(`{"value": 42}`), &back))
 }
 
 func TestInputs_AreRecordedWithoutSecrets(t *testing.T) {
@@ -164,7 +188,7 @@ func TestInputs_AResumeMustBringTheSameInputs(t *testing.T) {
 	require.ErrorIs(t, resumeOn(t, j, plan, runbook.WithInputs(changed), runbook.Force()).err, runbook.ErrInputsChanged)
 
 	// The stored inputs with a new secret are the same inputs.
-	stored.AdminPassword = "a-rotated-password"
+	stored.AdminPassword = runbook.NewSecret("a-rotated-password")
 
 	second := resumeOn(t, j, plan, runbook.WithInputs(stored))
 	require.NoError(t, second.err)
@@ -295,7 +319,7 @@ func TestInputs_AVeryShortSecretIsNotMaskedInText(t *testing.T) {
 			s.Info("a banana")
 
 			return nil
-		}))), runbook.WithInputs(pin{PIN: "an"}))
+		}))), runbook.WithInputs(pin{PIN: runbook.NewSecret("an")}))
 
 	require.NoError(t, out.err)
 	assert.JSONEq(t, `{"PIN": null}`, string(out.events[0].Inputs))
@@ -324,7 +348,7 @@ func TestInputs_ThatCannotBeRecordedStopTheRunBeforeItStarts(t *testing.T) {
 	for name, bad := range map[string]any{
 		"unencodable": map[string]any{"ratio": math.NaN()},
 		"too large":   map[string]string{"blob": strings.Repeat("x", runbook.MaxInputsBytes)},
-		"secret key":  map[runbook.Secret]int{"hunter2-key": 1},
+		"secret key":  map[runbook.Secret]int{runbook.NewSecret("hunter2-key"): 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -341,4 +365,177 @@ func TestInputs_ThatCannotBeRecordedStopTheRunBeforeItStarts(t *testing.T) {
 	}
 
 	assert.False(t, ran)
+}
+
+// A secret of several lines, such as a private key: output is recorded a
+// line at a time, so each of its lines has to be masked, not only the whole.
+func TestInputs_EveryLineOfAMultilineSecretIsMasked(t *testing.T) {
+	t.Parallel()
+
+	type in struct{ Key runbook.Secret }
+
+	const (
+		first  = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"
+		second = "BKcwggSjAgEAAoIBAQC7"
+		key    = "-----BEGIN KEY-----\n" + first + "\r\n" + second + "\n-----END KEY-----\n"
+	)
+
+	out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", runbook.StepFunc(
+		func(_ context.Context, s *runbook.StepContext) error {
+			s.Info("the key is " + key)
+			s.Warn("trimmed: " + strings.TrimSpace(key))
+			_, _ = s.Stdout().Write([]byte("cat key.pem\n" + key))
+			_, _ = s.Stderr().Write([]byte("bad line: " + second + "\n"))
+
+			return errors.New("could not parse " + first)
+		}))), runbook.WithInputs(in{Key: runbook.NewSecret(key)}))
+
+	require.Error(t, out.err)
+	assert.Equal(t, "p/a: could not parse [secret]", out.err.Error())
+
+	for _, e := range out.events {
+		line, err := json.Marshal(e)
+		require.NoError(t, err)
+
+		for _, part := range []string{first, second, "BEGIN KEY", "END KEY"} {
+			assert.NotContains(t, string(line), part, "%s event", e.Kind)
+		}
+	}
+
+	assert.Equal(t, []string{"cat key.pem", "[secret]", "[secret]", "[secret]", "[secret]", "bad line: [secret]"},
+		outputText(out.events))
+}
+
+// nest wraps v in n slices.
+func nest(v any, n int) any {
+	for range n {
+		v = []any{v}
+	}
+
+	return v
+}
+
+// However deep a Secret is, it is found: nothing in the inputs goes
+// unchecked.
+func TestInputs_SecretsAreFoundAtAnyDepth(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a map key is refused", func(t *testing.T) {
+		t.Parallel()
+
+		j := runbook.MemoryJournal()
+		bad := nest(map[runbook.Secret]int{runbook.NewSecret("hunter2-key"): 1}, 100)
+
+		_, err := runbook.Run(t.Context(), mustPlan(t, runbook.Effect("a", ok())), j, runbook.WithInputs(bad))
+		require.ErrorContains(t, err, "map key")
+
+		events, err := j.Events()
+		require.NoError(t, err)
+		assert.Empty(t, events, "nothing was written")
+	})
+
+	t.Run("a value is masked", func(t *testing.T) {
+		t.Parallel()
+
+		out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", runbook.StepFunc(
+			func(_ context.Context, s *runbook.StepContext) error {
+				s.Info("using " + adminPassword)
+
+				return nil
+			}))), runbook.WithInputs(nest(runbook.NewSecret(adminPassword), 100)))
+
+		require.NoError(t, out.err)
+
+		for _, e := range out.events {
+			assert.NotContains(t, e.Message, adminPassword)
+		}
+	})
+}
+
+// looped points back at itself through a field that is not encoded.
+type looped struct {
+	Name     string
+	Password runbook.Secret
+	self     *looped
+	peers    []*looped
+}
+
+func TestInputs_ThatPointBackAtThemselvesAreStillSearched(t *testing.T) {
+	t.Parallel()
+
+	in := &looped{Name: "a", Password: runbook.NewSecret(adminPassword)}
+	in.self = in
+	in.peers = []*looped{in, {Name: "b", Password: runbook.NewSecret("another-password"), self: in}}
+
+	out := runPlan(t, t.Context(), mustPlan(t, runbook.Effect("a", runbook.StepFunc(
+		func(_ context.Context, s *runbook.StepContext) error {
+			s.Info(adminPassword + " and another-password")
+
+			return nil
+		}))), runbook.WithInputs(in))
+
+	require.NoError(t, out.err)
+	assert.JSONEq(t, `{"Name": "a", "Password": null}`, string(out.events[0].Inputs))
+
+	for _, e := range out.events {
+		if e.Kind == runbook.EventMessage {
+			assert.Equal(t, "[secret] and [secret]", e.Message)
+		}
+	}
+}
+
+// optionalSecrets holds secrets in every way a field can be left out of the
+// encoding when it is empty.
+type optionalSecrets struct {
+	Name     string                          `json:"name"`
+	Plain    runbook.Secret                  `json:"plain"`
+	Zero     runbook.Secret                  `json:"zero,omitzero"`
+	Pointer  *runbook.Secret                 `json:"pointer,omitempty"`
+	Map      map[string]runbook.Secret       `json:"map,omitempty"`
+	List     []runbook.Secret                `json:"list,omitempty"`
+	Nested   *struct{ Token runbook.Secret } `json:"nested,omitempty"`
+	Optional *int                            `json:"optional,omitempty"`
+}
+
+// Supplying a secret that was empty before is not a change of inputs,
+// however the field is tagged. Anything else still is.
+func TestInputs_WhetherASecretIsSetIsNotPartOfTheComparison(t *testing.T) {
+	t.Parallel()
+
+	failing := true
+	plan := mustPlan(t, runbook.Effect("a", counted(&calls{}, "a", &failing)))
+	j := runbook.MemoryJournal()
+
+	_, err := runbook.Run(t.Context(), plan, j, runbook.WithInputs(optionalSecrets{Name: "x"}))
+	require.Error(t, err)
+
+	secret := runbook.NewSecret(adminPassword)
+	filled := optionalSecrets{
+		Name: "x", Plain: secret, Zero: secret, Pointer: &secret,
+		Map:    map[string]runbook.Secret{"api": secret},
+		List:   []runbook.Secret{secret, secret},
+		Nested: &struct{ Token runbook.Secret }{secret},
+	}
+
+	changed := filled
+	changed.Name = "y"
+
+	_, err = runbook.Run(t.Context(), plan, j, runbook.WithInputs(changed))
+	require.ErrorIs(t, err, runbook.ErrInputsChanged, "a change to anything else is still a change")
+
+	one := 1
+	changed = filled
+	changed.Optional = &one
+
+	_, err = runbook.Run(t.Context(), plan, j, runbook.WithInputs(changed))
+	require.ErrorIs(t, err, runbook.ErrInputsChanged, "so is a field that was left out and now has a value")
+
+	failing = false
+
+	_, err = runbook.Run(t.Context(), plan, j, runbook.WithInputs(filled))
+	require.NoError(t, err)
+
+	state, err := j.State()
+	require.NoError(t, err)
+	assert.NotContains(t, string(state.Inputs), adminPassword)
 }
