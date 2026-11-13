@@ -176,6 +176,42 @@ func TestRun_OutputPastTheBudgetIsDroppedAndCounted(t *testing.T) {
 	assert.NotContains(t, strings.Join(lines, ""), "both streams")
 }
 
+// When the budget drops a long line's first piece, the rest of that line is
+// dropped too: a short tail that still fits must not be recorded as the
+// continuation of the line before it.
+func TestRun_BudgetDropsAWholeLongLine(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewPlan("p", Effect("a", StepFunc(func(_ context.Context, s *StepContext) error {
+		_, _ = io.WriteString(s.Stdout(), "prior\n")
+		_, _ = io.WriteString(s.Stdout(), strings.Repeat("x", MaxOutputLine+10)+"\n")
+		_, _ = io.WriteString(s.Stdout(), "after\n")
+
+		return nil
+	})))
+	require.NoError(t, err)
+
+	j := MemoryJournal()
+
+	_, err = Run(t.Context(), plan, j, func(c *config) { c.outputBudget = 100 })
+	require.NoError(t, err)
+
+	events, err := j.Events()
+	require.NoError(t, err)
+
+	var lines []string
+
+	for _, e := range events {
+		if e.Kind == EventOutput {
+			assert.False(t, e.Continued, "continuation %q recorded", e.Line)
+
+			lines = append(lines, e.Line)
+		}
+	}
+
+	assert.Equal(t, []string{"prior", "after"}, lines)
+}
+
 func TestRun_BlankLinesCountTowardsTheBudget(t *testing.T) {
 	t.Parallel()
 
