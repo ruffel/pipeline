@@ -36,25 +36,25 @@ var (
 	ErrStepReturned = errors.New("runbook: the step has returned")
 
 	// ErrSkipGroup, returned by a step's Run, ends the step's group early.
-	// The step passes, its signal is recorded, and the group's children that
+	// The step passes, its skip is recorded, and the group's children that
 	// have not started are recorded as skipped. Siblings already running in
 	// a parallel group finish. The group passes unless something failed.
 	ErrSkipGroup = errors.New("runbook: skip the rest of the group")
 
 	// ErrSkipRun, returned by a step's Run, ends the run early, as passed.
-	// The step passes, its signal is recorded, and every element that has
+	// The step passes, its skip is recorded, and every element that has
 	// not started is recorded as skipped. Steps already running finish.
 	ErrSkipRun = errors.New("runbook: skip the rest of the run")
 )
 
-// signalOf returns the signal err carries, if it is [ErrSkipGroup] or
+// skipOf returns the skip err carries, if it is [ErrSkipGroup] or
 // [ErrSkipRun].
-func signalOf(err error) Signal {
+func skipOf(err error) Skip {
 	switch {
 	case errors.Is(err, ErrSkipRun):
-		return SignalSkipRun
+		return SkipRun
 	case errors.Is(err, ErrSkipGroup):
-		return SignalSkipGroup
+		return SkipGroup
 	default:
 		return ""
 	}

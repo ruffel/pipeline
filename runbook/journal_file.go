@@ -24,8 +24,8 @@ const (
 	lockInterval = 20 * time.Millisecond
 )
 
-// OpenJournal opens the journal file at path for writing, creating it if it
-// does not exist, and locks it: a journal has one writer at a time. A second
+// OpenJournal opens the journal file named by journal for writing, creating
+// it if it does not exist, and locks it: a journal has one writer at a time. A second
 // OpenJournal, from this or any other process, fails with a
 // [JournalBusyError], which matches [ErrJournalBusy]. The lock is released by
 // Close, or by the kernel if the process dies.
@@ -37,15 +37,15 @@ const (
 // Lifecycle events are synced to disk before the write returns; output,
 // progress and messages are not. If a write or sync fails, every later write
 // fails too, until the journal is opened again.
-func OpenJournal(path string, opts ...JournalOption) (*Journal, error) {
-	// The journal is read back by path, so fix the path now: a later change
-	// of working directory must not point reads somewhere else.
-	path, err := filepath.Abs(path)
+func OpenJournal(journal string, opts ...JournalOption) (*Journal, error) {
+	// The journal is read back by its path, so make it absolute now: a later
+	// change of working directory must not point reads somewhere else.
+	journal, err := filepath.Abs(journal)
 	if err != nil {
 		return nil, fmt.Errorf("runbook: open journal: %w", err)
 	}
 
-	f, err := openJournalFile(path)
+	f, err := openJournalFile(journal)
 	if err != nil {
 		return nil, fmt.Errorf("runbook: open journal: %w", err)
 	}
@@ -54,30 +54,30 @@ func OpenJournal(path string, opts ...JournalOption) (*Journal, error) {
 		_ = f.Close()
 
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, &JournalBusyError{Path: path, PID: writerPID(path)}
+			return nil, &JournalBusyError{Path: journal, PID: writerPID(journal)}
 		}
 
 		// Not a competing writer: locking is unsupported here, or failed.
-		return nil, fmt.Errorf("runbook: open journal: lock %s: %w", path, err)
+		return nil, fmt.Errorf("runbook: open journal: lock %s: %w", journal, err)
 	}
 
 	// The file's directory entry must survive a crash too. Whoever holds the
 	// lock syncs it, whether or not this call created the file: the creator
 	// may have lost the race for the lock and returned busy.
-	if err := syncDir(filepath.Dir(path)); err != nil {
+	if err := syncDir(filepath.Dir(journal)); err != nil {
 		_ = f.Close()
 
 		return nil, fmt.Errorf("runbook: open journal: %w", err)
 	}
 
-	seq, err := repairJournal(path, f)
+	seq, err := repairJournal(journal, f)
 	if err != nil {
 		_ = f.Close()
 
 		return nil, err
 	}
 
-	j := &Journal{store: &fileStore{path: path, f: f, sync: f.Sync}, seq: seq, path: path}
+	j := &Journal{store: &fileStore{path: journal, f: f, sync: f.Sync}, seq: seq, path: journal}
 
 	for _, o := range opts {
 		o(j)

@@ -84,9 +84,9 @@ type ElementState struct {
 	// RunCalled means some attempt called the step's Run, so it may have
 	// changed the system.
 	RunCalled bool
-	// Signal is the flow control the step's Run returned when it last
+	// Skip is the flow control the step's Run returned when it last
 	// finished, if any.
-	Signal Signal
+	Skip Skip
 	// Waiting means a gate is waiting for approval: it has started waiting
 	// and has not been released or finished. If its runner has gone, it is
 	// waiting for nothing; see [State.Live].
@@ -388,10 +388,10 @@ func (s *State) finish(e Event) {
 	el := s.elements[e.Path]
 	el.Reason, el.Error, el.Run, el.Waiting = e.Reason, e.Error, e.Run, false
 
-	// A signal belongs to the last time Run actually finished: a passed or
+	// A skip belongs to the last time Run actually finished: a passed or
 	// failed outcome sets or clears it, and a skip leaves it for resume.
 	if e.Outcome == OutcomePassed || e.Outcome == OutcomeFailed {
-		el.Signal = e.Signal
+		el.Skip = e.Skip
 	}
 
 	switch e.Outcome {

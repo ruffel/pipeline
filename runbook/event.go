@@ -7,6 +7,12 @@ import (
 
 // SchemaVersion is the journal format this package writes. Readers accept
 // every version up to their own and refuse newer ones.
+//
+// Readers ignore event kinds and fields they don't know. So a new kind or
+// field that only informs viewers, which an older reader can pass over
+// without getting a run's state wrong, keeps the version. One that changes
+// what [Replay] computes needs a new version, so that older readers refuse
+// the journal instead of misreading it.
 const SchemaVersion = 1
 
 // EventKind says what an [Event] records.
@@ -118,15 +124,15 @@ const (
 	ReasonNoUndo Reason = "no-undo"
 )
 
-// Signal is flow control a step's Run returned: [ErrSkipGroup] or
+// Skip is the flow control a step's Run returned: [ErrSkipGroup] or
 // [ErrSkipRun]. It is recorded on the step's step.finished event, so a
 // resumed run can apply it again without running the step.
-type Signal string
+type Skip string
 
-// The signals.
+// The skips.
 const (
-	SignalSkipGroup Signal = "skip-group"
-	SignalSkipRun   Signal = "skip-run"
+	SkipGroup Skip = "skip-group"
+	SkipRun   Skip = "skip-run"
 )
 
 // ErrorKind classifies an error recorded in an [Event].
@@ -202,7 +208,7 @@ type Event struct {
 	// *.finished and step.retry.
 	Outcome    Outcome    `json:"outcome,omitempty"`
 	Reason     Reason     `json:"reason,omitempty"`
-	Signal     Signal     `json:"signal,omitempty"`
+	Skip       Skip       `json:"skip,omitempty"`
 	Error      *ErrorInfo `json:"error,omitempty"`
 	DurationMs int64      `json:"ms,omitempty"`
 	Try        int        `json:"try,omitempty"`

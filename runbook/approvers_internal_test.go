@@ -127,14 +127,15 @@ func writeLine(t *testing.T, w io.Writer, line string) {
 	require.NoError(t, err)
 }
 
-// Only yes approves; anything else asks again, without the prompt.
+// Only yes approves; anything else asks again. The question leaves the
+// prompt to the observers.
 func TestStdinApprover_AsksUntilYes(t *testing.T) {
 	t.Parallel()
 
 	a, in, out := newLineTest(t)
 	done := waitIn(t.Context(), a, GateInfo{Path: "p/go", Prompt: "Upgrade DC2?"})
 
-	assert.Equal(t, "Upgrade DC2?\nType yes to approve p/go: ", <-out)
+	assert.Equal(t, "Type yes to approve p/go: ", <-out)
 
 	for _, line := range []string{"no", "", "yess"} {
 		writeLine(t, in, line)

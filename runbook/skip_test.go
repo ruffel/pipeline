@@ -78,7 +78,7 @@ func TestSkipGroup_SkipsTheRestOfTheGroupOnly(t *testing.T) {
 	}, statuses(out.state, "p/g/a", "p/g/signal", "p/g/c", "p/g/inner", "p/g/inner/d", "p/g", "p/after"))
 
 	signalled := out.state.Element("p/g/signal")
-	assert.Equal(t, runbook.SignalSkipGroup, signalled.Signal, "replay keeps the signal, for resume")
+	assert.Equal(t, runbook.SkipGroup, signalled.Skip, "replay keeps the signal, for resume")
 	assert.True(t, signalled.Done)
 	assert.False(t, out.state.Element("p/g/c").Done, "skipped by a signal is not done")
 
@@ -140,7 +140,7 @@ func TestSkipRun_SkipsEverythingNotStartedAndPasses(t *testing.T) {
 		"p/later/deep":                "skipped/run-skipped",
 	}, statuses(out.state, "p/first", "p/outer/inner/signal", "p/outer/inner/rest-of-inner", "p/outer/inner",
 		"p/outer/rest-of-outer", "p/outer", "p/later", "p/later/deep"))
-	assert.Equal(t, runbook.SignalSkipRun, out.state.Element("p/outer/inner/signal").Signal)
+	assert.Equal(t, runbook.SkipRun, out.state.Element("p/outer/inner/signal").Skip)
 	assert.False(t, out.state.Unfinished(), "a run ended by ErrSkipRun counts as passed")
 }
 
@@ -304,7 +304,7 @@ func TestReplay_KeepsTheSignalThroughLaterSkips(t *testing.T) {
 
 	signalled := runbook.Event{
 		Kind: runbook.EventStepFinished, Run: "r1", Path: "p/a",
-		Outcome: runbook.OutcomePassed, Signal: runbook.SignalSkipGroup,
+		Outcome: runbook.OutcomePassed, Skip: runbook.SkipGroup,
 	}
 
 	s := replay(t,
@@ -312,11 +312,11 @@ func TestReplay_KeepsTheSignalThroughLaterSkips(t *testing.T) {
 		runStarted("r2", 2), finished("r2", "p/a", runbook.OutcomeSkipped, runbook.ReasonEarlierAttempt),
 		runStarted("r3", 3), finished("r3", "p/a", runbook.OutcomeSkipped, runbook.ReasonRunSkipped),
 	)
-	assert.Equal(t, runbook.SignalSkipGroup, s.Element("p/a").Signal)
+	assert.Equal(t, runbook.SkipGroup, s.Element("p/a").Skip)
 
 	s = replay(t,
 		runStarted("r1", 1), started("r1", "p/a"), signalled,
 		runStarted("r2", 2), started("r2", "p/a"), finished("r2", "p/a", runbook.OutcomePassed, ""),
 	)
-	assert.Empty(t, s.Element("p/a").Signal, "Run finished again without signalling")
+	assert.Empty(t, s.Element("p/a").Skip, "Run finished again without signalling")
 }
