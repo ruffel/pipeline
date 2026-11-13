@@ -1,139 +1,128 @@
-// Command runbook demonstrates an operator-facing runbook: descriptions on
-// every entry, approval gates, resumable steps, and a JSON audit log.
+// Command runbook is an operator-facing runbook for a mock database failover:
+// a description on every entry, approval gates, steps that ask the system
+// whether their work is done, and a journal that is both the audit log and
+// what a second run resumes from.
 //
-// Usage:
+// Run it, answer its gates, and run it again to see a finished journal
+// refused:
 //
-//	go run . [-yes] [-format terminal|plain|json] [-audit runbook.jsonl] [-state .runbook-state]
+//	go run .
+//
+// Add -fail update-dns to see a step fail. Run again without it, and the run
+// resumes: the steps that finished are checked, not done again. Ctrl-C at a
+// gate says no: the run stops, and running again waits at that gate. -yes
+// approves every gate, and -format picks the view: terminal, plain or json.
+//
+// To start again, remove the journal and the state directory.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
-	"time"
+	"os/user"
+	"path/filepath"
 
-	"github.com/ruffel/pipeline"
-	jsonobs "github.com/ruffel/pipeline/observers/json"
-	plainobs "github.com/ruffel/pipeline/observers/plain"
-	termobs "github.com/ruffel/pipeline/observers/terminal"
+	"github.com/ruffel/pipeline/observers/terminal/runbookterm"
+	"github.com/ruffel/pipeline/runbook"
 )
 
 func main() {
-	yes := flag.Bool("yes", false, "auto-approve all gates")
-	format := flag.String("format", "terminal", "observer format: terminal, plain or json")
-	audit := flag.String("audit", "runbook.jsonl", "JSON Lines audit log path (empty to disable)")
-	state := flag.String("state", ".runbook-state", "marker directory for resumable steps")
+	yes := flag.Bool("yes", false, "approve every gate")
+	format := flag.String("format", "terminal", "how to show the run: terminal, plain or json")
+	journal := flag.String("journal", "runbook.jsonl", "the run's journal, which is also its audit log")
+	state := flag.String("state", ".runbook-state", "directory for the mock cluster's state")
+	fail := flag.String("fail", "", "a failover step whose Run fails, such as update-dns")
 	flag.Parse()
 
-	if err := run(*yes, *format, *audit, *state); err != nil {
-		fmt.Fprintf(os.Stderr, "runbook failed: %v\n", err)
+	if err := run(*yes, *format, *journal, *state, *fail); err != nil {
+		fmt.Fprintf(os.Stderr, "runbook: %v\n", err)
 
 		os.Exit(1)
 	}
 }
 
-func run(yes bool, format, audit, stateDir string) error {
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+func run(yes bool, format, journal, state, fail string) error {
+	if err := os.MkdirAll(state, 0o700); err != nil {
 		return err
 	}
 
-	observers := []pipeline.Observer{buildObserver(format)}
-
-	// The audit log records every event of every run, tagged with the run ID.
-	if audit != "" {
-		f, err := os.OpenFile(audit, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		observers = append(observers, jsonobs.New(f))
+	view, err := observer(format, os.Stdout)
+	if err != nil {
+		return err
 	}
 
-	ex := pipeline.NewExecutorWithOptions(
-		pipeline.WithObservers(observers...),
-		pipeline.WithRunID(fmt.Sprintf("failover-%d", time.Now().Unix())),
-	)
+	// The run is against one cluster: its state file is the run's input, so
+	// the journal refuses a resume against another. -fail is left out:
+	// running again without it is how a failed run recovers.
+	file, err := filepath.Abs(filepath.Join(state, "cluster.json"))
+	if err != nil {
+		return err
+	}
 
-	p := pipeline.NewPipeline("db-failover",
-		preflight(),
-		approval(yes),
-		failover(stateDir),
-		verify(),
-		wrapUp(yes),
-	)
+	plan, err := newPlan(&cluster{file: file}, approvers(yes), fail)
+	if err != nil {
+		return err
+	}
 
-	return ex.Run(context.Background(), p)
-}
+	j, err := runbook.OpenJournal(journal)
+	if err != nil {
+		return err
+	}
 
-func buildObserver(format string) pipeline.Observer {
-	switch format {
-	case "json":
-		return jsonobs.New(os.Stdout)
-	case "plain":
-		return plainobs.New(os.Stdout)
+	defer func() { _ = j.Close() }()
+
+	// Ctrl-C stops the run once its running steps finish, and at a gate
+	// stops it without approving; a second Ctrl-C cancels the running steps.
+	stopper := runbook.NewStopper()
+
+	release := runbook.HandleSignals(stopper, runbook.SignalOptions{})
+	defer release()
+
+	_, err = runbook.Run(context.Background(), plan, j,
+		runbook.WithObservers(view), runbook.WithStopper(stopper), runbook.WithRunLabels(runbook.L{"operator": who()}),
+		runbook.WithInputs(inputs{Cluster: file}))
+
+	switch {
+	case errors.Is(err, runbook.ErrInputsChanged):
+		return fmt.Errorf("%s is a failover of another cluster; use its -state, or remove it to start again", journal)
+	case errors.Is(err, runbook.ErrAlreadyComplete):
+		return fmt.Errorf("%s holds a finished failover; remove it and %s to start again", journal, state)
+	case errors.Is(err, runbook.ErrStopped):
+		return errors.New("stopped; run again to resume")
 	default:
-		return termobs.New(os.Stdout)
+		return err
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Stages
-// -----------------------------------------------------------------------------
-
-func preflight() pipeline.Stage {
-	return pipeline.NewStage("preflight",
-		pipeline.NewStep("check-cluster", func(ctx context.Context) error {
-			return simulate(ctx, "primary and replica reachable", 300*time.Millisecond)
-		}).WithDescription("Verifies both database nodes are reachable"),
-		pipeline.NewStep("check-replica-lag", func(ctx context.Context) error {
-			return simulate(ctx, "replication lag 0.4s — within threshold", 300*time.Millisecond)
-		}).WithDescription("Replica must be <5s behind before cutting over"),
-	).WithDescription("Non-destructive checks — safe to re-run")
+// inputs are what the run was started with, recorded in the journal.
+type inputs struct {
+	Cluster string `json:"cluster"`
 }
 
-// approval is a gate in its own sequential, single-step stage: nothing else
-// writes to the terminal while the prompt waits.
-func approval(yes bool) pipeline.Stage {
-	return pipeline.NewStage("approval",
-		pipeline.NewStep("confirm-failover", confirm("Proceed with failover? Traffic pauses for ~30s")).
-			WithDescription("Operator sign-off before any destructive action").
-			WithCondition(autoApproved(yes)),
-	).WithDescription("The last safe moment to abort")
+// observer shows the run. It is called on the run's goroutine, so the view
+// and a gate's question on the terminal stay in order.
+func observer(format string, w io.Writer) (runbook.Observer, error) {
+	switch format {
+	case "terminal":
+		return runbookterm.New(w), nil
+	case "plain":
+		return runbook.NewPlainObserver(w), nil
+	case "json":
+		return runbook.NewJSONObserver(w), nil
+	default:
+		return nil, fmt.Errorf("unknown format %q: use terminal, plain or json", format)
+	}
 }
 
-func failover(stateDir string) pipeline.Stage {
-	return pipeline.NewStage("failover",
-		tracked(stateDir, "demote-primary", func(ctx context.Context) error {
-			return simulate(ctx, "primary set read-only", 400*time.Millisecond)
-		}).WithDescription("Sets the current primary read-only"),
-		tracked(stateDir, "promote-replica", func(ctx context.Context) error {
-			return simulate(ctx, "replica promoted", 400*time.Millisecond)
-		}).WithDescription("Promotes the replica to primary"),
-		tracked(stateDir, "update-dns", func(ctx context.Context) error {
-			return simulate(ctx, "db.internal points at the new primary", 400*time.Millisecond)
-		}).WithDescription("Repoints db.internal at the new primary"),
-	).WithDescription("Destructive steps — markers make re-runs resume, not repeat")
-}
+// who names the operator in the journal.
+func who() string {
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
 
-func verify() pipeline.Stage {
-	return pipeline.NewParallelStage("verify",
-		pipeline.NewStep("smoke-test", func(ctx context.Context) error {
-			return simulate(ctx, "round-trip write OK", 500*time.Millisecond)
-		}).WithDescription("Round-trip write against the new primary"),
-		pipeline.NewStep("check-metrics", func(ctx context.Context) error {
-			return simulate(ctx, "error rate 0.02% — nominal", 600*time.Millisecond)
-		}).WithDescription("Error rate must stay under 0.1%"),
-	).WithDescription("Post-failover health checks")
-}
-
-// wrapUp shows the "do-nothing" pattern: the tool waits while a human does
-// work it can't (yet) automate.
-func wrapUp(yes bool) pipeline.Stage {
-	return pipeline.NewStage("wrap-up",
-		pipeline.NewStep("confirm-incident-doc", confirm("Update the incident doc with the failover time, then confirm")).
-			WithDescription("Manual step — the paper trail lives outside this tool").
-			WithCondition(autoApproved(yes)),
-	).WithDescription("Close out the runbook")
+	return ""
 }
