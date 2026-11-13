@@ -136,6 +136,9 @@ func (g GroupNode) OnFailure(step StepNode) GroupNode {
 // recovery has begun, what state the group is in is unknown, whatever
 // becomes of the step, so the only safe resume is from the group's first
 // step. The group's steps must tolerate what a failed recovery leaves.
+//
+// The reset is where the step starts: a stop requested after it, even by an
+// observer of the reset, lets the step finish, as it does any running step.
 func (g GroupNode) RecoverOnFailure(step StepNode) GroupNode {
 	g.recovery = &step
 

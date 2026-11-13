@@ -2,6 +2,8 @@ package runbook_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -538,4 +540,49 @@ func TestNewPlanFromGroup_RootSettings(t *testing.T) {
 	_, err = runbook.NewPlanFromGroup(runbook.Group("bad name", runbook.Effect("a", nil)))
 	require.ErrorContains(t, err, "bad name:")
 	require.ErrorContains(t, err, "bad name/a: step is nil")
+}
+
+// A step moved between a group's children and its failure handler, or a
+// handler changed between cleanup and recovery, changes the plan's shape.
+func TestFailureHandlers_ChangeTheFingerprint(t *testing.T) {
+	t.Parallel()
+
+	child := mustPlan(t, runbook.Group("g", runbook.Effect("a", ok()), runbook.Effect("h", ok())))
+	cleanup := mustPlan(t, runbook.Group("g", runbook.Effect("a", ok())).OnFailure(runbook.Effect("h", ok())))
+	recovery := mustPlan(t, runbook.Group("g", runbook.Effect("a", ok())).RecoverOnFailure(runbook.Effect("h", ok())))
+
+	assert.NotEqual(t, child.Fingerprint(), cleanup.Fingerprint())
+	assert.NotEqual(t, child.Fingerprint(), recovery.Fingerprint())
+	assert.NotEqual(t, cleanup.Fingerprint(), recovery.Fingerprint())
+}
+
+// A handler's failure is recorded on its group, as the group returns it.
+func TestFailureHandlers_AFailedHandlerIsRecordedOnItsGroup(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		runbook.Group("g", runbook.Effect("b", fail("boom"))).
+			OnFailure(runbook.Effect("cleanup", fail("cleanup broke"))),
+	))
+
+	require.Error(t, out.err)
+
+	g := out.state.Element("p/g")
+	require.NotNil(t, g.Error)
+	assert.Contains(t, g.Error.Message, "p/g/b: boom")
+	assert.Contains(t, g.Error.Message, "p/g/cleanup: cleanup broke")
+}
+
+// A plan without failure handlers keeps the fingerprint it always had: the
+// kind and path of every element, in plan order.
+func TestFingerprint_UnchangedWithoutHandlers(t *testing.T) {
+	t.Parallel()
+
+	plan := mustPlan(t,
+		runbook.Group("g", runbook.Effect("a", ok()), runbook.Observe("b", ok())),
+		runbook.Gate("go", runbook.GateOptions{}),
+	)
+
+	sum := sha256.Sum256([]byte("group p\ngroup p/g\neffect p/g/a\nobserve p/g/b\ngate p/go\n"))
+	assert.Equal(t, "sha256:"+hex.EncodeToString(sum[:]), plan.Fingerprint())
 }

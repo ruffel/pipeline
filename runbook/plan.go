@@ -87,12 +87,31 @@ func (p *Plan) Name() string {
 // Fingerprint identifies the plan's shape: the path and kind of every element,
 // in order. Descriptions, labels and settings such as limits and timeouts are
 // left out, so changing them does not change the fingerprint.
+//
+// A failure handler is listed after its group's children, marked with its
+// role, so moving a step between a group's children and its handler, or
+// changing a handler between cleanup and recovery, changes the fingerprint.
 func (p *Plan) Fingerprint() string {
 	h := sha256.New()
 
-	p.root.walk(func(n *node) {
-		_, _ = fmt.Fprintf(h, "%s %s\n", n.kind, n.path)
-	})
+	var write func(n *node, role string)
+
+	write = func(n *node, role string) {
+		_, _ = fmt.Fprintf(h, "%s %s%s\n", n.kind, n.path, role)
+
+		for _, c := range n.children {
+			write(c, "")
+		}
+
+		switch {
+		case n.handler != nil && n.recovers:
+			write(n.handler, " recovery")
+		case n.handler != nil:
+			write(n.handler, " cleanup")
+		}
+	}
+
+	write(p.root, "")
 
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
@@ -180,20 +199,6 @@ func (n *node) canSettle() bool {
 	}
 
 	return slices.ContainsFunc(n.children, (*node).canSettle)
-}
-
-// walk calls fn on n and its descendants, depth first, in plan order, with
-// a group's failure handler after its children.
-func (n *node) walk(fn func(*node)) {
-	fn(n)
-
-	for _, c := range n.children {
-		c.walk(fn)
-	}
-
-	if n.handler != nil {
-		n.handler.walk(fn)
-	}
 }
 
 // builder turns elements into nodes, collecting every validation error.

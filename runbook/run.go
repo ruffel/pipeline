@@ -355,7 +355,8 @@ func (r *runner) group(ctx context.Context, n *node) error {
 	}
 
 	if ferr := r.emit(Event{
-		Kind: EventGroupFinished, Path: n.path, Outcome: outcome, Error: errorInfo(err), DurationMs: r.since(start),
+		Kind: EventGroupFinished, Path: n.path, Outcome: outcome, Error: errorInfo(errors.Join(err, herr)),
+		DurationMs: r.since(start),
 	}); ferr != nil {
 		return ferr
 	}
