@@ -177,21 +177,33 @@ func (r *StepRun) Stderr() []string {
 	return r.output("stderr")
 }
 
+// output gathers each line's pieces and joins them once, so a long line
+// split into many pieces costs no more than its length.
 func (r *StepRun) output(stream string) []string {
-	var out []string
+	var lines [][]string
 
 	for _, e := range r.events {
 		if e.Kind != runbook.EventOutput || e.Stream != stream {
 			continue
 		}
 
-		if e.Continued && len(out) > 0 {
-			out[len(out)-1] += e.Line
+		if e.Continued && len(lines) > 0 {
+			lines[len(lines)-1] = append(lines[len(lines)-1], e.Line)
 
 			continue
 		}
 
-		out = append(out, e.Line)
+		lines = append(lines, []string{e.Line})
+	}
+
+	if len(lines) == 0 {
+		return nil
+	}
+
+	out := make([]string, len(lines))
+
+	for i, pieces := range lines {
+		out[i] = strings.Join(pieces, "")
 	}
 
 	return out
