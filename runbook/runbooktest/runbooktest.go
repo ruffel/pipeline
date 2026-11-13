@@ -1,6 +1,7 @@
 // Package runbooktest helps test plans and steps built with runbook: it runs
-// one step on its own, simulates a crash at any point of a run, controls the
-// clock, and renders a journal compactly for assertions.
+// one step on its own, checks that a step survives a crash, simulates a crash
+// at any point of a run, controls the clock, and renders a journal compactly
+// for assertions.
 //
 // [RunStep] tests one step without its plan. It runs the step as a real run
 // would, Check before Run, and returns what the step recorded:
@@ -10,6 +11,17 @@
 //		runbooktest.Given("upgrade/backup", "archive", "/var/backup.tar"))
 //	require.NoError(t, r.Err)
 //	assert.Equal(t, []string{"restarting services on node1"}, r.Messages())
+//
+// [CheckIdempotent] checks the contract every step must keep: a crash at any
+// point of its run, and a resume, still ends with the step passed. Give it a
+// function that builds the step on a fresh fake system, and check the
+// system's final state in a t.Cleanup:
+//
+//	runbooktest.CheckIdempotent(t, func(t *testing.T) runbook.StepNode {
+//		sys := newFakeNode()
+//		t.Cleanup(func() { assert.True(t, sys.Upgraded()) })
+//		return runbook.Effect("packages", installStep(sys))
+//	})
 //
 // A crash is simulated by a journal that stops accepting writes right after
 // a chosen event is stored. The run then stops at its next write, exactly as
