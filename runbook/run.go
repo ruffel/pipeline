@@ -109,29 +109,30 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 	defer cancel(nil)
 
 	r := &runner{
-		plan:        plan,
-		journal:     j,
-		clock:       cfg.clock,
-		id:          newRunID(),
-		attempt:     len(prev.Attempts) + 1,
-		observers:   cfg.observers,
-		obsCtx:      context.WithoutCancel(ctx),
-		cancel:      cancel,
-		runDone:     runCtx.Done(),
-		prev:        prev,
-		prior:       prior,
-		trust:       cfg.resume == ResumeTrust,
-		redact:      &redactor{fn: cfg.redact, secrets: in.secrets},
-		inputs:      in,
-		stopper:     cfg.stopper,
-		stop:        newStopSignal(),
-		gates:       map[string]chan controlRequest{},
-		control:     control,
-		controlPoll: cfg.controlPoll,
-		forced:      cfg.force && !rollback && len(prev.Attempts) > 0,
-		rollingBack: rollback,
-		values:      map[string]map[string]json.RawMessage{},
-		budget:      cfg.outputBudget,
+		plan:         plan,
+		journal:      j,
+		clock:        cfg.clock,
+		id:           newRunID(),
+		attempt:      len(prev.Attempts) + 1,
+		observers:    cfg.observers,
+		obsCtx:       context.WithoutCancel(ctx),
+		cancel:       cancel,
+		runDone:      runCtx.Done(),
+		prev:         prev,
+		prior:        prior,
+		trust:        cfg.resume == ResumeTrust,
+		redact:       &redactor{fn: cfg.redact, secrets: in.secrets},
+		inputs:       in,
+		stopper:      cfg.stopper,
+		stop:         newStopSignal(),
+		gates:        map[string]chan controlRequest{},
+		control:      control,
+		controlPoll:  cfg.controlPoll,
+		forced:       cfg.force && !rollback && len(prev.Attempts) > 0,
+		rollingBack:  rollback,
+		notCommitted: cfg.notCommitted,
+		values:       map[string]map[string]json.RawMessage{},
+		budget:       cfg.outputBudget,
 	}
 
 	res, err := r.run(runCtx, cfg.labels)
@@ -145,12 +146,9 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 // prev, and returns what it decides which work is already done from: prev,
 // or, for a forced run, nothing, though earlier values stay readable.
 func admit(prev *State, plan *Plan, in *inputs, cfg config, rollback bool) (*State, error) {
-	n := len(prev.Attempts)
-	if n == 0 {
+	if len(prev.Attempts) == 0 {
 		return prev, nil
 	}
-
-	last := prev.Attempts[n-1]
 
 	switch {
 	case prev.Fingerprint != plan.Fingerprint():
@@ -161,6 +159,13 @@ func admit(prev *State, plan *Plan, in *inputs, cfg config, rollback bool) (*Sta
 		// A rollback undoes what the journal says ran, however the latest
 		// attempt ended.
 		return prev, nil
+	}
+
+	last, ok := lastCounted(prev.Attempts)
+
+	switch {
+	case !ok:
+		return prev, nil
 	case last.Rollback && last.Outcome != OutcomePassed:
 		return nil, ErrRollbackUnfinished
 	case cfg.force:
@@ -170,6 +175,19 @@ func admit(prev *State, plan *Plan, in *inputs, cfg config, rollback bool) (*Sta
 	default:
 		return prev, nil
 	}
+}
+
+// lastCounted returns the latest attempt that decides whether a run may go
+// on. A rollback that started no Undo, such as one refused at a point of no
+// return, left everything as it was, and is passed over.
+func lastCounted(attempts []AttemptState) (AttemptState, bool) {
+	for _, a := range slices.Backward(attempts) {
+		if !a.Rollback || a.Undos > 0 {
+			return a, true
+		}
+	}
+
+	return AttemptState{}, false
 }
 
 // runner holds one attempt's state.
@@ -188,7 +206,9 @@ type runner struct {
 	trust  bool
 	forced bool
 	// rollingBack marks a rollback: it undoes steps instead of running them.
-	rollingBack bool
+	// notCommitted are the Irreversible steps it is told did not commit.
+	rollingBack  bool
+	notCommitted map[string]bool
 
 	// redact removes secrets from the text of every event and returned error.
 	redact *redactor
@@ -300,7 +320,10 @@ func (r *runner) work(ctx context.Context) error {
 	var err error
 
 	if r.rollingBack {
-		err = r.undoAll(ctx)
+		err = r.pointsOfNoReturn(ctx)
+		if err == nil {
+			err = r.undoAll(ctx)
+		}
 	} else {
 		err = r.children(ctx, r.plan.root)
 		if err != nil && !onlyStopped(err) {

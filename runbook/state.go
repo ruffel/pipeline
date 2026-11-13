@@ -52,6 +52,10 @@ type State struct {
 	items    map[string]map[string]ItemState
 	// gates are the paths of the gates that have waited.
 	gates map[string]bool
+	// irreversible is where the run stands on each Irreversible step in the
+	// latest plan. Once passed, a step stays passed: nothing that resets or
+	// forgets the step's own state takes the run back before it.
+	irreversible map[string]IrreversibleState
 }
 
 // AttemptState is one run of the plan.
@@ -66,9 +70,27 @@ type AttemptState struct {
 	// Stop is the stop the attempt was asked for, if any.
 	Stop *StopRequest
 	// Rollback marks an attempt made by [Rollback], which undid steps
-	// instead of running them.
+	// instead of running them. Undos is how many Undos it started: one that
+	// started none left everything as it was.
 	Rollback bool
+	Undos    int
 }
+
+// IrreversibleState is where a run stands on an Irreversible step.
+type IrreversibleState string
+
+// The states of an Irreversible step.
+const (
+	// IrreversibleNotReached means no Run of the step has been called, or a
+	// rollback found it did not commit.
+	IrreversibleNotReached IrreversibleState = "not-reached"
+	// IrreversibleInDoubt means the step's Run was called and did not pass:
+	// it may or may not have committed.
+	IrreversibleInDoubt IrreversibleState = "in-doubt"
+	// IrreversiblePassed means the step's Run passed, or its Check found its
+	// work done: the run is past a point of no return.
+	IrreversiblePassed IrreversibleState = "passed"
+)
 
 // ElementState is where one group or step stands.
 type ElementState struct {
@@ -121,6 +143,8 @@ func newState() *State {
 		values:   map[string]map[string]json.RawMessage{},
 		items:    map[string]map[string]ItemState{},
 		gates:    map[string]bool{},
+
+		irreversible: map[string]IrreversibleState{},
 	}
 }
 
@@ -132,6 +156,12 @@ func (s *State) Element(path string) ElementState {
 	}
 
 	return ElementState{Status: StatusNotReached}
+}
+
+// Irreversible returns where the run stands on each Irreversible step of the
+// latest attempt's plan, by path.
+func (s *State) Irreversible() map[string]IrreversibleState {
+	return maps.Clone(s.irreversible)
 }
 
 // Value returns the latest value recorded under path and key, from any
@@ -240,6 +270,7 @@ func (s *State) apply(e Event) {
 		el := s.elements[e.Path]
 		el.RunCalled = true
 		s.elements[e.Path] = el
+		s.commit(e.Path, IrreversibleInDoubt)
 	case EventGroupFinished, EventStepFinished:
 		s.finish(e)
 	case EventGroupReset:
@@ -248,6 +279,9 @@ func (s *State) apply(e Event) {
 		s.undone(e)
 	case EventUndoStarted:
 		// The step is undone only once its undo passes.
+		if n := len(s.Attempts); n > 0 && s.Attempts[n-1].Run == e.Run {
+			s.Attempts[n-1].Undos++
+		}
 	case EventValue:
 		if s.values[e.Path] == nil {
 			s.values[e.Path] = map[string]json.RawMessage{}
@@ -274,6 +308,7 @@ func (s *State) applyAttempt(e Event) {
 
 		s.Plan = e.Plan
 		s.Fingerprint = e.Fingerprint
+		s.trackIrreversible(e.Plan)
 		s.Labels = e.Labels
 		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
 		s.Attempts = append(s.Attempts, AttemptState{
@@ -330,6 +365,40 @@ func (s *State) reset(path string) {
 	maps.DeleteFunc(s.items, func(p string, _ map[string]ItemState) bool { return beneath(p) })
 }
 
+// trackIrreversible notes the Irreversible steps of an attempt's plan, each
+// where the run already stands on it.
+func (s *State) trackIrreversible(plan *NodeSpec) {
+	if plan == nil {
+		return
+	}
+
+	var walk func(n NodeSpec)
+
+	walk = func(n NodeSpec) {
+		if _, ok := s.irreversible[n.Path]; n.Irreversible && !ok {
+			s.irreversible[n.Path] = IrreversibleNotReached
+		}
+
+		for _, c := range n.Children {
+			walk(c)
+		}
+
+		if n.OnFailure != nil {
+			walk(*n.OnFailure)
+		}
+	}
+
+	walk(*plan)
+}
+
+// commit moves an Irreversible step at path to state, unless it has passed:
+// a run past a point of no return stays past it.
+func (s *State) commit(path string, state IrreversibleState) {
+	if cur, ok := s.irreversible[path]; ok && cur != IrreversiblePassed {
+		s.irreversible[path] = state
+	}
+}
+
 // gate applies a gate waiting or being released.
 func (s *State) gate(e Event) {
 	s.gates[e.Path] = true
@@ -357,6 +426,7 @@ func (s *State) undone(e Event) {
 
 	path := e.Path
 
+	s.commit(path, IrreversibleNotReached)
 	delete(s.elements, path)
 	delete(s.values, path)
 	delete(s.items, path)
@@ -413,4 +483,8 @@ func (s *State) finish(e Event) {
 	}
 
 	s.elements[e.Path] = el
+
+	if el.Done {
+		s.commit(e.Path, IrreversiblePassed)
+	}
 }

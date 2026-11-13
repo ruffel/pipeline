@@ -59,6 +59,9 @@ type config struct {
 	newInputs   bool
 	stopper     *Stopper
 	controlPoll time.Duration
+	// notCommitted are the Irreversible steps a rollback is told did not
+	// commit.
+	notCommitted map[string]bool
 
 	// outputBudget is MaxStepOutput, except in tests.
 	outputBudget int
@@ -170,4 +173,21 @@ func (systemClock) Now() time.Time {
 
 func (systemClock) After(d time.Duration) <-chan time.Time {
 	return time.After(d)
+}
+
+// AssumeNotCommitted tells [Rollback] that the Irreversible steps at paths,
+// whose Run was called and did not pass, did not commit, so it may roll back
+// past them. Give it only when something other than the journal says so,
+// such as the system itself: for a step with a Check, Rollback asks the
+// Check instead. Run ignores it.
+func AssumeNotCommitted(paths ...string) Option {
+	return func(c *config) {
+		if c.notCommitted == nil {
+			c.notCommitted = map[string]bool{}
+		}
+
+		for _, p := range paths {
+			c.notCommitted[p] = true
+		}
+	}
 }

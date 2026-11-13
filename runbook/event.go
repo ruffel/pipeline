@@ -116,6 +116,10 @@ const (
 	// ReasonNoUndo means a rollback left a step as it was because the step
 	// has no Undo.
 	ReasonNoUndo Reason = "no-undo"
+	// ReasonNotCommitted means a rollback found that an Irreversible step
+	// whose Run was called did not commit, by its Check or the caller's
+	// word, and so had nothing to undo.
+	ReasonNotCommitted Reason = "not-committed"
 )
 
 // Signal is flow control a step's Run returned: [ErrSkipGroup] or
