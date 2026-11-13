@@ -62,6 +62,17 @@ func WithContext(ctx context.Context) StepOption {
 	}
 }
 
+func newStepConfig(tb testing.TB, opts []StepOption) stepConfig {
+	tb.Helper()
+
+	cfg := stepConfig{ctx: tb.Context(), parent: "test"}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	return cfg
+}
+
 // StepRun is what one step did when [RunStep] ran it.
 type StepRun struct {
 	// Path is the step's path.
@@ -87,17 +98,19 @@ type StepRun struct {
 func RunStep(tb testing.TB, step runbook.StepNode, opts ...StepOption) *StepRun {
 	tb.Helper()
 
-	cfg := stepConfig{ctx: tb.Context(), parent: "test"}
-	for _, o := range opts {
-		o(&cfg)
-	}
+	cfg := newStepConfig(tb, opts)
 
 	plan, path, err := stepPlan(step, cfg)
 	if err != nil {
 		tb.Fatalf("runbooktest: %v", err)
 	}
 
-	j := runbook.MemoryJournal()
+	return runOn(tb, cfg, plan, path, runbook.MemoryJournal())
+}
+
+// runOn runs plan against j and returns what the step at path did.
+func runOn(tb testing.TB, cfg stepConfig, plan *runbook.Plan, path string, j *runbook.Journal) *StepRun {
+	tb.Helper()
 
 	_, runErr := runbook.Run(cfg.ctx, plan, j, cfg.opts...)
 
