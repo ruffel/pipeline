@@ -140,28 +140,33 @@ pipeline.NewStage("notify", steps...).WithCondition(func(_ context.Context) stri
 
 ## Runbooks
 
-Descriptions, approval gates, and an audit log turn a pipeline into an
-operator runbook — including "do-nothing" runbooks that walk a human through
-manual steps and let you automate them one at a time:
+The [`runbook`](./runbook) package runs operator runbooks: plans of steps
+with descriptions, approval gates, and a journal that is both the audit log
+and what a later run resumes from. A step can say whether its work is
+already done, so a resumed run checks it instead of doing it again:
 
 ```go
-pipeline.NewStage("approval",
-    pipeline.NewStep("confirm-failover", confirm("Proceed with failover?")).
-        WithDescription("Operator sign-off before any destructive action"),
-).WithDescription("The last safe moment to abort")
+plan, err := runbook.NewPlan("db-failover",
+    runbook.Gate("confirm-failover", runbook.GateOptions{
+        Prompt:    "Proceed with failover?",
+        Approvers: []runbook.Approver{runbook.StdinApprover()},
+    }).Description("The last safe moment to abort"),
+    runbook.Effect("promote-replica", promote).
+        Description("Promotes the replica to primary"),
+)
+
+j, err := runbook.OpenJournal("failover.jsonl")
+_, err = runbook.Run(ctx, plan, j, runbook.WithObservers(runbookterm.New(os.Stdout)))
 ```
 
-Gates read stdin, so keep each one in its own sequential, single-step stage —
-never inside a parallel stage (peer output interleaves with the prompt) and
-not behind an `AsyncObserver` (delayed output breaks prompt ordering). Pair
-`WithRunID` with the JSON observer to give every run a correlatable audit
-trail.
-
-See [`examples/runbook`](./examples/runbook) for the full pattern: gates,
-resumable steps via marker files, and a JSON Lines audit log.
+See [`examples/runbook`](./examples/runbook) for gates, resuming after a
+failure, and an approver of your own, and
+[`examples/detached`](./examples/detached) for a run that other terminals
+watch, approve and stop.
 
 ## Examples
 
 - **[demo](./examples/demo)** — inline steps covering all pipeline features
 - **[deploy](./examples/deploy)** — struct-based steps with state management and production patterns
-- **[runbook](./examples/runbook)** — approval gates, step descriptions, resumable steps, audit log
+- **[runbook](./examples/runbook)** — a failover runbook: approval gates, descriptions, resuming from the journal
+- **[detached](./examples/detached)** — a run that other terminals watch, approve and stop
