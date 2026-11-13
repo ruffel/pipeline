@@ -48,11 +48,16 @@ func newPlan(state, fail string) (*runbook.Plan, error) {
 func approvers(state string) []runbook.Approver {
 	as := []runbook.Approver{runbook.FileApprover(filepath.Join(state, "approve"), time.Second)}
 
-	if term.IsTerminal(os.Stdin.Fd()) {
+	if interactive() {
 		as = append(as, runbook.StdinApprover())
 	}
 
 	return as
+}
+
+// interactive reports whether someone at a terminal can answer the gate.
+func interactive() bool {
+	return term.IsTerminal(os.Stdin.Fd())
 }
 
 // markedStep is a step whose Check looks for the marker file its Run leaves
