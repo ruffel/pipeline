@@ -66,6 +66,29 @@ func TestHandleSignals_StopThenCancel(t *testing.T) { //nolint:paralleltest // S
 	}, state.Attempts[0].Stop)
 }
 
+// A signal is acted on before OnSignal is told of it, so an OnSignal that
+// blocks, such as on a write to a full pipe, can't keep a stop from
+// happening.
+func TestHandleSignals_StopsBeforeTellingOnSignal(t *testing.T) { //nolint:paralleltest // Signals are process-wide.
+	stopper := runbook.NewStopper()
+	unblock := make(chan struct{})
+
+	release := runbook.HandleSignals(stopper, runbook.SignalOptions{
+		Stop: []os.Signal{syscall.SIGWINCH}, Detach: []os.Signal{},
+		OnSignal: func(os.Signal) { <-unblock },
+	})
+	defer release()
+	defer close(unblock)
+
+	raise(t, syscall.SIGWINCH)
+
+	select {
+	case <-stopper.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stop waited for OnSignal")
+	}
+}
+
 // A detach signal is reported, and stops nothing; once released, signals
 // are no longer handled.
 func TestHandleSignals_DetachAndRelease(t *testing.T) { //nolint:paralleltest // Signals are process-wide.

@@ -151,9 +151,18 @@ func restart(node string) func(context.Context, *runbook.StepContext) error {
 }
 
 func finalise(ctx context.Context, sc *runbook.StepContext) error {
+	// The backup recorded where it put the archive. If this journal never
+	// ran the backup (its marker came from another journal's run), there
+	// is nothing to keep, and the upgrade has no backup: fail loudly.
 	var archive string
-	if _, err := sc.Recorded("upgrade/backup", "archive", &archive); err != nil {
+
+	found, err := sc.Recorded("upgrade/backup", "archive", &archive)
+	if err != nil {
 		return err
+	}
+
+	if !found {
+		return errors.New("no backup recorded in this journal; remove the state directory and run again")
 	}
 
 	sc.Info("keeping the backup at " + archive)

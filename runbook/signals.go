@@ -17,9 +17,11 @@ type SignalOptions struct {
 	// SIGHUP. Nil means SIGHUP; an empty, non-nil slice means none. A
 	// signal in Stop as well is a stop signal only.
 	Detach []os.Signal
-	// OnSignal, if set, is told of each stop and detach signal as it is
-	// handled, such as to print that the run is stopping. It is called from
-	// the handler's goroutine, one signal at a time.
+	// OnSignal, if set, is told of each stop and detach signal once it has
+	// been acted on, such as to print that the run is stopping. It is called
+	// from the handler's goroutine, one signal at a time, so while it blocks
+	// the next signal waits: it should not block, as a write to a full pipe
+	// or a stopped terminal can.
 	OnSignal func(os.Signal)
 }
 
@@ -118,22 +120,22 @@ func handleSignals(s *Stopper, onSignal func(os.Signal), stops, detaches, pipes 
 	for {
 		select {
 		case sig := <-stops:
-			report(sig)
-
+			// Act first: an OnSignal that blocks must not keep the run
+			// from stopping.
 			if !stopped {
 				s.Stop(signalName(sig))
 
 				stopped = true
+			} else {
+				s.Cancel(signalName(sig))
 
-				continue
+				// The next one has its default effect.
+				signal.Stop(stops)
+
+				stops = nil
 			}
 
-			s.Cancel(signalName(sig))
-
-			// The next one has its default effect.
-			signal.Stop(stops)
-
-			stops = nil
+			report(sig)
 		case sig := <-detaches:
 			report(sig)
 		case <-pipes:

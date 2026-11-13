@@ -243,7 +243,14 @@ func (o *Observer) finished(e runbook.Event) {
 	}
 
 	if e.Error != nil && e.Error.Kind == runbook.ErrorCancelled {
-		o.cancelled = append(o.cancelled, o.layout.below(e.Path))
+		// A cancel alone says nothing; one that ended a retry's backoff
+		// keeps the try's error, which does.
+		entry := o.layout.below(e.Path)
+		if e.Error.Message != context.Canceled.Error() {
+			entry += message(e.Error)
+		}
+
+		o.cancelled = append(o.cancelled, entry)
 	} else {
 		o.failures = append(o.failures, o.layout.below(e.Path)+message(e.Error))
 	}

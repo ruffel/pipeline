@@ -276,6 +276,11 @@ func TestObserver_CancelledStepsAreListedApart(t *testing.T) {
 			Error: &runbook.ErrorInfo{Message: "disk full"},
 		},
 		runbook.Event{Kind: runbook.EventStepFinished, Path: "upgrade/apply", Outcome: runbook.OutcomeFailed, Error: cancelled},
+		// A cancel during a retry's backoff keeps the try's error.
+		runbook.Event{
+			Kind: runbook.EventStepFinished, Path: "upgrade/prechecks/ring", Outcome: runbook.OutcomeFailed,
+			Error: &runbook.ErrorInfo{Kind: runbook.ErrorCancelled, Message: "ring down\ncontext canceled"},
+		},
 		runbook.Event{Kind: runbook.EventRunFinished, Path: "upgrade", Outcome: runbook.OutcomeCancelled},
 	)
 
@@ -284,6 +289,8 @@ func TestObserver_CancelledStepsAreListedApart(t *testing.T) {
 │
 │ Cancelled:
 │   ■ apply
+│   ■ prechecks/ring — ring down
+│     context canceled
 │
 │ Running it again`)
 }

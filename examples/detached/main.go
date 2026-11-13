@@ -109,8 +109,19 @@ func run(args []string) error {
 	// The first Ctrl-C (or SIGTERM) stops the run once its running steps
 	// finish, the second cancels them, and a third ends the process.
 	// SIGHUP, the terminal going away, is only logged: the run carries on.
+	//
+	// OnSignal must not block, or the next signal waits: stderr can be a
+	// full pipe. Its notices are written on another goroutine, and dropped
+	// if that one is stuck.
 	stopper := runbook.NewStopper()
+	notices := make(chan string, 2)
 	stops := 0
+
+	go func() {
+		for n := range notices {
+			fmt.Fprintln(os.Stderr, n)
+		}
+	}()
 
 	release := runbook.HandleSignals(stopper, runbook.SignalOptions{OnSignal: func(s os.Signal) {
 		if s == syscall.SIGHUP {
@@ -118,12 +129,19 @@ func run(args []string) error {
 		}
 
 		stops++
+
+		notice := "\ncancelling the running steps"
 		if stops == 1 {
-			fmt.Fprintln(os.Stderr, "\nstopping once the running steps finish; press Ctrl-C again to cancel them")
-		} else {
-			fmt.Fprintln(os.Stderr, "\ncancelling the running steps")
+			notice = "\nstopping once the running steps finish; press Ctrl-C again to cancel them"
+		}
+
+		select {
+		case notices <- notice:
+		default:
 		}
 	}})
+
+	defer close(notices)
 	defer release()
 
 	// A terminal can block, or vanish; behind an AsyncObserver it can't
@@ -139,7 +157,7 @@ func run(args []string) error {
 	_ = view.Close(ctx)
 
 	if errors.Is(err, runbook.ErrAlreadyComplete) {
-		return fmt.Errorf("%s holds a finished upgrade; remove it to start again", *journal)
+		return fmt.Errorf("%s holds a finished upgrade; remove it and %s to start again", *journal, *state)
 	}
 
 	return err
