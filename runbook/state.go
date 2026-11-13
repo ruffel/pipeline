@@ -50,6 +50,8 @@ type State struct {
 	elements map[string]ElementState
 	values   map[string]map[string]json.RawMessage
 	items    map[string]map[string]ItemState
+	// gates are the paths of the gates that have waited.
+	gates map[string]bool
 }
 
 // AttemptState is one run of the plan.
@@ -63,6 +65,9 @@ type AttemptState struct {
 	Outcome Outcome
 	// Stop is the stop the attempt was asked for, if any.
 	Stop *StopRequest
+	// Rollback marks an attempt made by [Rollback], which undid steps
+	// instead of running them.
+	Rollback bool
 }
 
 // ElementState is where one group or step stands.
@@ -115,6 +120,7 @@ func newState() *State {
 		elements: map[string]ElementState{},
 		values:   map[string]map[string]json.RawMessage{},
 		items:    map[string]map[string]ItemState{},
+		gates:    map[string]bool{},
 	}
 }
 
@@ -229,15 +235,7 @@ func (s *State) apply(e Event) {
 		el.Status, el.Reason, el.Error, el.Run, el.Waiting = StatusStarted, "", nil, e.Run, false
 		s.elements[e.Path] = el
 	case EventGateWaiting, EventGateReleased:
-		el := s.elements[e.Path]
-		el.Waiting = e.Kind == EventGateWaiting
-		// A gate's work is done once it is released, even if the run
-		// ends before the gate finishes, unless its timeout declined it.
-		if e.Kind == EventGateReleased && e.Policy != TimeoutDecline {
-			el.Done = true
-		}
-
-		s.elements[e.Path] = el
+		s.gate(e)
 	case EventStepRunning:
 		el := s.elements[e.Path]
 		el.RunCalled = true
@@ -246,6 +244,10 @@ func (s *State) apply(e Event) {
 		s.finish(e)
 	case EventGroupReset:
 		s.reset(e.Path)
+	case EventUndoFinished:
+		s.undone(e)
+	case EventUndoStarted:
+		// The step is undone only once its undo passes.
 	case EventValue:
 		if s.values[e.Path] == nil {
 			s.values[e.Path] = map[string]json.RawMessage{}
@@ -274,7 +276,9 @@ func (s *State) applyAttempt(e Event) {
 		s.Fingerprint = e.Fingerprint
 		s.Labels = e.Labels
 		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
-		s.Attempts = append(s.Attempts, AttemptState{Run: e.Run, Attempt: e.Attempt, Started: e.TS})
+		s.Attempts = append(s.Attempts, AttemptState{
+			Run: e.Run, Attempt: e.Attempt, Started: e.TS, Rollback: e.Rollback,
+		})
 
 		return
 	}
@@ -289,6 +293,10 @@ func (s *State) applyAttempt(e Event) {
 	case EventRunFinished:
 		s.Attempts[n-1].Finished = e.TS
 		s.Attempts[n-1].Outcome = e.Outcome
+
+		if s.Attempts[n-1].Rollback && e.Outcome == OutcomePassed {
+			s.unreleaseGates()
+		}
 	case EventStopRequested:
 		// A cancel outranks a graceful stop, whichever came first.
 		if cur := s.Attempts[n-1].Stop; cur == nil || cur.Mode != StopCancel {
@@ -322,6 +330,60 @@ func (s *State) reset(path string) {
 	maps.DeleteFunc(s.items, func(p string, _ map[string]ItemState) bool { return beneath(p) })
 }
 
+// gate applies a gate waiting or being released.
+func (s *State) gate(e Event) {
+	s.gates[e.Path] = true
+
+	el := s.elements[e.Path]
+	el.Waiting = e.Kind == EventGateWaiting
+
+	// A gate's work is done once it is released, even if the run ends
+	// before the gate finishes, unless its timeout declined it.
+	if e.Kind == EventGateReleased && e.Policy != TimeoutDecline {
+		el.Done = true
+	}
+
+	s.elements[e.Path] = el
+}
+
+// undone applies a rollback's undo of a step. A step undone goes back to
+// never started, with its recorded values and items forgotten, and the
+// groups around it are no longer settled. One whose undo failed or was
+// skipped keeps its outcome.
+func (s *State) undone(e Event) {
+	if e.Outcome != OutcomeUndone {
+		return
+	}
+
+	path := e.Path
+
+	delete(s.elements, path)
+	delete(s.values, path)
+	delete(s.items, path)
+	s.unsettle(path)
+}
+
+// unreleaseGates applies a rollback that passed: every gate waits again.
+func (s *State) unreleaseGates() {
+	for path := range s.gates {
+		delete(s.elements, path)
+		s.unsettle(path)
+	}
+}
+
+// unsettle clears Done on the groups around path, so a later attempt enters
+// them again.
+func (s *State) unsettle(path string) {
+	for i := strings.LastIndexByte(path, '/'); i >= 0; i = strings.LastIndexByte(path, '/') {
+		path = path[:i]
+
+		if el, ok := s.elements[path]; ok {
+			el.Done = false
+			s.elements[path] = el
+		}
+	}
+}
+
 func (s *State) finish(e Event) {
 	el := s.elements[e.Path]
 	el.Reason, el.Error, el.Run, el.Waiting = e.Reason, e.Error, e.Run, false
@@ -346,6 +408,8 @@ func (s *State) finish(e Event) {
 		el.Status, el.Done = StatusStopped, false
 	case OutcomeFailed, OutcomeCancelled:
 		el.Status, el.Done = StatusFailed, false
+	case OutcomeUndone:
+		// Only an undo is undone, and it never finishes a group or step.
 	}
 
 	s.elements[e.Path] = el

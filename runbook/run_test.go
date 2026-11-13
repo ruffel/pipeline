@@ -82,6 +82,7 @@ func trace(events []runbook.Event, kinds ...runbook.EventKind) []string {
 		runbook.EventGroupStarted: true, runbook.EventGroupFinished: true, runbook.EventGroupReset: true,
 		runbook.EventStepStarted: true, runbook.EventStepRunning: true, runbook.EventStepFinished: true,
 		runbook.EventGateWaiting: true, runbook.EventGateReleased: true,
+		runbook.EventUndoStarted: true, runbook.EventUndoFinished: true,
 	}
 	for _, k := range kinds {
 		want[k] = true

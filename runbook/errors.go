@@ -21,6 +21,11 @@ var (
 	// attempt passed. [Force] runs the plan again regardless.
 	ErrAlreadyComplete = errors.New("runbook: the journal's latest attempt already passed")
 
+	// ErrRollbackUnfinished is returned by [Run] when the journal's latest
+	// attempt is a [Rollback] that did not pass. Run Rollback again to finish
+	// it first.
+	ErrRollbackUnfinished = errors.New("runbook: the journal's rollback has not finished")
+
 	// ErrStopped is returned by [Run] when a [Stopper] or [RequestStop]
 	// stopped the run before its work was done. The run is unfinished, and a later Run
 	// resumes it.
