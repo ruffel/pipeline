@@ -262,6 +262,50 @@ func TestObserver_MultilineErrorsStayInTheTree(t *testing.T) {
 │     b`)
 }
 
+// TestObserver_CancelledStepsAreListedApart covers a cancel: the steps it
+// cut short didn't fail on their own.
+func TestObserver_CancelledStepsAreListedApart(t *testing.T) {
+	t.Parallel()
+
+	cancelled := &runbook.ErrorInfo{Kind: runbook.ErrorCancelled, Message: "context canceled"}
+
+	out := render(t,
+		runbook.Event{Kind: runbook.EventRunStarted, Path: "upgrade", Plan: upgrade()},
+		runbook.Event{
+			Kind: runbook.EventStepFinished, Path: "upgrade/backup", Outcome: runbook.OutcomeFailed,
+			Error: &runbook.ErrorInfo{Message: "disk full"},
+		},
+		runbook.Event{Kind: runbook.EventStepFinished, Path: "upgrade/apply", Outcome: runbook.OutcomeFailed, Error: cancelled},
+		runbook.Event{Kind: runbook.EventRunFinished, Path: "upgrade", Outcome: runbook.OutcomeCancelled},
+	)
+
+	assert.Contains(t, lines(out), `│ Failed:
+│   ✗ backup — disk full
+│
+│ Cancelled:
+│   ■ apply
+│
+│ Running it again`)
+}
+
+// TestObserver_AWaitingGateNamesItself covers a warning from a gate's
+// approver while the gate waits: the gate's line already names it.
+func TestObserver_AWaitingGateNamesItself(t *testing.T) {
+	t.Parallel()
+
+	out := render(t,
+		runbook.Event{Kind: runbook.EventRunStarted, Path: "upgrade", Plan: upgrade()},
+		runbook.Event{Kind: runbook.EventStepStarted, Path: "upgrade/approve"},
+		runbook.Event{Kind: runbook.EventGateWaiting, Path: "upgrade/approve", Prompt: "Go?"},
+		runbook.Event{Kind: runbook.EventMessage, Path: "upgrade/approve", Level: runbook.LevelWarn, Message: "approver withdrew"},
+		runbook.Event{Kind: runbook.EventRunFinished, Path: "upgrade", Outcome: runbook.OutcomeStopped},
+	)
+
+	assert.Equal(t, `⏸ approve — Go?
+│ [WARN] approver withdrew
+`, between(t, out))
+}
+
 // TestObserver_RunLevelMessagesOpenNoStep covers AsyncObserver's warning
 // that it dropped events, which has no path.
 func TestObserver_RunLevelMessagesOpenNoStep(t *testing.T) {
