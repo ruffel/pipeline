@@ -314,7 +314,7 @@ func TestStop_ANestedGroupCutShortDoesNotCancelParallelSiblings(t *testing.T) {
 	t.Parallel()
 
 	stopper := runbook.NewStopper()
-	release := make(chan struct{})
+	started, release := make(chan struct{}), make(chan struct{})
 
 	finishedG := runbook.ObserverFunc(func(_ context.Context, e runbook.Event) {
 		if e.Kind == runbook.EventGroupFinished && e.Path == "p/par/g" {
@@ -322,13 +322,23 @@ func TestStop_ANestedGroupCutShortDoesNotCancelParallelSiblings(t *testing.T) {
 		}
 	})
 
+	// The stop waits for the sibling to start: a stop made first would rightly
+	// keep the parent from starting it.
+	stopOnceStarted := runbook.StepFunc(func(context.Context, *runbook.StepContext) error {
+		<-started
+		stopper.Stop("alice")
+
+		return nil
+	})
+
 	out := runPlan(t, t.Context(), mustPlan(t,
 		runbook.Group("par",
 			runbook.Group("g",
-				runbook.Effect("a", stopsWith(stopper)),
+				runbook.Effect("a", stopOnceStarted),
 				runbook.Effect("b", ok()),
 			),
 			runbook.Effect("sibling", runbook.StepFunc(func(ctx context.Context, _ *runbook.StepContext) error {
+				close(started)
 				<-release
 
 				return ctx.Err()
