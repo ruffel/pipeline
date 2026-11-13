@@ -57,6 +57,9 @@ type Observer struct {
 	rollback bool
 	steps    map[string]*stepState
 	failures []string
+	// cancelled is the steps a cancel cut short, which didn't fail on
+	// their own.
+	cancelled []string
 }
 
 // stepState is what the observer keeps about a step while it runs.
@@ -132,6 +135,7 @@ func (o *Observer) OnEvent(_ context.Context, e runbook.Event) {
 	case runbook.EventStopRequested:
 		o.stopRequested(e)
 	case runbook.EventGateWaiting:
+		o.step(e.Path).opened = true
 		o.line(e.Path, o.color("⏸ "+o.layout.name(e.Path), o.p.Warning)+dash(e.Prompt)+o.muted(deadline(e.Deadline)))
 	case runbook.EventGateReleased:
 		o.line(e.Path, o.color("▶", o.p.Primary)+" "+o.layout.name(e.Path)+" "+o.muted(released(e)))
@@ -146,6 +150,7 @@ func (o *Observer) runStarted(e runbook.Event) {
 	o.rollback = e.Rollback
 	o.steps = map[string]*stepState{}
 	o.failures = nil
+	o.cancelled = nil
 
 	lines := []string{o.r.NewStyle().Bold(true).Render("Runbook: " + e.Path)}
 
@@ -190,16 +195,10 @@ func (o *Observer) runFinished(e runbook.Event) {
 		Render(what + " " + string(e.Outcome))
 	lines := []string{title, ""}
 
-	if len(o.failures) > 0 {
-		lines = append(lines, "Failed:")
+	lines = append(lines, o.list("Failed:", o.failures, o.p.ErrorIcon, o.p.Error)...)
+	lines = append(lines, o.list("Cancelled:", o.cancelled, "■", o.p.Warning)...)
 
-		for _, f := range o.failures {
-			f = strings.ReplaceAll(f, "\n", "\n    ")
-			lines = append(lines, o.color("  "+o.p.ErrorIcon+" "+f, o.p.Error))
-		}
-
-		lines = append(lines, "")
-	} else if e.Error != nil {
+	if len(o.failures)+len(o.cancelled) == 0 && e.Error != nil {
 		lines = append(lines, o.color(e.Error.Message, o.p.Error), "")
 	}
 
@@ -210,6 +209,22 @@ func (o *Observer) runFinished(e runbook.Event) {
 	lines = append(lines, fmt.Sprintf("Total time: %s", time.Duration(e.DurationMs)*time.Millisecond))
 
 	o.box(lipgloss.Left, lines)
+}
+
+// list is a heading and its entries for the closing box, or nothing if
+// there are none. An entry's lines after the first are indented under it.
+func (o *Observer) list(heading string, entries []string, icon string, c lipgloss.TerminalColor) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	out := []string{heading}
+
+	for _, e := range entries {
+		out = append(out, o.color("  "+icon+" "+strings.ReplaceAll(e, "\n", "\n    "), c))
+	}
+
+	return append(out, "")
 }
 
 // finished writes a step's or group's outcome.
@@ -223,7 +238,20 @@ func (o *Observer) finished(e runbook.Event) {
 
 	o.line(e.Path, text+o.elapsed(e.DurationMs))
 
-	if e.Kind == runbook.EventStepFinished && e.Outcome == runbook.OutcomeFailed {
+	if e.Kind != runbook.EventStepFinished || e.Outcome != runbook.OutcomeFailed {
+		return
+	}
+
+	if e.Error != nil && e.Error.Kind == runbook.ErrorCancelled {
+		// A cancel alone says nothing; one that ended a retry's backoff
+		// keeps the try's error, which does.
+		entry := o.layout.below(e.Path)
+		if e.Error.Message != context.Canceled.Error() {
+			entry += message(e.Error)
+		}
+
+		o.cancelled = append(o.cancelled, entry)
+	} else {
 		o.failures = append(o.failures, o.layout.below(e.Path)+message(e.Error))
 	}
 }

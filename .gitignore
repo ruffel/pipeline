@@ -21,3 +21,7 @@ examples/deploy/deploy
 examples/runbook/runbook
 examples/runbook/runbook.jsonl
 examples/runbook/.runbook-state/
+examples/detached/detached
+examples/detached/upgrade.jsonl
+examples/detached/upgrade.jsonl.control/
+examples/detached/.detached-state/
