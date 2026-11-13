@@ -203,6 +203,79 @@ func TestObserver_NestedParallelGroupsNameInFull(t *testing.T) {
 `, between(t, out))
 }
 
+func TestObserver_UndoCountsItsItems(t *testing.T) {
+	t.Parallel()
+
+	out := render(t,
+		runbook.Event{Kind: runbook.EventRunStarted, Path: "upgrade", Plan: upgrade(), Rollback: true},
+		runbook.Event{Kind: runbook.EventUndoStarted, Path: "upgrade/backup"},
+		runbook.Event{Kind: runbook.EventItem, Path: "upgrade/backup", Item: "node1", Status: runbook.ItemPassed},
+		runbook.Event{Kind: runbook.EventUndoFinished, Path: "upgrade/backup", Outcome: runbook.OutcomeUndone},
+		runbook.Event{Kind: runbook.EventRunFinished, Path: "upgrade", Outcome: runbook.OutcomePassed},
+	)
+
+	assert.Equal(t, `· backup
+│ ✓ node1
+↶ backup undone · 1 passed
+`, between(t, out))
+}
+
+func TestObserver_EveryLineOfAMultilineDetailIsPrefixed(t *testing.T) {
+	t.Parallel()
+
+	out := render(t,
+		runbook.Event{Kind: runbook.EventRunStarted, Path: "upgrade", Plan: rolling()},
+		runbook.Event{Kind: runbook.EventMessage, Path: "upgrade/nodes/node10", Level: runbook.LevelInfo, Message: "checking\ncomplete"},
+		runbook.Event{Kind: runbook.EventItem, Path: "upgrade/nodes/node10", Item: "disk0", Status: runbook.ItemFailed, Message: "a\nb"},
+		runbook.Event{Kind: runbook.EventRunFinished, Path: "upgrade", Outcome: runbook.OutcomePassed},
+	)
+
+	assert.Equal(t, `│ │ [node10        ] │ [INFO] checking
+│ │ [node10        ] │ complete
+│ │ [node10        ] │ ✗ disk0 — a
+│ │ [node10        ] │ b
+`, between(t, out))
+}
+
+func TestObserver_MultilineErrorsStayInTheTree(t *testing.T) {
+	t.Parallel()
+
+	out := render(t,
+		runbook.Event{Kind: runbook.EventRunStarted, Path: "upgrade", Plan: upgrade()},
+		runbook.Event{
+			Kind: runbook.EventGroupFinished, Path: "upgrade/prechecks", Outcome: runbook.OutcomeFailed,
+			Error: &runbook.ErrorInfo{Message: "ring: down\ndisks: full"},
+		},
+		runbook.Event{
+			Kind: runbook.EventStepFinished, Path: "upgrade/prechecks/ring", Outcome: runbook.OutcomeFailed,
+			Error: &runbook.ErrorInfo{Message: "a\nb"},
+		},
+		runbook.Event{Kind: runbook.EventRunFinished, Path: "upgrade", Outcome: runbook.OutcomeFailed},
+	)
+
+	assert.Equal(t, `✗ prechecks — ring: down
+  disks: full
+│ ✗ ring — a
+│   b
+`, between(t, out))
+	assert.Contains(t, lines(out), `│   ✗ prechecks/ring — a
+│     b`)
+}
+
+// TestObserver_RunLevelMessagesOpenNoStep covers AsyncObserver's warning
+// that it dropped events, which has no path.
+func TestObserver_RunLevelMessagesOpenNoStep(t *testing.T) {
+	t.Parallel()
+
+	out := render(t,
+		runbook.Event{Kind: runbook.EventRunStarted, Path: "upgrade", Plan: upgrade()},
+		runbook.Event{Kind: runbook.EventMessage, Level: runbook.LevelWarn, Message: "observer fell behind"},
+		runbook.Event{Kind: runbook.EventRunFinished, Path: "upgrade", Outcome: runbook.OutcomePassed},
+	)
+
+	assert.Equal(t, "[WARN] observer fell behind\n", between(t, out))
+}
+
 // between returns what a run wrote between its two boxes.
 func between(t *testing.T, out string) string {
 	t.Helper()

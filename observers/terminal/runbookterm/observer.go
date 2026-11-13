@@ -192,7 +192,9 @@ func (o *Observer) runFinished(e runbook.Event) {
 
 	if len(o.failures) > 0 {
 		lines = append(lines, "Failed:")
+
 		for _, f := range o.failures {
+			f = strings.ReplaceAll(f, "\n", "\n    ")
 			lines = append(lines, o.color("  "+o.p.ErrorIcon+" "+f, o.p.Error))
 		}
 
@@ -228,7 +230,12 @@ func (o *Observer) finished(e runbook.Event) {
 
 // undoFinished writes what a rollback did with a step.
 func (o *Observer) undoFinished(e runbook.Event) {
-	delete(o.steps, e.Path)
+	var items string
+
+	if st := o.steps[e.Path]; st != nil {
+		items = o.muted(counts(st.items))
+		delete(o.steps, e.Path)
+	}
 
 	var done string
 
@@ -244,7 +251,7 @@ func (o *Observer) undoFinished(e runbook.Event) {
 	}
 
 	o.line(e.Path, o.mark(e.Outcome)+" "+o.layout.name(e.Path)+" "+done+dash(string(e.Reason))+
-		o.errorText(e.Error)+o.elapsed(e.DurationMs))
+		o.errorText(e.Error)+items+o.elapsed(e.DurationMs))
 }
 
 // item writes a step's result for one target as a row under the step.
@@ -322,31 +329,27 @@ func (o *Observer) detailText(e runbook.Event) string {
 	}
 }
 
-// detail writes a line under the element at path. In a sequential group the
-// element's own line comes first, written now if it hasn't been; in a
-// parallel group the line is prefixed with the element's name.
+// detail writes text under the element at path, one line per line of text.
+// In a sequential group the element's own line comes first, written now if
+// it hasn't been; in a parallel group every line is prefixed with the
+// element's name. Text with no path, or the root's, belongs to the run.
 func (o *Observer) detail(path, text string, stderr bool) {
-	guides := o.guides(o.layout.indent(path) + 1)
+	prefix := o.guides(o.layout.indent(path) + 1)
 
-	width, parallel := o.layout.parallel(path)
-	if !parallel {
-		if path != o.layout.root && !o.step(path).opened {
-			o.open(path)
+	if width, parallel := o.layout.parallel(path); parallel {
+		pipe := o.muted("│")
+		if stderr {
+			pipe = o.color("┃", o.p.Error)
 		}
 
-		o.println(guides + text)
-
-		return
+		prefix += o.muted(fmt.Sprintf("[%-*s]", width, o.layout.name(path))) + " " + pipe + " "
+	} else if path != "" && path != o.layout.root && !o.step(path).opened {
+		o.open(path)
 	}
 
-	pipe := o.muted("│")
-	if stderr {
-		pipe = o.color("┃", o.p.Error)
+	for l := range strings.SplitSeq(text, "\n") {
+		o.println(prefix + l)
 	}
-
-	prefix := o.muted(fmt.Sprintf("[%-*s]", width, o.layout.name(path)))
-
-	o.println(guides + prefix + " " + pipe + " " + text)
 }
 
 // open writes the line that names a step before anything under it.
@@ -366,9 +369,20 @@ func (o *Observer) step(path string) *stepState {
 	return st
 }
 
-// line writes a line for the element at path, under its parent.
+// line writes a line for the element at path, under its parent. Lines after
+// the first, such as those of a joined error, hang below it in the tree.
+// They need no name: one event's lines are written together.
 func (o *Observer) line(path, text string) {
-	o.println(o.guides(o.layout.indent(path)) + text)
+	guides := o.guides(o.layout.indent(path))
+
+	first, rest, more := strings.Cut(text, "\n")
+	o.println(guides + first)
+
+	if more {
+		for l := range strings.SplitSeq(rest, "\n") {
+			o.println(guides + "  " + l)
+		}
+	}
 }
 
 // guides draws the tree's lines for n levels.
@@ -398,8 +412,17 @@ func (o *Observer) println(s string) {
 	_, _ = fmt.Fprintln(o.w, s)
 }
 
+// color colors each line of s on its own, so the lines can be written with
+// a prefix each, and lipgloss doesn't pad them to one width.
 func (o *Observer) color(s string, c lipgloss.TerminalColor) string {
-	return o.r.NewStyle().Foreground(c).Render(s)
+	style := o.r.NewStyle().Foreground(c)
+
+	ls := strings.Split(s, "\n")
+	for i, l := range ls {
+		ls[i] = style.Render(l)
+	}
+
+	return strings.Join(ls, "\n")
 }
 
 func (o *Observer) muted(s string) string {
