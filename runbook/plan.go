@@ -49,7 +49,8 @@ type node struct {
 }
 
 // NewPlan validates elems and returns them as a plan named name. The plan is
-// the root of the tree: a sequential group whose path is its name.
+// the root of the tree: a sequential group whose path is its name. It is
+// [NewPlanFromGroup] of [Group](name, elems...).
 //
 // It reports every problem it finds, each prefixed with the path of the
 // element at fault: an invalid or duplicate name, a nil step, a negative
@@ -58,14 +59,24 @@ type node struct {
 // or a group's failure handler that is not an Effect step, is named like one
 // of the group's children, or is one of two. Empty groups are allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
+	return NewPlanFromGroup(Group(name, elems...))
+}
+
+// NewPlanFromGroup validates root and returns it as a plan. The plan is the
+// group, with all its settings: its name is the plan's name, and its labels,
+// description, parallelism, failure policy and failure handler apply to the
+// whole run. A failure handler on the root runs when the run fails, and a
+// recovery handler there resets the whole run. It reports problems as
+// [NewPlan] does.
+func NewPlanFromGroup(root GroupNode) (*Plan, error) {
 	b := &builder{}
-	root := b.group(nil, Group(name, elems...))
+	n := b.group(nil, root)
 
 	if err := errors.Join(b.errs...); err != nil {
 		return nil, err
 	}
 
-	return &Plan{root: root}, nil
+	return &Plan{root: n}, nil
 }
 
 // Name returns the plan's name, which is also the first segment of every path.

@@ -438,3 +438,104 @@ func TestPlainObserver_AGroupReset(t *testing.T) {
 	assert.Contains(t, b.String(), "  ↺ node reset: a resume runs it again from the start\n")
 	assert.Contains(t, b.String(), "    ✓ recover")
 }
+
+// A plan's root can have a failure handler: cleanup when the run fails, or
+// a recovery that resets the whole run.
+func TestNewPlanFromGroup_ARootHandler(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cleanup", func(t *testing.T) {
+		t.Parallel()
+
+		var c calls
+
+		plan, err := runbook.NewPlanFromGroup(runbook.Group("upgrade",
+			runbook.Effect("a", counted(&c, "a", nil)),
+			runbook.Effect("b", fail("boom")),
+		).OnFailure(runbook.Effect("repair-on", counted(&c, "repair-on", nil))))
+		require.NoError(t, err)
+
+		out := runPlan(t, t.Context(), plan)
+
+		require.ErrorContains(t, out.err, "upgrade/b: boom")
+		assert.Equal(t, runbook.OutcomeFailed, out.res.Outcome)
+		assert.Equal(t, []string{
+			"step.finished upgrade/b failed",
+			"step.started upgrade/repair-on",
+			"step.running upgrade/repair-on",
+			"step.finished upgrade/repair-on passed",
+		}, trace(out.events)[5:])
+		assert.Equal(t, 1, c.get("repair-on"))
+		assert.True(t, out.state.Element("upgrade/a").Done, "cleanup leaves the record alone")
+	})
+
+	t.Run("recovery", func(t *testing.T) {
+		t.Parallel()
+
+		var c calls
+
+		failing := true
+		plan, err := runbook.NewPlanFromGroup(runbook.Group("upgrade",
+			runbook.Effect("a", counted(&c, "a", nil)),
+			runbook.Effect("b", counted(&c, "b", &failing)),
+		).RecoverOnFailure(runbook.Effect("restore", counted(&c, "restore", nil))))
+		require.NoError(t, err)
+
+		j := runbook.MemoryJournal()
+
+		first := resumeOn(t, j, plan)
+		require.Error(t, first.err)
+		assert.Contains(t, trace(first.events), "group.reset upgrade")
+		assert.False(t, state(t, j).Element("upgrade/a").Done)
+
+		failing = false
+		second := resumeOn(t, j, plan)
+
+		require.NoError(t, second.err)
+		assert.Equal(t, 2, c.get("a"), "the whole run is redone")
+		assert.Equal(t, 1, c.get("restore"))
+	})
+
+	t.Run("passing run", func(t *testing.T) {
+		t.Parallel()
+
+		var c calls
+
+		plan, err := runbook.NewPlanFromGroup(runbook.Group("upgrade", runbook.Effect("a", ok())).
+			OnFailure(runbook.Effect("cleanup", counted(&c, "cleanup", nil))))
+		require.NoError(t, err)
+
+		require.NoError(t, runPlan(t, t.Context(), plan).err)
+		assert.Zero(t, c.get("cleanup"))
+	})
+}
+
+// The root group's other settings apply to the whole run.
+func TestNewPlanFromGroup_RootSettings(t *testing.T) {
+	t.Parallel()
+
+	labels := make(chan runbook.L, 2)
+	step := runbook.StepFunc(func(_ context.Context, sc *runbook.StepContext) error {
+		labels <- sc.Labels()
+
+		return nil
+	})
+
+	plan, err := runbook.NewPlanFromGroup(runbook.Group("upgrade",
+		runbook.Effect("a", step),
+		runbook.Effect("b", step),
+	).Parallel(2).ContinueOnError().Labels(runbook.L{"cluster": "c1"}).Description("Upgrade the cluster"))
+	require.NoError(t, err)
+
+	assert.Equal(t, `upgrade (parallel, limit 2, continue on error) — Upgrade the cluster
+├── a (effect)
+└── b (effect)
+`, runbook.Describe(plan))
+
+	require.NoError(t, runPlan(t, t.Context(), plan).err)
+	assert.Equal(t, runbook.L{"cluster": "c1"}, <-labels)
+
+	_, err = runbook.NewPlanFromGroup(runbook.Group("bad name", runbook.Effect("a", nil)))
+	require.ErrorContains(t, err, "bad name:")
+	require.ErrorContains(t, err, "bad name/a: step is nil")
+}

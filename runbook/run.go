@@ -271,6 +271,9 @@ func (r *runner) work(ctx context.Context) error {
 	}
 
 	err := r.children(ctx, r.plan.root)
+	if err != nil && !onlyStopped(err) {
+		err = errors.Join(err, r.handle(ctx, r.plan.root))
+	}
 
 	close(done)
 	watcher.Wait()
