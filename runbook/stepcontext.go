@@ -51,6 +51,10 @@ type StepContext struct {
 	stdout, stderr *linesplit.Writer
 	outBytes       int
 	dropped        int
+	// cut holds the streams whose current line lost a piece to the budget:
+	// the rest of that line is dropped too, so no continuation is recorded
+	// without the piece before it.
+	cut map[string]bool
 
 	// closing stops new writes once the step has returned; writes counts
 	// those already admitted, which close waits for before flushing.
@@ -319,12 +323,21 @@ func (s *StepContext) recordOutput(stream string, l linesplit.Line) {
 	// of blank lines is bounded too.
 	cost := len(l.Text) + 1
 
-	if s.outBytes+cost > s.r.budget {
+	if !l.Continued {
+		delete(s.cut, stream)
+	}
+
+	if s.cut[stream] || s.outBytes+cost > s.r.budget {
 		if s.dropped == 0 {
 			_ = s.emitLocked(Event{Kind: EventMessage, Level: LevelWarn, Message: fmt.Sprintf(
 				"output past %d bytes is dropped", s.r.budget)})
 		}
 
+		if s.cut == nil {
+			s.cut = map[string]bool{}
+		}
+
+		s.cut[stream] = true
 		s.dropped++
 
 		return
