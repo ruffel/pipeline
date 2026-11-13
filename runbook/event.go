@@ -21,6 +21,10 @@ const (
 
 	EventGroupStarted  EventKind = "group.started"
 	EventGroupFinished EventKind = "group.finished"
+	// EventGroupReset records a group's recovery handler starting: everything
+	// in the group goes back to never started. See
+	// [GroupNode.RecoverOnFailure].
+	EventGroupReset EventKind = "group.reset"
 
 	EventStepStarted EventKind = "step.started"
 	// EventStepRunning records that Check found the work not done and Run is
@@ -55,7 +59,7 @@ const (
 // moves on.
 func (k EventKind) Durable() bool {
 	switch k {
-	case EventRunStarted, EventRunFinished, EventGroupStarted, EventGroupFinished,
+	case EventRunStarted, EventRunFinished, EventGroupStarted, EventGroupFinished, EventGroupReset,
 		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem, EventStopRequested,
 		EventGateWaiting, EventGateReleased:
 		return true

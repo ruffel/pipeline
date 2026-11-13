@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 )
 
@@ -243,6 +244,8 @@ func (s *State) apply(e Event) {
 		s.elements[e.Path] = el
 	case EventGroupFinished, EventStepFinished:
 		s.finish(e)
+	case EventGroupReset:
+		s.reset(e.Path)
 	case EventValue:
 		if s.values[e.Path] == nil {
 			s.values[e.Path] = map[string]json.RawMessage{}
@@ -305,6 +308,18 @@ func (s *State) startOver() {
 	}
 
 	clear(s.items)
+}
+
+// reset applies a group's reset: everything beneath it goes back to never
+// started, as if no attempt had touched it. Unlike a forced attempt, it also
+// forgets that Runs were called and the values they recorded, so a later
+// rollback leaves the group to its recovery handler.
+func (s *State) reset(path string) {
+	beneath := func(p string) bool { return strings.HasPrefix(p, path+"/") }
+
+	maps.DeleteFunc(s.elements, func(p string, _ ElementState) bool { return beneath(p) })
+	maps.DeleteFunc(s.values, func(p string, _ map[string]json.RawMessage) bool { return beneath(p) })
+	maps.DeleteFunc(s.items, func(p string, _ map[string]ItemState) bool { return beneath(p) })
 }
 
 func (s *State) finish(e Event) {

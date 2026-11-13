@@ -2,6 +2,7 @@ package runbook
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -23,22 +24,36 @@ func Describe(p *Plan) string {
 }
 
 func describeChildren(b *strings.Builder, n *node, indent string) {
-	for i, c := range n.children {
+	children := n.children
+	if n.handler != nil {
+		children = append(slices.Clone(children), n.handler)
+	}
+
+	for i, c := range children {
 		branch, next := "├── ", "│   "
-		if i == len(n.children)-1 {
+		if i == len(children)-1 {
 			branch, next = "└── ", "    "
 		}
 
-		b.WriteString(indent + branch + describeLine(c))
+		var extra []string
+
+		switch {
+		case c == n.handler && n.recovers:
+			extra = []string{"recovers the group on failure"}
+		case c == n.handler:
+			extra = []string{"cleans up on failure"}
+		}
+
+		b.WriteString(indent + branch + describeLine(c, extra...))
 		b.WriteByte('\n')
 		describeChildren(b, c, indent+next)
 	}
 }
 
-func describeLine(n *node) string {
+func describeLine(n *node, extra ...string) string {
 	line := n.name
 
-	if notes := describeNotes(n); len(notes) > 0 {
+	if notes := append(describeNotes(n), extra...); len(notes) > 0 {
 		line += " (" + strings.Join(notes, ", ") + ")"
 	}
 

@@ -92,6 +92,8 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 		o.printf("%s %s %s%s%s\n", mark(e.Outcome), e.Path, e.Outcome, errorText(e.Error), elapsed(e.DurationMs))
 	case EventGroupStarted:
 		o.printf("%s▶ %s%s\n", indent, name(e.Path), o.description(e.Path))
+	case EventGroupReset:
+		o.printf("%s↺ %s reset: a resume runs it again from the start\n", indent, name(e.Path))
 	case EventStepStarted:
 		if d := o.description(e.Path); d != "" {
 			o.printf("%s· %s%s\n", indent, name(e.Path), d)
@@ -194,6 +196,10 @@ func (o *PlainObserver) capture(spec *NodeSpec) {
 
 		for _, c := range n.Children {
 			walk(c)
+		}
+
+		if n.OnFailure != nil {
+			walk(*n.OnFailure)
 		}
 	}
 

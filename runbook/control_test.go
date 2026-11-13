@@ -38,7 +38,38 @@ type liveResult struct {
 func startRun(t *testing.T, plan *runbook.Plan, opts ...runbook.Option) *liveRun {
 	t.Helper()
 
+	return startRunAt(t, journalPath(t), plan, opts...)
+}
+
+// startUnreadRun starts a run that reads its control directory once, as it
+// starts, and then not for an hour, and returns once that first read is
+// done: a request made after it returns is not read.
+//
+// A request for another run, left before the run starts, is deleted unread
+// by that first read, so once it is gone the read is done.
+func startUnreadRun(t *testing.T, plan *runbook.Plan, opts ...runbook.Option) *liveRun {
+	t.Helper()
+
 	path := journalPath(t)
+	other := filepath.Join(path+".control", "stop.another-run")
+
+	require.NoError(t, os.Mkdir(path+".control", 0o700))
+	require.NoError(t, os.WriteFile(other, []byte(`{}`), 0o600))
+
+	lr := startRunAt(t, path, plan, append([]runbook.Option{runbook.WithControlPoll(time.Hour)}, opts...)...)
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(other)
+
+		return errors.Is(err, os.ErrNotExist)
+	}, 10*time.Second, time.Millisecond, "the run's first read of its control directory")
+
+	return lr
+}
+
+// startRunAt is startRun on the journal at path.
+func startRunAt(t *testing.T, path string, plan *runbook.Plan, opts ...runbook.Option) *liveRun {
+	t.Helper()
 
 	j, err := runbook.OpenJournal(path)
 	require.NoError(t, err)
@@ -257,8 +288,7 @@ func TestRequestStop_WaitsUntilTheContextIsDone(t *testing.T) {
 	t.Parallel()
 
 	running, release := make(chan struct{}), make(chan struct{})
-	lr := startRun(t, mustPlan(t, runbook.Effect("a", blocking(running, release))),
-		runbook.WithControlPoll(time.Hour))
+	lr := startUnreadRun(t, mustPlan(t, runbook.Effect("a", blocking(running, release))))
 
 	<-running
 
@@ -449,8 +479,7 @@ func TestApprove_AGateAStopInterrupted(t *testing.T) {
 	t.Parallel()
 
 	stopper := runbook.NewStopper()
-	lr := startRun(t, mustPlan(t, runbook.Gate("go", runbook.GateOptions{})),
-		runbook.WithControlPoll(time.Hour), runbook.WithStopper(stopper))
+	lr := startUnreadRun(t, mustPlan(t, runbook.Gate("go", runbook.GateOptions{})), runbook.WithStopper(stopper))
 
 	waitFor(t, lr.rec, runbook.EventGateWaiting)
 
