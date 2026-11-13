@@ -148,12 +148,6 @@ func (s *stopSignal) fire(req StopRequest) {
 func (r *runner) stopping() bool {
 	if r.stopper != nil {
 		select {
-		case <-r.stopper.cancelled:
-			r.cancelRequested(r.stopperCancel())
-		default:
-		}
-
-		select {
 		case <-r.stopper.Done():
 			r.stop.fire(r.stopperRequest())
 		default:
@@ -168,6 +162,21 @@ func (r *runner) stopping() bool {
 	default:
 		return false
 	}
+}
+
+// cancelled reports whether ctx is done. It first acts on a Stopper's
+// cancel the watcher hasn't acted on yet, so a cancel asked at the same time
+// as a stop always outranks it: check this before [runner.stopping].
+func (r *runner) cancelled(ctx context.Context) bool {
+	if r.stopper != nil {
+		select {
+		case <-r.stopper.cancelled:
+			r.cancelRequested(r.stopperCancel())
+		default:
+		}
+	}
+
+	return ctx.Err() != nil
 }
 
 // stopDone is closed when the run is asked to stop gracefully. A Stopper's

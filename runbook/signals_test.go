@@ -119,23 +119,32 @@ func helper(t *testing.T, mode string) *exec.Cmd {
 // After the cancel, the next stop signal has its default effect, which for
 // SIGTERM ends the process. (Go ignores SIGUSR1 by default, so the helper
 // process, alone, uses SIGTERM.)
+//
+// A stop signal also listed to detach is a stop signal only, so it too
+// ends the process the third time.
 func TestHandleSignals_AThirdSignalEndsTheProcess(t *testing.T) {
 	t.Parallel()
 
-	var stderr bytes.Buffer
+	for _, mode := range []string{"third", "third-also-detach"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 
-	cmd := helper(t, "third")
-	cmd.Stderr = &stderr
+			var stderr bytes.Buffer
 
-	err := cmd.Run()
+			cmd := helper(t, mode)
+			cmd.Stderr = &stderr
 
-	var exit *exec.ExitError
-	require.ErrorAs(t, err, &exit, stderr.String())
+			err := cmd.Run()
 
-	status, ok := exit.Sys().(syscall.WaitStatus)
-	require.True(t, ok)
-	require.True(t, status.Signaled(), "exited %d: %s", status.ExitStatus(), stderr.String())
-	assert.Equal(t, syscall.SIGTERM, status.Signal())
+			var exit *exec.ExitError
+			require.ErrorAs(t, err, &exit, stderr.String())
+
+			status, ok := exit.Sys().(syscall.WaitStatus)
+			require.True(t, ok)
+			require.True(t, status.Signaled(), "exited %d: %s", status.ExitStatus(), stderr.String())
+			assert.Equal(t, syscall.SIGTERM, status.Signal())
+		})
+	}
 }
 
 // A write to a standard output nobody reads fails, instead of ending the
@@ -165,13 +174,18 @@ func TestHandleSignals_HelperProcess(t *testing.T) {
 	switch mode {
 	case "":
 		t.Skip("run by other tests")
-	case "third":
+	case "third", "third-also-detach":
 		stopper := runbook.NewStopper()
 		seen := make(chan os.Signal, 3)
 
-		runbook.HandleSignals(stopper, runbook.SignalOptions{
+		opts := runbook.SignalOptions{
 			Stop: []os.Signal{syscall.SIGTERM}, OnSignal: func(sig os.Signal) { seen <- sig },
-		})
+		}
+		if mode == "third-also-detach" {
+			opts.Detach = []os.Signal{syscall.SIGTERM, syscall.SIGHUP}
+		}
+
+		runbook.HandleSignals(stopper, opts)
 
 		raise(t, syscall.SIGTERM)
 		<-seen

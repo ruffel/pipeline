@@ -3,6 +3,7 @@ package runbook
 import (
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
 	"syscall"
 )
@@ -13,7 +14,8 @@ type SignalOptions struct {
 	// SIGTERM; an empty, non-nil slice means none.
 	Stop []os.Signal
 	// Detach are the signals that say the terminal has gone, such as
-	// SIGHUP. Nil means SIGHUP; an empty, non-nil slice means none.
+	// SIGHUP. Nil means SIGHUP; an empty, non-nil slice means none. A
+	// signal in Stop as well is a stop signal only.
 	Detach []os.Signal
 	// OnSignal, if set, is told of each stop and detach signal as it is
 	// handled, such as to print that the run is stopping. It is called from
@@ -43,17 +45,8 @@ type SignalOptions struct {
 // unless something else in the program handles them. It waits for a call to
 // OnSignal in progress, and is safe to call more than once.
 func HandleSignals(s *Stopper, opts SignalOptions) func() {
-	stopSigs, detachSigs := opts.Stop, opts.Detach
-
-	if stopSigs == nil {
-		stopSigs = []os.Signal{os.Interrupt, syscall.SIGTERM}
-	}
-
-	if detachSigs == nil {
-		detachSigs = []os.Signal{syscall.SIGHUP}
-	}
-
-	stops, detaches, pipes := notify(stopSigs), notify(detachSigs), notify([]os.Signal{syscall.SIGPIPE})
+	stopSigs, detachSigs, pipeSigs := signalSets(opts)
+	stops, detaches, pipes := notify(stopSigs), notify(detachSigs), notify(pipeSigs)
 	quit := make(chan struct{})
 
 	var wg sync.WaitGroup
@@ -70,6 +63,34 @@ func HandleSignals(s *Stopper, opts SignalOptions) func() {
 		close(quit)
 		wg.Wait()
 	})
+}
+
+// signalSets returns the signals to handle as stop signals, as detach
+// signals, and only to ignore. Each signal is in one set: a stop signal
+// listed to detach too is a stop signal only, so that once stop signals are
+// let go, a third has its default effect. SIGPIPE is ignored unless it is
+// listed already.
+func signalSets(opts SignalOptions) ([]os.Signal, []os.Signal, []os.Signal) {
+	stopSigs, detachSigs := opts.Stop, opts.Detach
+
+	if stopSigs == nil {
+		stopSigs = []os.Signal{os.Interrupt, syscall.SIGTERM}
+	}
+
+	if detachSigs == nil {
+		detachSigs = []os.Signal{syscall.SIGHUP}
+	}
+
+	detachSigs = slices.DeleteFunc(slices.Clone(detachSigs), func(sig os.Signal) bool {
+		return slices.Contains(stopSigs, sig)
+	})
+
+	var pipeSigs []os.Signal
+	if !slices.Contains(stopSigs, os.Signal(syscall.SIGPIPE)) && !slices.Contains(detachSigs, os.Signal(syscall.SIGPIPE)) {
+		pipeSigs = []os.Signal{syscall.SIGPIPE}
+	}
+
+	return stopSigs, detachSigs, pipeSigs
 }
 
 // notify returns a channel the signals arrive on, or nil if there are none.

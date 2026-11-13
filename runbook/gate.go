@@ -190,7 +190,7 @@ func (r *runner) gate(ctx context.Context, n *node) error {
 // release.
 func (r *runner) prevailing(ctx context.Context, rel gateRelease) gateRelease {
 	switch {
-	case ctx.Err() != nil:
+	case r.cancelled(ctx):
 		return gateRelease{end: gateCancelled}
 	case rel.end != gateStopped && r.stopping():
 		return gateRelease{end: gateStopped}
