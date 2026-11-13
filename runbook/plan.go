@@ -43,6 +43,8 @@ type node struct {
 	tries    int
 	backoff  time.Duration
 	timeout  time.Duration
+	// irreversible marks a point of no return.
+	irreversible bool
 
 	// Gate fields.
 	gate *gateSettings
@@ -56,7 +58,8 @@ type node struct {
 // element at fault: an invalid or duplicate name, a nil step, a negative
 // limit, retry count or timeout, an Observe step that has Check or Undo, a
 // gate with a nil approver or a timeout and policy that don't go together,
-// or a group's failure handler that is not an Effect step, is named like one
+// an Irreversible step that is not an Effect step or has an Undo, or a
+// group's failure handler that is not an Effect step, is named like one
 // of the group's children, or is one of two. Empty groups are allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
 	return NewPlanFromGroup(Group(name, elems...))
@@ -91,12 +94,17 @@ func (p *Plan) Name() string {
 // A failure handler is listed after its group's children, marked with its
 // role, so moving a step between a group's children and its handler, or
 // changing a handler between cleanup and recovery, changes the fingerprint.
+// So does marking a step Irreversible, or unmarking it.
 func (p *Plan) Fingerprint() string {
 	h := sha256.New()
 
 	var write func(n *node, role string)
 
 	write = func(n *node, role string) {
+		if n.irreversible {
+			role += " irreversible"
+		}
+
 		_, _ = fmt.Fprintf(h, "%s %s%s\n", n.kind, n.path, role)
 
 		for _, c := range n.children {
@@ -148,6 +156,8 @@ type NodeSpec struct {
 	Tries   int           `json:"tries,omitempty"`
 	Backoff time.Duration `json:"backoff,omitempty"`
 	Timeout time.Duration `json:"timeout,omitempty"`
+	// Irreversible marks a point of no return; see [StepNode.Irreversible].
+	Irreversible bool `json:"irreversible,omitempty"`
 
 	// Gate fields. Timeout above is the gate's.
 	Prompt    string        `json:"prompt,omitempty"`
@@ -168,6 +178,8 @@ func (n *node) spec() NodeSpec {
 		Tries:       n.tries,
 		Backoff:     n.backoff,
 		Timeout:     n.timeout,
+
+		Irreversible: n.irreversible,
 	}
 
 	if n.gate != nil {
@@ -308,6 +320,7 @@ func (b *builder) step(parent *node, s StepNode) *node {
 	n.tries = s.tries
 	n.backoff = s.backoff
 	n.timeout = s.timeout
+	n.irreversible = s.irreversible
 
 	if isNil(s.step) {
 		b.failf(n.path, "step is nil")
@@ -320,6 +333,13 @@ func (b *builder) step(parent *node, s StepNode) *node {
 
 	if s.kind == KindObserve && (n.hasCheck || n.hasUndo) {
 		b.failf(n.path, "an observe step may not have Check or Undo")
+	}
+
+	switch {
+	case s.irreversible && s.kind != KindEffect:
+		b.failf(n.path, "only an effect step can be irreversible, not %s", s.kind)
+	case s.irreversible && n.hasUndo:
+		b.failf(n.path, "an irreversible step may not have Undo")
 	}
 
 	if s.tries < 1 {

@@ -95,6 +95,10 @@ func describeNotes(n *node) []string {
 			notes = append(notes, "undo")
 		}
 
+		if n.irreversible {
+			notes = append(notes, "irreversible")
+		}
+
 		if n.tries > 1 {
 			notes = append(notes, fmt.Sprintf("%d tries", n.tries))
 		}

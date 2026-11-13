@@ -164,14 +164,15 @@ func (GroupNode) element() {}
 // StepNode is a step in a plan, built with [Effect], [Ensure] or [Observe].
 // Its methods return a modified copy.
 type StepNode struct {
-	name        string
-	description string
-	kind        Kind
-	step        Step
-	labels      L
-	tries       int
-	backoff     time.Duration
-	timeout     time.Duration
+	name         string
+	description  string
+	kind         Kind
+	step         Step
+	labels       L
+	tries        int
+	backoff      time.Duration
+	timeout      time.Duration
+	irreversible bool
 }
 
 // Effect returns a step that changes the system once. On later attempts it is
@@ -209,6 +210,19 @@ func (s StepNode) Retry(n int, backoff time.Duration) StepNode {
 // Timeout bounds each try, and Undo, to d.
 func (s StepNode) Timeout(d time.Duration) StepNode {
 	s.timeout = d
+
+	return s
+}
+
+// Irreversible marks an Effect step as a point of no return: once its Run
+// has passed, or its Check has found its work done, [Rollback] refuses with
+// [ErrIrreversible]. An Irreversible step may not have an Undo.
+//
+// One whose Run was called and did not pass, interrupted or failed, is in
+// doubt: Rollback refuses with [ErrIrreversibleInDoubt] unless the step's
+// Check, or the caller with [AssumeNotCommitted], says it did not commit.
+func (s StepNode) Irreversible() StepNode {
+	s.irreversible = true
 
 	return s
 }

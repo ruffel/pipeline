@@ -21,9 +21,21 @@ var (
 	// attempt passed. [Force] runs the plan again regardless.
 	ErrAlreadyComplete = errors.New("runbook: the journal's latest attempt already passed")
 
+	// ErrIrreversible is returned by [Rollback] when an Irreversible step
+	// has passed: the run is past a point of no return. It names the steps.
+	ErrIrreversible = errors.New("runbook: the run is past a point of no return")
+
+	// ErrIrreversibleInDoubt is returned by [Rollback] when the Run of an
+	// Irreversible step was called and did not pass, and nothing says
+	// whether it committed: the step has no Check, and [AssumeNotCommitted]
+	// was not given for it. It names the steps.
+	ErrIrreversibleInDoubt = errors.New("runbook: a point of no return may have been passed")
+
 	// ErrRollbackUnfinished is returned by [Run] when the journal's latest
-	// attempt is a [Rollback] that did not pass. Run Rollback again to finish
-	// it first.
+	// attempt is a [Rollback] that started undoing and did not pass. Run
+	// Rollback again to finish it first. A rollback that was refused, or
+	// otherwise started no Undo, left everything as it was, and doesn't
+	// count.
 	ErrRollbackUnfinished = errors.New("runbook: the journal's rollback has not finished")
 
 	// ErrStopped is returned by [Run] when a [Stopper] or [RequestStop]
