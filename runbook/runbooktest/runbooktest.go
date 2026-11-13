@@ -1,6 +1,15 @@
-// Package runbooktest helps test plans and steps built with runbook: it
-// simulates a crash at any point of a run, controls the clock, and renders a
-// journal compactly for assertions.
+// Package runbooktest helps test plans and steps built with runbook: it runs
+// one step on its own, simulates a crash at any point of a run, controls the
+// clock, and renders a journal compactly for assertions.
+//
+// [RunStep] tests one step without its plan. It runs the step as a real run
+// would, Check before Run, and returns what the step recorded:
+//
+//	r := runbooktest.RunStep(t, restartStep,
+//		runbooktest.Under("upgrade/nodes/node1"),
+//		runbooktest.Given("upgrade/backup", "archive", "/var/backup.tar"))
+//	require.NoError(t, r.Err)
+//	assert.Equal(t, []string{"restarting services on node1"}, r.Messages())
 //
 // A crash is simulated by a journal that stops accepting writes right after
 // a chosen event is stored. The run then stops at its next write, exactly as
