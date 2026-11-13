@@ -79,7 +79,7 @@ func mustPlan(t *testing.T, elems ...runbook.Element) *runbook.Plan {
 // events and chatter unless asked.
 func trace(events []runbook.Event, kinds ...runbook.EventKind) []string {
 	want := map[runbook.EventKind]bool{
-		runbook.EventGroupStarted: true, runbook.EventGroupFinished: true,
+		runbook.EventGroupStarted: true, runbook.EventGroupFinished: true, runbook.EventGroupReset: true,
 		runbook.EventStepStarted: true, runbook.EventStepRunning: true, runbook.EventStepFinished: true,
 		runbook.EventGateWaiting: true, runbook.EventGateReleased: true,
 	}

@@ -31,6 +31,10 @@ type node struct {
 	limit    int
 	failure  FailurePolicy
 	children []*node
+	// handler is the group's failure handler, if any, and recovers whether
+	// it resets the group first.
+	handler  *node
+	recovers bool
 
 	// Step fields.
 	step     Step
@@ -49,9 +53,10 @@ type node struct {
 //
 // It reports every problem it finds, each prefixed with the path of the
 // element at fault: an invalid or duplicate name, a nil step, a negative
-// limit, retry count or timeout, an Observe step that has Check or Undo, or
-// a gate with a nil approver or a timeout and policy that don't go together.
-// Empty groups are allowed.
+// limit, retry count or timeout, an Observe step that has Check or Undo, a
+// gate with a nil approver or a timeout and policy that don't go together,
+// or a group's failure handler that is not an Effect step, is named like one
+// of the group's children, or is one of two. Empty groups are allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
 	b := &builder{}
 	root := b.group(nil, Group(name, elems...))
@@ -101,6 +106,10 @@ type NodeSpec struct {
 	Limit    int           `json:"limit,omitempty"`
 	Failure  FailurePolicy `json:"failure,omitempty"`
 	Children []NodeSpec    `json:"children,omitempty"`
+	// OnFailure is the group's failure handler, if any, and Recovers whether
+	// it resets the group first.
+	OnFailure *NodeSpec `json:"onFailure,omitempty"`
+	Recovers  bool      `json:"recovers,omitempty"`
 
 	// Step fields: whether the step implements [Checker] and [Undoer], and its
 	// settings. Durations are in nanoseconds, as encoding/json writes them.
@@ -141,6 +150,11 @@ func (n *node) spec() NodeSpec {
 		for _, c := range n.children {
 			s.Children = append(s.Children, c.spec())
 		}
+
+		if n.handler != nil {
+			h := n.handler.spec()
+			s.OnFailure, s.Recovers = &h, n.recovers
+		}
 	}
 
 	return s
@@ -157,12 +171,17 @@ func (n *node) canSettle() bool {
 	return slices.ContainsFunc(n.children, (*node).canSettle)
 }
 
-// walk calls fn on n and its descendants, depth first, in plan order.
+// walk calls fn on n and its descendants, depth first, in plan order, with
+// a group's failure handler after its children.
 func (n *node) walk(fn func(*node)) {
 	fn(n)
 
 	for _, c := range n.children {
 		c.walk(fn)
+	}
+
+	if n.handler != nil {
+		n.handler.walk(fn)
 	}
 }
 
@@ -236,7 +255,35 @@ func (b *builder) group(parent *node, g GroupNode) *node {
 		n.children = append(n.children, c)
 	}
 
+	b.handler(n, g, seen)
+
 	return n
+}
+
+// handler builds a group's failure handler, if it has one.
+func (b *builder) handler(n *node, g GroupNode, names map[string]bool) {
+	h, recovers := g.cleanup, false
+
+	switch {
+	case g.cleanup != nil && g.recovery != nil:
+		b.failf(n.path, "a group has one failure handler, OnFailure or RecoverOnFailure")
+
+		return
+	case g.recovery != nil:
+		h, recovers = g.recovery, true
+	case h == nil:
+		return
+	}
+
+	n.handler, n.recovers = b.step(n, *h), recovers
+
+	if h.kind != KindEffect {
+		b.failf(n.handler.path, "a failure handler must be an effect step, not %s", h.kind)
+	}
+
+	if names[h.name] {
+		b.failf(n.handler.path, "a failure handler may not share its name with one of the group's children")
+	}
 }
 
 func (b *builder) step(parent *node, s StepNode) *node {

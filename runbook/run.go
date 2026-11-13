@@ -301,7 +301,7 @@ func (r *runner) element(ctx context.Context, n *node) error {
 	case KindGate:
 		return r.gate(ctx, n)
 	default:
-		return r.step(ctx, n)
+		return r.step(ctx, n, false)
 	}
 }
 
@@ -336,6 +336,11 @@ func (r *runner) group(ctx context.Context, n *node) error {
 
 	err := r.children(ctx, n)
 
+	var herr error
+	if err != nil && !onlyStopped(err) {
+		herr = r.handle(ctx, n)
+	}
+
 	outcome := OutcomePassed
 
 	switch {
@@ -352,7 +357,48 @@ func (r *runner) group(ctx context.Context, n *node) error {
 		return ferr
 	}
 
-	return err
+	return errors.Join(err, herr)
+}
+
+// handle runs a failed group's failure handler, if it has one and nothing
+// keeps it from starting, and returns the handler's failure. A recovery
+// handler's reset is recorded as it starts. A stop or cancel requested before
+// it starts keeps it from running, as it keeps any step from starting.
+func (r *runner) handle(ctx context.Context, n *node) error {
+	if n.handler == nil {
+		return nil
+	}
+
+	if err := r.fatalErr(); err != nil {
+		return err
+	}
+
+	switch {
+	case r.cancelled(ctx):
+		r.markCut()
+
+		return nil
+	case r.stopping():
+		r.halt()
+
+		return nil
+	}
+
+	if n.recovers {
+		if eerr := r.emit(Event{Kind: EventGroupReset, Path: n.path}); eerr != nil {
+			return eerr
+		}
+	}
+
+	herr := r.step(ctx, n.handler, true)
+
+	// The group is finishing, so a signal to skip the rest of it means
+	// nothing. One to skip the rest of the run is already in effect.
+	if errors.Is(herr, ErrSkipGroup) || errors.Is(herr, ErrSkipRun) {
+		return nil
+	}
+
+	return herr
 }
 
 // children runs a group's children under its failure policy. Children not
@@ -568,9 +614,13 @@ func (g *parallelGroup) err() error {
 	return errors.Join(g.errs...)
 }
 
-// step runs a step's tries: Check, then Run if the work isn't done.
-func (r *runner) step(ctx context.Context, n *node) error {
+// step runs a step's tries: Check, then Run if the work isn't done. A fresh
+// step, a failure handler, runs whatever an earlier attempt did with it.
+func (r *runner) step(ctx context.Context, n *node, fresh bool) error {
 	prior := r.prior.Element(n.path)
+	if fresh {
+		prior = ElementState{Status: StatusNotReached}
+	}
 
 	// An Effect step an earlier attempt finished is trusted when it has no
 	// Check to verify it with, or the run was told to trust the journal.
