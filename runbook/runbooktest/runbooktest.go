@@ -14,12 +14,14 @@
 //
 // [CheckIdempotent] checks the contract every step must keep: a crash at any
 // point of its run, and a resume, still ends with the step passed. Give it a
-// function that builds the step on a fresh fake system, and check the
-// system's final state in a t.Cleanup:
+// function that makes a fresh fake system, which checks its final state in a
+// t.Cleanup, and one that builds the step on it:
 //
-//	runbooktest.CheckIdempotent(t, func(t *testing.T) runbook.StepNode {
+//	runbooktest.CheckIdempotent(t, func(t *testing.T) *fakeNode {
 //		sys := newFakeNode()
 //		t.Cleanup(func() { assert.True(t, sys.Upgraded()) })
+//		return sys
+//	}, func(sys *fakeNode) runbook.StepNode {
 //		return runbook.Effect("packages", installStep(sys))
 //	})
 //

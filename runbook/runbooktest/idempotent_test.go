@@ -20,6 +20,8 @@ type node struct {
 	created   bool
 }
 
+func newNode(*testing.T) *node { return &node{} }
+
 // install is idempotent: its Check finds the packages installed, and it
 // records before and after installing them.
 type install struct{ n *node }
@@ -33,6 +35,8 @@ func (s install) Run(_ context.Context, sc *runbook.StepContext) error {
 		return err
 	}
 
+	sc.Info("installing")
+
 	s.n.installed = true
 
 	if err := sc.Item("node1", runbook.ItemPassed, "installed"); err != nil {
@@ -45,32 +49,41 @@ func (s install) Run(_ context.Context, sc *runbook.StepContext) error {
 func TestCheckIdempotent_AStepThatSurvivesEveryCrash(t *testing.T) {
 	t.Parallel()
 
-	runs := 0
+	systems, steps := 0, 0
 
-	runbooktest.CheckIdempotent(t, func(t *testing.T) runbook.StepNode {
+	runbooktest.CheckIdempotent(t, func(t *testing.T) *node {
 		t.Helper()
 
-		runs++
+		systems++
 
 		n := &node{}
 
 		t.Cleanup(func() { assert.True(t, n.installed, "the packages are installed") })
 
+		return n
+	}, func(n *node) runbook.StepNode {
+		steps++
+
 		return runbook.Effect("packages", install{n})
 	}, runbooktest.Under("upgrade/node1"))
 
-	// A clean run, then one for each point: running, started, node1, version.
-	assert.Equal(t, 5, runs)
+	// A clean run, then a crash after each event: started, running, the
+	// started value, the message, node1, version. Each crash builds the step
+	// twice: for the run that crashes, and for the resume.
+	assert.Equal(t, 7, systems)
+	assert.Equal(t, 13, steps)
 }
 
-func TestCheckIdempotent_CrashesOncePerKey(t *testing.T) {
+func TestCheckIdempotent_CrashesAfterEveryOccurrence(t *testing.T) {
 	t.Parallel()
 
-	runs := 0
+	systems := 0
 
-	runbooktest.CheckIdempotent(t, func(*testing.T) runbook.StepNode {
-		runs++
+	runbooktest.CheckIdempotent(t, func(*testing.T) *node {
+		systems++
 
+		return &node{}
+	}, func(*node) runbook.StepNode {
 		return runbook.Effect("count", runbook.StepFunc(func(_ context.Context, sc *runbook.StepContext) error {
 			for i := range 3 {
 				if err := sc.Record("progress", i); err != nil {
@@ -82,8 +95,9 @@ func TestCheckIdempotent_CrashesOncePerKey(t *testing.T) {
 		}))
 	})
 
-	// A clean run, then one for each point: running, progress.
-	assert.Equal(t, 3, runs)
+	// A clean run, then a crash after each event: started, running, and
+	// each of the three values.
+	assert.Equal(t, 6, systems)
 }
 
 // helperFails runs the helper test in mode in a process of its own, and
@@ -112,9 +126,32 @@ func TestCheckIdempotent_FailsAStepThatCantRunTwice(t *testing.T) {
 
 	out := helperFails(t, "mkdir")
 
-	assert.Contains(t, out, "test/mkdir does not survive a crash after step.running")
-	assert.Contains(t, out, "test/mkdir does not survive a crash after value:dir")
+	assert.Contains(t, out, "test/mkdir does not survive a crash after its event 2 (step.running)")
+	assert.Contains(t, out, "test/mkdir does not survive a crash after its event 3 (value:dir)")
 	assert.Contains(t, out, "mkdir: file exists")
+}
+
+func TestCheckIdempotent_FailsAStepWhoseCheckReadsItsOwnMemory(t *testing.T) {
+	t.Parallel()
+
+	assert.Contains(t, helperFails(t, "memory"), "test/memory does not survive a crash after its event 3 (value:k)")
+}
+
+func TestCheckIdempotent_CrashesAfterChatter(t *testing.T) {
+	t.Parallel()
+
+	// The message is the step's last event: a crash after it lets the step
+	// make its change, and then its outcome is lost.
+	assert.Contains(t, helperFails(t, "chatty"), "test/chatty does not survive a crash after its event 3 (message)")
+}
+
+func TestCheckIdempotent_CrashesAfterALaterOccurrence(t *testing.T) {
+	t.Parallel()
+
+	out := helperFails(t, "later")
+
+	assert.Contains(t, out, "test/later does not survive a crash after its event 4 (value:p)")
+	assert.NotContains(t, out, "crash after its event 3 (value:p)")
 }
 
 func TestCheckIdempotent_FailsAStepWithNothingToCrash(t *testing.T) {
@@ -126,7 +163,7 @@ func TestCheckIdempotent_FailsAStepWithNothingToCrash(t *testing.T) {
 func TestCheckIdempotent_FailsAStepThatChangesBetweenRuns(t *testing.T) {
 	t.Parallel()
 
-	assert.Contains(t, helperFails(t, "once"), "test/once did not reach value:first")
+	assert.Contains(t, helperFails(t, "once"), "test/once did not write value:first as its event 3 this time")
 }
 
 func TestCheckIdempotent_FailsAStepThatFailsWithoutACrash(t *testing.T) {
@@ -135,18 +172,36 @@ func TestCheckIdempotent_FailsAStepThatFailsWithoutACrash(t *testing.T) {
 	assert.Contains(t, helperFails(t, "broken"), "test/broken fails without a crash: ")
 }
 
+// memory's Check reads a flag its own Run set, not the system: a restarted
+// process has lost it.
+type memory struct {
+	n    *node
+	done bool
+}
+
+func (m *memory) Check(context.Context, *runbook.StepContext) (bool, error) { return m.done, nil }
+
+func (m *memory) Run(_ context.Context, sc *runbook.StepContext) error {
+	if m.n.created {
+		return errors.New("mkdir: file exists")
+	}
+
+	m.n.created = true
+	m.done = true
+
+	return sc.Record("k", 1)
+}
+
 // TestCheckIdempotent_HelperProcess is the helper process the tests above
 // run: each mode is a step the check must fail.
 func TestCheckIdempotent_HelperProcess(t *testing.T) {
 	t.Parallel()
 
-	runs := 0
+	builds := 0
 
-	steps := map[string]func(t *testing.T) runbook.StepNode{
+	steps := map[string]func(n *node) runbook.StepNode{
 		// mkdir has no Check, and fails if its directory exists.
-		"mkdir": func(*testing.T) runbook.StepNode {
-			n := &node{}
-
+		"mkdir": func(n *node) runbook.StepNode {
 			return runbook.Effect("mkdir", runbook.StepFunc(func(_ context.Context, sc *runbook.StepContext) error {
 				if n.created {
 					return errors.New("mkdir: file exists")
@@ -157,14 +212,58 @@ func TestCheckIdempotent_HelperProcess(t *testing.T) {
 				return sc.Record("dir", "/srv/data")
 			}))
 		},
+		"memory": func(n *node) runbook.StepNode {
+			return runbook.Effect("memory", &memory{n: n})
+		},
+		// chatty says what it will do, gives up if cancelled, and then makes
+		// its change.
+		"chatty": func(n *node) runbook.StepNode {
+			return runbook.Effect("chatty", runbook.StepFunc(func(ctx context.Context, sc *runbook.StepContext) error {
+				sc.Info("creating /srv/data")
+
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+
+				if n.created {
+					return errors.New("mkdir: file exists")
+				}
+
+				n.created = true
+
+				return nil
+			}))
+		},
+		// later makes its change between its second and third values.
+		"later": func(n *node) runbook.StepNode {
+			return runbook.Effect("later", runbook.StepFunc(func(_ context.Context, sc *runbook.StepContext) error {
+				for i := range 3 {
+					if i == 2 {
+						if n.created {
+							return errors.New("mkdir: file exists")
+						}
+
+						n.created = true
+					}
+
+					if err := sc.Record("p", i); err != nil {
+						return err
+					}
+				}
+
+				return nil
+			}))
+		},
 		// done finds its work done before it starts.
-		"done": func(*testing.T) runbook.StepNode {
-			return runbook.Effect("done", install{&node{installed: true}})
+		"done": func(n *node) runbook.StepNode {
+			n.installed = true
+
+			return runbook.Effect("done", install{n})
 		},
 		// once records a value only the first time it is built.
-		"once": func(*testing.T) runbook.StepNode {
-			runs++
-			first := runs == 1
+		"once": func(*node) runbook.StepNode {
+			builds++
+			first := builds == 1
 
 			return runbook.Effect("once", runbook.StepFunc(func(_ context.Context, sc *runbook.StepContext) error {
 				if first {
@@ -174,7 +273,7 @@ func TestCheckIdempotent_HelperProcess(t *testing.T) {
 				return nil
 			}))
 		},
-		"broken": func(*testing.T) runbook.StepNode {
+		"broken": func(*node) runbook.StepNode {
 			return runbook.Effect("broken", runbook.StepFunc(func(context.Context, *runbook.StepContext) error {
 				return errors.New("exit status 1")
 			}))
@@ -186,5 +285,5 @@ func TestCheckIdempotent_HelperProcess(t *testing.T) {
 		t.Skip("run by other tests")
 	}
 
-	runbooktest.CheckIdempotent(t, steps[mode])
+	runbooktest.CheckIdempotent(t, newNode, steps[mode])
 }
