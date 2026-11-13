@@ -375,7 +375,7 @@ children:
 			break
 		}
 
-		if ctx.Err() != nil {
+		if r.cancelled(ctx) {
 			errs = append(errs, context.Cause(ctx))
 
 			r.markCut()
@@ -489,7 +489,7 @@ func (g *parallelGroup) admit(ctx context.Context, r *runner) bool {
 	switch {
 	case g.stopped || g.skip != "" || r.skipRun.Load():
 		return true
-	case ctx.Err() != nil:
+	case r.cancelled(ctx):
 		g.errs = append(g.errs, context.Cause(ctx))
 
 		r.markCut()
@@ -720,6 +720,10 @@ func (r *runner) backoff(ctx context.Context, n *node, err error) error {
 	case <-ctx.Done():
 		return errors.Join(err, ctx.Err())
 	case <-r.stopDone():
+		if r.cancelled(ctx) {
+			return errors.Join(err, ctx.Err())
+		}
+
 		r.noteStop()
 		r.halt()
 

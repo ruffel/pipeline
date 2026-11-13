@@ -464,8 +464,10 @@ func TestGate_APendingStopOrCancelOutranksAnApproval(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			stopper := runbook.NewStopper()
 			a := approver{name: "test", wait: func(context.Context, runbook.GateInfo) (string, error) {
-				stopper.Stop("alice")
+				// The cancel comes first, so it is pending however soon the
+				// stop ends the wait.
 				cancel()
+				stopper.Stop("alice")
 
 				return "bob", nil
 			}}
