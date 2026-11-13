@@ -357,7 +357,7 @@ func (r *runner) group(ctx context.Context, n *node) error {
 		// this, a resume after a crash between the group finishing and the
 		// run finishing would run what the signal skipped. A step's
 		// ErrSkipGroup concerned only its own group, which is finished.
-		if r.signalledSkipRun(n) {
+		if r.skippedRun(n) {
 			r.skipRun.Store(true)
 		}
 
@@ -669,7 +669,7 @@ func (r *runner) step(ctx context.Context, n *node, fresh bool) error {
 			return err
 		}
 
-		return r.signalled(prior.Signal)
+		return r.applySkip(prior.Skip)
 	}
 
 	start := r.clock.Now()
@@ -684,14 +684,14 @@ func (r *runner) step(ctx context.Context, n *node, fresh bool) error {
 	// now finds the work done, that Run did it.
 	interrupted := prior.RunCalled && !prior.Done
 
-	outcome, reason, signal, err := r.tries(ctx, n, sc, interrupted)
+	outcome, reason, skip, err := r.tries(ctx, n, sc, interrupted)
 
-	// A step verified as still done keeps the signal its Run gave.
+	// A step verified as still done keeps the skip its Run gave.
 	if outcome == OutcomeSkipped {
-		signal = prior.Signal
+		skip = prior.Skip
 	}
 
-	if signal == SignalSkipRun {
+	if skip == SkipRun {
 		// Set at once, so parallel siblings start nothing new.
 		r.skipRun.Store(true)
 	}
@@ -705,7 +705,7 @@ func (r *runner) step(ctx context.Context, n *node, fresh bool) error {
 	}
 
 	if ferr := r.emit(Event{
-		Kind: EventStepFinished, Path: n.path, Outcome: outcome, Reason: reason, Signal: signal,
+		Kind: EventStepFinished, Path: n.path, Outcome: outcome, Reason: reason, Skip: skip,
 		Error: errorInfo(err), DurationMs: r.since(start),
 	}); ferr != nil {
 		return ferr
@@ -715,26 +715,26 @@ func (r *runner) step(ctx context.Context, n *node, fresh bool) error {
 		return &StepError{Path: n.path, Err: r.redact.err(err)}
 	}
 
-	return r.signalled(signal)
+	return r.applySkip(skip)
 }
 
-// signalledSkipRun reports whether a step at or beneath n returned
-// ErrSkipRun when its Run last finished.
-func (r *runner) signalledSkipRun(n *node) bool {
-	if r.prior.Element(n.path).Signal == SignalSkipRun {
+// skippedRun reports whether a step at or beneath n returned ErrSkipRun
+// when its Run last finished.
+func (r *runner) skippedRun(n *node) bool {
+	if r.prior.Element(n.path).Skip == SkipRun {
 		return true
 	}
 
-	return slices.ContainsFunc(n.children, r.signalledSkipRun)
+	return slices.ContainsFunc(n.children, r.skippedRun)
 }
 
-// signalled turns a step's signal, from this attempt or replayed from an
+// applySkip turns a step's skip, from this attempt or replayed from an
 // earlier one, into the error its group acts on.
-func (r *runner) signalled(signal Signal) error {
-	switch signal {
-	case SignalSkipGroup:
+func (r *runner) applySkip(skip Skip) error {
+	switch skip {
+	case SkipGroup:
 		return ErrSkipGroup
-	case SignalSkipRun:
+	case SkipRun:
 		r.skipRun.Store(true)
 
 		return ErrSkipRun
@@ -768,14 +768,14 @@ func (r *runner) skipRest(elems []*node, reason Reason) error {
 // of tries. A signal from Run passes the step.
 func (r *runner) tries(
 	ctx context.Context, n *node, sc *StepContext, interrupted bool,
-) (Outcome, Reason, Signal, error) {
+) (Outcome, Reason, Skip, error) {
 	ranOnce := false
 
 	for try := 1; ; try++ {
 		done, err := r.try(ctx, n, sc, &ranOnce)
 
-		if signal := signalOf(err); signal != "" {
-			return OutcomePassed, "", signal, nil
+		if skip := skipOf(err); skip != "" {
+			return OutcomePassed, "", skip, nil
 		}
 
 		switch {
@@ -849,7 +849,7 @@ func (r *runner) try(ctx context.Context, n *node, sc *StepContext, ranOnce *boo
 			return err
 		})
 
-		if signalOf(err) != "" {
+		if skipOf(err) != "" {
 			// Only Run may end its group or the run; from Check it is a bug.
 			return false, fmt.Errorf("runbook: Check returned %q; only Run may skip", err.Error())
 		}

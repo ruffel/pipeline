@@ -285,8 +285,8 @@ func takeRequest(dir, name string) (controlRequest, bool) {
 	return req, true
 }
 
-// RequestStop asks the run in progress on the journal file at path to stop,
-// from this or any other process. who says who is asking, such as an
+// RequestStop asks the run in progress on the journal file named by journal
+// to stop, from this or any other process. who says who is asking, such as an
 // operator's name; it is recorded in the journal, with the user that wrote
 // the request. mode is [StopGraceful] or [StopCancel].
 //
@@ -300,20 +300,20 @@ func takeRequest(dir, name string) (controlRequest, bool) {
 // RequestStop returns [ErrNotRunning] when no run is in progress, or when
 // the run finished without seeing the request. It returns the context's
 // error when ctx is done first; the request may still be acted on.
-func RequestStop(ctx context.Context, path string, mode StopMode, who string) error {
+func RequestStop(ctx context.Context, journal string, mode StopMode, who string) error {
 	kind, err := controlFile(mode)
 	if err != nil {
 		return err
 	}
 
-	path, data, err := newRequest(path, controlRequest{Who: who})
+	journal, data, err := newRequest(journal, controlRequest{Who: who})
 	if err != nil {
 		return fmt.Errorf("runbook: request stop: %w", err)
 	}
 
 	q := &stopRequester{
-		reader: journalReader{path: path},
-		dir:    controlDir(path),
+		reader: journalReader{path: journal},
+		dir:    controlDir(journal),
 		kind:   kind,
 		mode:   mode,
 		data:   data,
@@ -504,7 +504,7 @@ func writeRequest(dir, name string, data []byte) error {
 
 // Approve approves the gate at the path gate (such as
 // "upgrade/region1/continue-DC2") in the run in progress on the journal
-// file at path, from this or any other process. who says who approved; it
+// file named by journal, from this or any other process. who says who approved; it
 // is recorded in the journal, with the user that wrote the approval.
 //
 // The approval goes through the run's control directory, as [RequestStop]
@@ -518,15 +518,15 @@ func writeRequest(dir, name string, data []byte) error {
 // ended its wait), and [ErrNotRunning] when no run is in progress, or the
 // run finished first. It returns the context's error when
 // ctx is done first; the approval may still be acted on.
-func Approve(ctx context.Context, path, gate, who string) error {
-	path, data, err := newRequest(path, controlRequest{Who: who, Gate: gate})
+func Approve(ctx context.Context, journal, gate, who string) error {
+	journal, data, err := newRequest(journal, controlRequest{Who: who, Gate: gate})
 	if err != nil {
 		return fmt.Errorf("runbook: approve: %w", err)
 	}
 
 	q := &approveRequester{
-		reader: journalReader{path: path},
-		dir:    controlDir(path),
+		reader: journalReader{path: journal},
+		dir:    controlDir(journal),
 		gate:   gate,
 		data:   data,
 		locked: journalLocked,

@@ -133,7 +133,7 @@ func readJournal(path string) ([]Event, error) {
 	return events, err
 }
 
-// Inspect replays the journal file at path without locking it, so it works
+// Inspect replays the journal file named by journal without locking it, so it works
 // while a run is writing the journal, from this or any other process. A
 // journal that does not exist yet is an empty state.
 //
@@ -145,19 +145,19 @@ func readJournal(path string) ([]Event, error) {
 // of one and change no state, so it reads only the start of those lines and
 // never decodes them; it does not notice damage inside one. OpenJournal
 // checks every line.
-func Inspect(path string) (*State, error) {
+func Inspect(journal string) (*State, error) {
 	state := newState()
 
 	// The journal is replayed as it is read, never held in memory: a long
 	// run's journal is mostly output, which can be far larger than the state.
 	// A line that doesn't decode or doesn't follow the last one is damage,
 	// reported as OpenJournal reports it.
-	_, err := scanJournal(path, state.addLine)
+	_, err := scanJournal(journal, state.addLine)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 
-	state.Live = journalLocked(path)
+	state.Live = journalLocked(journal)
 
 	return state, nil
 }

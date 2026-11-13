@@ -496,3 +496,55 @@ func TestInspect_ALaterDuplicateKeyIsReadAsTheDecoderReadsIt(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, last+50, state.LastSeq, "Journal.State")
 }
+
+// A reader ignores event kinds and fields it doesn't know, so an addition
+// that only informs viewers needs no new schema version.
+func TestJournal_ReadersIgnoreKindsAndFieldsTheyDontKnow(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	runToFile(t, path, mustPlan(t, runbook.Effect("a", ok()), runbook.Effect("b", fail("boom"))))
+
+	before, err := runbook.Inspect(path)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path) //nolint:gosec // A file in the test's own temp dir.
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	added := 0
+
+	for i, line := range lines {
+		if strings.Contains(line, `"kind":"step.finished"`) && strings.Contains(line, `"path":"p/a"`) {
+			lines[i] = `{"future":{"x":1},` + line[1:]
+			added++
+		}
+	}
+
+	require.Equal(t, 1, added)
+
+	lines = append(lines, fmt.Sprintf(`{"v":%d,"seq":%d,"ts":"2026-11-13T00:00:00Z","kind":"future.kind","path":"p/a","future":true}`,
+		runbook.SchemaVersion, before.LastSeq+1))
+	//nolint:gosec // A file in the test's own temp dir.
+	require.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
+
+	after, err := runbook.Inspect(path)
+	require.NoError(t, err)
+	assert.Equal(t, before.Attempts, after.Attempts)
+
+	for _, p := range []string{"p", "p/a", "p/b"} {
+		assert.Equal(t, before.Element(p), after.Element(p), p)
+	}
+
+	j, err := runbook.OpenJournal(path)
+	require.NoError(t, err, "a line of an unknown kind is not corruption")
+
+	defer func() { _ = j.Close() }()
+
+	state, err := j.State()
+	require.NoError(t, err)
+	assert.Equal(t, before.Element("p/a"), state.Element("p/a"))
+
+	_, err = runbook.Run(t.Context(), mustPlan(t, runbook.Effect("a", ok()), runbook.Effect("b", ok())), j)
+	require.NoError(t, err, "the run resumes")
+}

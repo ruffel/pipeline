@@ -142,6 +142,12 @@ var stdin = newLineReader(os.Stdin) //nolint:gochecknoglobals // There is one st
 // line asks again: to say no, stop the run, as [HandleSignals] lets Ctrl-C
 // do.
 //
+// Its question names the gate's path, not its prompt: the prompt is on the
+// gate.waiting event, for the run's observers to show, so a terminal doesn't
+// show it twice and a viewer using [Follow] sees it too. Give the run an
+// observer that writes to the terminal as it is called, not through an
+// [AsyncObserver], so the gate's line is written before the question.
+//
 // It withdraws when standard input ends or fails to read, which is what a
 // lost terminal produces, and when it can't write its question. Run
 // detached, with no terminal, use [Approve] instead.
@@ -167,10 +173,8 @@ func (a *lineApprover) Wait(ctx context.Context, gate GateInfo) (string, error) 
 	lines, leave := a.in.join()
 	defer leave()
 
+	// The prompt is the observers' to show, on the gate's waiting line.
 	question := "Type yes to approve " + gate.Path + ": "
-	if gate.Prompt != "" {
-		question = gate.Prompt + "\n" + question
-	}
 
 	for {
 		if _, err := io.WriteString(a.out, question); err != nil {
@@ -195,8 +199,6 @@ func (a *lineApprover) Wait(ctx context.Context, gate GateInfo) (string, error) 
 
 			return "", ctx.Err()
 		}
-
-		question = "Type yes to approve " + gate.Path + ": "
 	}
 }
 

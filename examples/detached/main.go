@@ -145,16 +145,26 @@ func run(args []string) error {
 	defer release()
 
 	// A terminal can block, or vanish; behind an AsyncObserver it can't
-	// hold up the run.
-	view := runbook.NewAsyncObserver(runbookterm.New(os.Stdout), runbook.DefaultChatterLimit)
+	// hold up the run. When the gate is answered at this terminal, though,
+	// the view is called directly, so the gate's prompt is on screen before
+	// StdinApprover asks.
+	var view runbook.Observer = runbookterm.New(os.Stdout)
+
+	var async *runbook.AsyncObserver
+	if !interactive() {
+		async = runbook.NewAsyncObserver(view, runbook.DefaultChatterLimit)
+		view = async
+	}
 
 	_, err = runbook.Run(context.Background(), plan, j,
 		runbook.WithObservers(view), runbook.WithStopper(stopper), runbook.WithRunLabels(runbook.L{"operator": who()}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	if async != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	_ = view.Close(ctx)
+		_ = async.Close(ctx)
+	}
 
 	if errors.Is(err, runbook.ErrAlreadyComplete) {
 		return fmt.Errorf("%s holds a finished upgrade; remove it and %s to start again", *journal, *state)

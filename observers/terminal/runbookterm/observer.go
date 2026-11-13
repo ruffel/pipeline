@@ -28,7 +28,9 @@
 // step, and the step's line counts them.
 //
 // The observer writes as it is called. Wrap it in [runbook.AsyncObserver] so
-// a slow or lost terminal cannot hold up a run.
+// a slow or lost terminal cannot hold up a run, unless gates are answered at
+// the same terminal with [runbook.StdinApprover]: called directly, the
+// observer shows a gate's prompt before the approver asks.
 package runbookterm
 
 import (

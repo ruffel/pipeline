@@ -47,10 +47,10 @@ type FollowOptions struct {
 	Poll time.Duration
 }
 
-// Follow delivers the events in the journal file at path to the observers,
-// then keeps delivering new ones as a run writes them, like tail -f. It
-// reads without locking, so it works from any process and cannot disturb the
-// run. Observers get exactly the events the runner's own observers got.
+// Follow delivers the events in the journal file named by journal to the
+// observers, then keeps delivering new ones as a run writes them, like tail
+// -f. It reads without locking, so it works from any process and cannot
+// disturb the run. Observers get exactly the events the runner's own observers got.
 //
 // Follow returns:
 //
@@ -65,9 +65,9 @@ type FollowOptions struct {
 // instead.
 //
 // A panic in an observer ends Follow with an error.
-func Follow(ctx context.Context, path string, opts FollowOptions, observers ...Observer) error {
+func Follow(ctx context.Context, journal string, opts FollowOptions, observers ...Observer) error {
 	f := &follower{
-		reader:    journalReader{path: path},
+		reader:    journalReader{path: journal},
 		opts:      opts,
 		observers: observers,
 		locked:    journalLocked,
