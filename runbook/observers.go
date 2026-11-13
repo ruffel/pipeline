@@ -60,6 +60,13 @@ func (o *JSONObserver) Err() error {
 //	  ✗ apply — exit status 1 (0.4s)
 //	✗ upgrade failed (2.3s)
 //
+// A rollback shows what it undid:
+//
+//	▶ upgrade (rollback)
+//	  ⊘ apply not undone — no-undo
+//	  ↶ backup undone (12s)
+//	✓ upgrade passed (12.1s)
+//
 // Groups and the run show when they start and finish, steps when they
 // finish. Output, messages, progress, items, custom events and retries are
 // marked │ and named by their step's path below the plan, since steps in a
@@ -85,19 +92,20 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 
 	switch e.Kind {
 	case EventRunStarted:
-		o.root = e.Path
-		o.capture(e.Plan)
-		o.printf("▶ %s%s\n", e.Path, o.description(e.Path))
+		o.started(e)
 	case EventRunFinished:
 		o.printf("%s %s %s%s%s\n", mark(e.Outcome), e.Path, e.Outcome, errorText(e.Error), elapsed(e.DurationMs))
 	case EventGroupStarted:
 		o.printf("%s▶ %s%s\n", indent, name(e.Path), o.description(e.Path))
 	case EventGroupReset:
 		o.printf("%s↺ %s reset: a resume runs it again from the start\n", indent, name(e.Path))
-	case EventStepStarted:
+	case EventStepStarted, EventUndoStarted:
 		if d := o.description(e.Path); d != "" {
 			o.printf("%s· %s%s\n", indent, name(e.Path), d)
 		}
+	case EventUndoFinished:
+		o.printf("%s%s %s %s%s%s%s\n", indent, mark(e.Outcome), name(e.Path), undoText(e.Outcome),
+			reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
 	case EventGroupFinished, EventStepFinished:
 		o.printf("%s%s %s%s%s%s\n", indent, mark(e.Outcome), name(e.Path), reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
 	case EventOutput, EventMessage, EventProgress, EventItem, EventCustom, EventStepRetry:
@@ -120,6 +128,19 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 	case EventStepRunning, EventValue:
 		// Bookkeeping for resume and rollback; nothing for a reader.
 	}
+}
+
+// started writes a run's first line, and keeps its plan's descriptions.
+func (o *PlainObserver) started(e Event) {
+	o.root = e.Path
+	o.capture(e.Plan)
+
+	rollback := ""
+	if e.Rollback {
+		rollback = " (rollback)"
+	}
+
+	o.printf("▶ %s%s%s\n", e.Path, rollback, o.description(e.Path))
 }
 
 // deadline says when a gate times out, if it does.
@@ -222,8 +243,22 @@ func mark(o Outcome) string {
 		return "■"
 	case OutcomeFailed, OutcomeCancelled:
 		return "✗"
+	case OutcomeUndone:
+		return "↶"
 	default:
 		return "?"
+	}
+}
+
+// undoText says what a rollback did with a step.
+func undoText(o Outcome) string {
+	switch o { //nolint:exhaustive // An undo is undone, skipped or failed.
+	case OutcomeUndone:
+		return "undone"
+	case OutcomeSkipped:
+		return "not undone"
+	default:
+		return "undo failed"
 	}
 }
 

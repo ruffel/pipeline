@@ -63,6 +63,15 @@ const (
 	GateReleased Point = "gate.released"
 )
 
+// The points a rollback passes through for each step with an Undo.
+const (
+	// UndoStarted is just after undo.started: Undo is about to be called.
+	UndoStarted Point = "undo.started"
+	// UndoFinished is just after undo.finished: the undo's outcome is
+	// recorded.
+	UndoFinished Point = "undo.finished"
+)
+
 // Value is the point just after the step records key with Record.
 func Value(key string) Point {
 	return Point("value:" + key)

@@ -53,6 +53,11 @@ const (
 
 	// EventStopRequested records that the run was asked to stop.
 	EventStopRequested EventKind = "stop.requested"
+
+	// EventUndoStarted and EventUndoFinished record a rollback undoing a
+	// step. See [Rollback].
+	EventUndoStarted  EventKind = "undo.started"
+	EventUndoFinished EventKind = "undo.finished"
 )
 
 // Durable reports whether events of this kind must be stored before the run
@@ -61,7 +66,7 @@ func (k EventKind) Durable() bool {
 	switch k {
 	case EventRunStarted, EventRunFinished, EventGroupStarted, EventGroupFinished, EventGroupReset,
 		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem, EventStopRequested,
-		EventGateWaiting, EventGateReleased:
+		EventGateWaiting, EventGateReleased, EventUndoStarted, EventUndoFinished:
 		return true
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
 		return false
@@ -80,6 +85,8 @@ const (
 	OutcomeFailed    Outcome = "failed"
 	OutcomeStopped   Outcome = "stopped"
 	OutcomeCancelled Outcome = "cancelled"
+	// OutcomeUndone is a step a rollback undid.
+	OutcomeUndone Outcome = "undone"
 )
 
 // Reason explains a skipped or recovered outcome.
@@ -106,6 +113,9 @@ const (
 	// ReasonRunSkipped means a step returned ErrSkipRun before the element
 	// started.
 	ReasonRunSkipped Reason = "run-skipped"
+	// ReasonNoUndo means a rollback left a step as it was because the step
+	// has no Undo.
+	ReasonNoUndo Reason = "no-undo"
 )
 
 // Signal is flow control a step's Run returned: [ErrSkipGroup] or
@@ -183,6 +193,8 @@ type Event struct {
 	InputsDigest string          `json:"inputsDigest,omitempty"`
 	// Forced marks an attempt made with Force.
 	Forced bool `json:"forced,omitempty"`
+	// Rollback marks an attempt made by [Rollback].
+	Rollback bool `json:"rollback,omitempty"`
 	// PID and Host say which process wrote the run.
 	PID  int    `json:"pid,omitempty"`
 	Host string `json:"host,omitempty"`

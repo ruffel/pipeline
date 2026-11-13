@@ -60,9 +60,16 @@ type Result struct {
 //     the work done, passes as recovered.
 //
 // Run refuses a journal whose attempts used a plan of a different shape
-// ([ErrPlanChanged]), and one whose latest attempt passed
-// ([ErrAlreadyComplete]) unless [Force] is given.
+// ([ErrPlanChanged]), one whose latest attempt is a [Rollback] that has not
+// passed ([ErrRollbackUnfinished]), and one whose latest attempt passed
+// ([ErrAlreadyComplete]) unless [Force] is given. After a rollback passes,
+// Run runs what it undid again.
 func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, error) {
+	return attempt(ctx, plan, j, opts, false)
+}
+
+// attempt makes one attempt at plan against j: a run, or a rollback.
+func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollback bool) (*Result, error) {
 	cfg := config{clock: systemClock{}, outputBudget: MaxStepOutput}
 	for _, o := range opts {
 		o(&cfg)
@@ -78,23 +85,9 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		return nil, err
 	}
 
-	// prior is what decides which work is already done. A forced run decides
-	// as if nothing were, but can still read earlier attempts' values.
-	prior := prev
-
-	if n := len(prev.Attempts); n > 0 {
-		switch {
-		case prev.Fingerprint != plan.Fingerprint():
-			return nil, ErrPlanChanged
-		case prev.InputsDigest != in.digest && !cfg.newInputs:
-			return nil, ErrInputsChanged
-		case cfg.force:
-			if prior, err = Replay(nil); err != nil {
-				return nil, err
-			}
-		case prev.Attempts[n-1].Outcome == OutcomePassed:
-			return nil, ErrAlreadyComplete
-		}
+	prior, err := admit(prev, plan, in, cfg, rollback)
+	if err != nil {
+		return nil, err
 	}
 
 	// Other processes ask a run to stop through files beside the journal.
@@ -135,7 +128,8 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 		gates:       map[string]chan controlRequest{},
 		control:     control,
 		controlPoll: cfg.controlPoll,
-		forced:      cfg.force && len(prev.Attempts) > 0,
+		forced:      cfg.force && !rollback && len(prev.Attempts) > 0,
+		rollingBack: rollback,
 		values:      map[string]map[string]json.RawMessage{},
 		budget:      cfg.outputBudget,
 	}
@@ -145,6 +139,37 @@ func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, 
 	// Every error leaves redacted, not only step failures: a cancel's cause
 	// or a journal failure can carry a secret too.
 	return res, r.redact.err(err)
+}
+
+// admit checks that an attempt may be made against a journal that stands at
+// prev, and returns what it decides which work is already done from: prev,
+// or, for a forced run, nothing, though earlier values stay readable.
+func admit(prev *State, plan *Plan, in *inputs, cfg config, rollback bool) (*State, error) {
+	n := len(prev.Attempts)
+	if n == 0 {
+		return prev, nil
+	}
+
+	last := prev.Attempts[n-1]
+
+	switch {
+	case prev.Fingerprint != plan.Fingerprint():
+		return nil, ErrPlanChanged
+	case prev.InputsDigest != in.digest && !cfg.newInputs:
+		return nil, ErrInputsChanged
+	case rollback:
+		// A rollback undoes what the journal says ran, however the latest
+		// attempt ended.
+		return prev, nil
+	case last.Rollback && last.Outcome != OutcomePassed:
+		return nil, ErrRollbackUnfinished
+	case cfg.force:
+		return Replay(nil)
+	case !last.Rollback && last.Outcome == OutcomePassed:
+		return nil, ErrAlreadyComplete
+	default:
+		return prev, nil
+	}
 }
 
 // runner holds one attempt's state.
@@ -162,6 +187,8 @@ type runner struct {
 	prior  *State
 	trust  bool
 	forced bool
+	// rollingBack marks a rollback: it undoes steps instead of running them.
+	rollingBack bool
 
 	// redact removes secrets from the text of every event and returned error.
 	redact *redactor
@@ -219,7 +246,7 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
 		Plan: &spec, Fingerprint: r.plan.Fingerprint(), Labels: labels,
 		Inputs: r.inputs.encoded, InputsDigest: r.inputs.digest,
-		Forced: r.forced, PID: os.Getpid(), Host: hostname(),
+		Forced: r.forced, Rollback: r.rollingBack, PID: os.Getpid(), Host: hostname(),
 	})
 	if err != nil {
 		return &Result{Run: r.id, Attempt: r.attempt, Outcome: OutcomeFailed}, err
@@ -270,9 +297,15 @@ func (r *runner) work(ctx context.Context) error {
 		watcher.Go(func() { r.watchControl(done) })
 	}
 
-	err := r.children(ctx, r.plan.root)
-	if err != nil && !onlyStopped(err) {
-		err = errors.Join(err, r.handle(ctx, r.plan.root))
+	var err error
+
+	if r.rollingBack {
+		err = r.undoAll(ctx)
+	} else {
+		err = r.children(ctx, r.plan.root)
+		if err != nil && !onlyStopped(err) {
+			err = errors.Join(err, r.handle(ctx, r.plan.root))
+		}
 	}
 
 	close(done)
