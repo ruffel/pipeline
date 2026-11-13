@@ -3,7 +3,7 @@ module github.com/ruffel/pipeline/examples/demo
 go 1.26.0
 
 require (
-	github.com/ruffel/pipeline v0.1.5-0.20260809134210-a3b3c34a82fd
+	github.com/ruffel/pipeline v0.2.1-0.20261113093659-980b63d382e0
 	github.com/ruffel/pipeline/observers/terminal v0.0.0-00010101000000-000000000000
 )
 
@@ -13,15 +13,15 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0 // indirect
 	github.com/charmbracelet/x/ansi v0.8.0 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.13-0.20250311204145-2c3ea96c31dd // indirect
-	github.com/charmbracelet/x/term v0.2.1 // indirect
+	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.36.0 // indirect
 )
 
 replace github.com/ruffel/pipeline => ../..

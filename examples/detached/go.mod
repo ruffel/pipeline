@@ -3,7 +3,7 @@ module github.com/ruffel/pipeline/examples/detached
 go 1.26.0
 
 require (
-	github.com/charmbracelet/x/term v0.2.1
+	github.com/charmbracelet/x/term v0.2.2
 	github.com/ruffel/pipeline v0.2.1-0.20261113093659-980b63d382e0
 	github.com/ruffel/pipeline/observers/terminal v0.0.0
 )
@@ -20,8 +20,8 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.36.0 // indirect
 )
 
 replace github.com/ruffel/pipeline => ../..
