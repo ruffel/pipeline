@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -163,13 +164,53 @@ func (c *cluster) load() (clusterState, error) {
 	return st, json.Unmarshal(b, &st)
 }
 
+// save replaces the state file whole: it writes a temporary file beside it,
+// syncs it, and renames it over the old one, so a crash leaves the old
+// state or the new, never a torn file that Check can't read.
 func (c *cluster) save(st clusterState) error {
 	b, err := json.Marshal(st)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(c.file, b, 0o600)
+	dir := filepath.Dir(c.file)
+
+	tmp, err := os.CreateTemp(dir, ".cluster-*.json")
+	if err != nil {
+		return err
+	}
+
+	defer func() { _ = os.Remove(tmp.Name()) }()
+
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+
+		return err
+	}
+
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+
+		return err
+	}
+
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmp.Name(), c.file); err != nil {
+		return err
+	}
+
+	// Sync the directory too, so the rename survives a power cut.
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+
+	defer func() { _ = d.Close() }()
+
+	return d.Sync()
 }
 
 // sleep waits for d, or until ctx is done: a cancelled run cuts steps short.

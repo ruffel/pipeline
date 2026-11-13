@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"path/filepath"
 
 	"github.com/ruffel/pipeline/observers/terminal/runbookterm"
 	"github.com/ruffel/pipeline/runbook"
@@ -54,7 +55,15 @@ func run(yes bool, format, journal, state, fail string) error {
 		return err
 	}
 
-	plan, err := newPlan(&cluster{file: state + "/cluster.json"}, approvers(yes), fail)
+	// The run is against one cluster: its state file is the run's input, so
+	// the journal refuses a resume against another. -fail is left out:
+	// running again without it is how a failed run recovers.
+	file, err := filepath.Abs(filepath.Join(state, "cluster.json"))
+	if err != nil {
+		return err
+	}
+
+	plan, err := newPlan(&cluster{file: file}, approvers(yes), fail)
 	if err != nil {
 		return err
 	}
@@ -74,9 +83,12 @@ func run(yes bool, format, journal, state, fail string) error {
 	defer release()
 
 	_, err = runbook.Run(context.Background(), plan, j,
-		runbook.WithObservers(view), runbook.WithStopper(stopper), runbook.WithRunLabels(runbook.L{"operator": who()}))
+		runbook.WithObservers(view), runbook.WithStopper(stopper), runbook.WithRunLabels(runbook.L{"operator": who()}),
+		runbook.WithInputs(inputs{Cluster: file}))
 
 	switch {
+	case errors.Is(err, runbook.ErrInputsChanged):
+		return fmt.Errorf("%s is a failover of another cluster; use its -state, or remove it to start again", journal)
 	case errors.Is(err, runbook.ErrAlreadyComplete):
 		return fmt.Errorf("%s holds a finished failover; remove it and %s to start again", journal, state)
 	case errors.Is(err, runbook.ErrStopped):
@@ -84,6 +96,11 @@ func run(yes bool, format, journal, state, fail string) error {
 	default:
 		return err
 	}
+}
+
+// inputs are what the run was started with, recorded in the journal.
+type inputs struct {
+	Cluster string `json:"cluster"`
 }
 
 // observer shows the run. It is called on the run's goroutine, so the view
