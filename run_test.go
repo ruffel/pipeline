@@ -1,0 +1,1204 @@
+package pipeline_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"os/exec"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/ruffel/pipeline"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// recorder is an observer that keeps every event.
+type recorder struct {
+	mu     sync.Mutex
+	events []pipeline.Event
+}
+
+func (r *recorder) OnEvent(_ context.Context, e pipeline.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.events = append(r.events, e)
+}
+
+func (r *recorder) all() []pipeline.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]pipeline.Event(nil), r.events...)
+}
+
+// outcome is a run's result, events and replayed state.
+type outcome struct {
+	res    *pipeline.Result
+	err    error
+	events []pipeline.Event
+	state  *pipeline.State
+}
+
+func runPlan(t *testing.T, ctx context.Context, plan *pipeline.Plan, opts ...pipeline.Option) outcome {
+	t.Helper()
+
+	j := pipeline.MemoryJournal()
+	rec := &recorder{}
+
+	res, err := pipeline.Run(ctx, plan, j, append([]pipeline.Option{pipeline.WithObservers(rec)}, opts...)...)
+
+	journal, jerr := j.Events()
+	require.NoError(t, jerr)
+	assert.Equal(t, journal, rec.all(), "observers see exactly what the journal stores")
+
+	state, serr := j.State()
+	require.NoError(t, serr)
+
+	return outcome{res: res, err: err, events: journal, state: state}
+}
+
+func mustPlan(t *testing.T, elems ...pipeline.Element) *pipeline.Plan {
+	t.Helper()
+
+	plan, err := pipeline.NewPlan("p", elems...)
+	require.NoError(t, err)
+
+	return plan
+}
+
+// trace renders events as "kind path [outcome/reason]", leaving out the run
+// events and chatter unless asked.
+func trace(events []pipeline.Event, kinds ...pipeline.EventKind) []string {
+	want := map[pipeline.EventKind]bool{
+		pipeline.EventGroupStarted: true, pipeline.EventGroupFinished: true, pipeline.EventGroupReset: true,
+		pipeline.EventStepStarted: true, pipeline.EventStepRunning: true, pipeline.EventStepFinished: true,
+		pipeline.EventGateWaiting: true, pipeline.EventGateReleased: true,
+		pipeline.EventUndoStarted: true, pipeline.EventUndoFinished: true,
+	}
+	for _, k := range kinds {
+		want[k] = true
+	}
+
+	var out []string
+
+	for _, e := range events {
+		if !want[e.Kind] {
+			continue
+		}
+
+		line := string(e.Kind) + " " + e.Path
+
+		switch {
+		case e.Outcome != "" && e.Reason != "":
+			line += " " + string(e.Outcome) + "/" + string(e.Reason)
+		case e.Outcome != "":
+			line += " " + string(e.Outcome)
+		case e.Message != "":
+			line += " " + e.Message
+		}
+
+		out = append(out, line)
+	}
+
+	return out
+}
+
+func ok() pipeline.Step { return noop() }
+
+func fail(msg string) pipeline.Step {
+	return pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error { return errors.New(msg) })
+}
+
+// waitForCancel blocks until its context is done.
+func waitForCancel() pipeline.Step {
+	return pipeline.StepFunc(func(ctx context.Context, _ *pipeline.StepContext) error {
+		<-ctx.Done()
+
+		return ctx.Err()
+	})
+}
+
+// checkStep has a Check that reports done, and counts calls.
+type checkStep struct {
+	done     func() bool
+	run      func(ctx context.Context, s *pipeline.StepContext) error
+	runCalls atomic.Int32
+}
+
+func (c *checkStep) Check(context.Context, *pipeline.StepContext) (bool, error) { return c.done(), nil }
+
+func (c *checkStep) Run(ctx context.Context, s *pipeline.StepContext) error {
+	c.runCalls.Add(1)
+
+	if c.run != nil {
+		return c.run(ctx, s)
+	}
+
+	return nil
+}
+
+// -----------------------------------------------------------------------------
+// Ordering, groups and outcomes
+// -----------------------------------------------------------------------------
+
+func TestRun_SequentialStepsInOrder(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+
+	step := func(name string) pipeline.StepNode {
+		return pipeline.Effect(name, pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			order = append(order, name)
+
+			return nil
+		}))
+	}
+
+	plan := mustPlan(t, step("a"), pipeline.Group("g", step("b"), step("c")), step("d"))
+	out := runPlan(t, t.Context(), plan, pipeline.WithRunLabels(pipeline.L{"operation": "u-42"}))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, []string{"a", "b", "c", "d"}, order)
+	assert.Equal(t, pipeline.OutcomePassed, out.res.Outcome)
+	assert.Equal(t, 1, out.res.Attempt)
+	assert.NotEmpty(t, out.res.Run)
+
+	assert.Equal(t, []string{
+		"step.started p/a", "step.running p/a", "step.finished p/a passed",
+		"group.started p/g",
+		"step.started p/g/b", "step.running p/g/b", "step.finished p/g/b passed",
+		"step.started p/g/c", "step.running p/g/c", "step.finished p/g/c passed",
+		"group.finished p/g passed",
+		"step.started p/d", "step.running p/d", "step.finished p/d passed",
+	}, trace(out.events))
+
+	first, last := out.events[0], out.events[len(out.events)-1]
+	assert.Equal(t, pipeline.EventRunStarted, first.Kind)
+	assert.Equal(t, plan.Fingerprint(), first.Fingerprint)
+	assert.Equal(t, pipeline.L{"operation": "u-42"}, first.Labels)
+	require.NotNil(t, first.Plan)
+	assert.Equal(t, plan.Spec(), *first.Plan)
+	assert.Equal(t, pipeline.EventRunFinished, last.Kind)
+	assert.Equal(t, pipeline.OutcomePassed, last.Outcome)
+
+	for _, e := range out.events {
+		assert.Equal(t, out.res.Run, e.Run, "every event carries the run ID")
+	}
+}
+
+func TestRun_FailureStopsASequentialGroup(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Effect("a", ok()),
+		pipeline.Effect("b", fail("boom")),
+		pipeline.Effect("c", ok()),
+	))
+
+	require.Error(t, out.err)
+	assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome)
+
+	var se *pipeline.StepError
+	require.ErrorAs(t, out.err, &se)
+	assert.Equal(t, "p/b", se.Path)
+	assert.Equal(t, "p/b: boom", out.err.Error())
+
+	assert.Equal(t, pipeline.StatusPassed, out.state.Element("p/a").Status)
+	assert.Equal(t, pipeline.StatusFailed, out.state.Element("p/b").Status)
+	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/c").Status)
+	assert.Equal(t, &pipeline.ErrorInfo{Kind: pipeline.ErrorPlain, Message: "boom"}, out.state.Element("p/b").Error)
+}
+
+func TestRun_ContinueOnErrorRunsEveryChild(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Group("g",
+			pipeline.Effect("a", fail("first")),
+			pipeline.Effect("b", ok()),
+			pipeline.Effect("c", fail("second")),
+		).ContinueOnError(),
+		pipeline.Effect("after", ok()),
+	))
+
+	require.Error(t, out.err)
+	assert.Equal(t, pipeline.StatusPassed, out.state.Element("p/g/b").Status)
+	assert.Equal(t, pipeline.StatusFailed, out.state.Element("p/g/c").Status)
+	assert.Equal(t, pipeline.StatusFailed, out.state.Element("p/g").Status)
+	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/after").Status, "the group failed, so the root stops")
+	require.ErrorContains(t, out.err, "p/g/a: first")
+	require.ErrorContains(t, out.err, "p/g/c: second")
+}
+
+func TestRun_StepErrorUnwrapsToTheStepsOwnError(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("sentinel")
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(context.Context, *pipeline.StepContext) error { return fmt.Errorf("wrapped: %w", sentinel) }))))
+
+	require.ErrorIs(t, out.err, sentinel)
+}
+
+// -----------------------------------------------------------------------------
+// Parallel groups
+// -----------------------------------------------------------------------------
+
+func TestRun_ParallelLimitIsHonoured(t *testing.T) {
+	t.Parallel()
+
+	var running, peak atomic.Int32
+
+	step := pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+		now := running.Add(1)
+		defer running.Add(-1)
+
+		for {
+			p := peak.Load()
+			if now <= p || peak.CompareAndSwap(p, now) {
+				break
+			}
+		}
+
+		time.Sleep(20 * time.Millisecond)
+
+		return nil
+	})
+
+	children := make([]pipeline.Element, 0, 6)
+	for i := range 6 {
+		children = append(children, pipeline.Effect(fmt.Sprintf("s%d", i), step))
+	}
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Group("g", children...).Parallel(2)))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, int32(2), peak.Load())
+}
+
+func TestRun_ParallelUnlimitedRunsTogether(t *testing.T) {
+	t.Parallel()
+
+	var arrived sync.WaitGroup
+
+	arrived.Add(3)
+
+	// Each step waits for all three to start, which only works if they run at
+	// the same time.
+	step := pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+		arrived.Done()
+		arrived.Wait()
+
+		return nil
+	})
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Group("g",
+		pipeline.Effect("a", step), pipeline.Effect("b", step), pipeline.Effect("c", step)).Parallel(0)))
+
+	require.NoError(t, out.err)
+}
+
+// A3: with a limit, children still queued are not started after a sibling
+// has failed. They are not reached.
+func TestRun_A3_QueuedChildrenDoNotStartAfterAFailure(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Group("g",
+		pipeline.Effect("fail", fail("x")),
+		pipeline.Effect("b", ok()),
+		pipeline.Effect("c", ok()),
+	).Parallel(1)))
+
+	require.Error(t, out.err)
+	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/g/b").Status)
+	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/g/c").Status)
+}
+
+// B6: the same with ContinueOnError, after a cancel.
+func TestRun_B6_QueuedChildrenDoNotStartAfterACancel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	out := runPlan(t, ctx, mustPlan(t, pipeline.Group("g",
+		pipeline.Effect("a", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			cancel()
+
+			return nil
+		})),
+		pipeline.Effect("b", ok()),
+		pipeline.Effect("c", ok()),
+	).Parallel(1).ContinueOnError()))
+
+	require.ErrorIs(t, out.err, context.Canceled)
+	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	assert.Equal(t, pipeline.StatusPassed, out.state.Element("p/g/a").Status)
+	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/g/b").Status)
+	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/g/c").Status)
+}
+
+func TestRun_FailureLetsRunningSiblingsFinish(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	finished := make(chan struct{})
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Group("g",
+		pipeline.Effect("slow", pipeline.StepFunc(func(ctx context.Context, _ *pipeline.StepContext) error {
+			<-release
+
+			defer close(finished)
+
+			return ctx.Err()
+		})),
+		pipeline.Effect("fail", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			defer close(release)
+
+			return errors.New("x")
+		})),
+	).Parallel(0)))
+
+	<-finished
+	require.Error(t, out.err)
+	assert.Equal(t, pipeline.StatusPassed, out.state.Element("p/g/slow").Status, "not cancelled by its sibling's failure")
+}
+
+func TestRun_CancelOnErrorCancelsRunningSiblings(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Group("g",
+		pipeline.Effect("waiter", pipeline.StepFunc(func(ctx context.Context, _ *pipeline.StepContext) error {
+			close(started)
+			<-ctx.Done()
+
+			return ctx.Err()
+		})),
+		pipeline.Effect("fail", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			<-started
+
+			return errors.New("x")
+		})),
+	).Parallel(0).CancelOnError()))
+
+	require.Error(t, out.err)
+
+	waiter := out.state.Element("p/g/waiter")
+	assert.Equal(t, pipeline.StatusFailed, waiter.Status)
+	assert.Equal(t, pipeline.ErrorCancelled, waiter.Error.Kind)
+	assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome, "a group's own cancel is a failure, not a cancelled run")
+}
+
+// -----------------------------------------------------------------------------
+// Check, tries and timeouts
+// -----------------------------------------------------------------------------
+
+func TestRun_CheckBeforeRun(t *testing.T) {
+	t.Parallel()
+
+	done := &checkStep{done: func() bool { return true }}
+	todo := &checkStep{done: func() bool { return false }}
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("done", done), pipeline.Effect("todo", todo)))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, int32(0), done.runCalls.Load(), "Check said done, so Run is not called")
+	assert.Equal(t, int32(1), todo.runCalls.Load())
+	assert.Equal(t, []string{
+		"step.started p/done", "step.finished p/done skipped/done",
+		"step.started p/todo", "step.running p/todo", "step.finished p/todo passed",
+	}, trace(out.events))
+	assert.False(t, out.state.Element("p/done").RunCalled)
+	assert.True(t, out.state.Element("p/done").Done)
+}
+
+func TestRun_RetryRecoversWhenCheckFindsTheWorkDone(t *testing.T) {
+	t.Parallel()
+
+	var applied atomic.Bool
+
+	step := &checkStep{
+		done: applied.Load,
+		run: func(context.Context, *pipeline.StepContext) error {
+			applied.Store(true)
+
+			return errors.New("connection reset after applying")
+		},
+	}
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", step).Retry(3, time.Millisecond)))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, int32(1), step.runCalls.Load())
+	assert.Equal(t, []string{
+		"step.started p/a", "step.running p/a",
+		"step.retry p/a",
+		"step.finished p/a passed/recovered",
+	}, trace(out.events, pipeline.EventStepRetry))
+}
+
+func TestRun_RetriesThenFails(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(context.Context, *pipeline.StepContext) error {
+			return fmt.Errorf("try %d", calls.Add(1))
+		})).Retry(3, time.Millisecond)))
+
+	require.Error(t, out.err)
+	assert.Equal(t, int32(3), calls.Load())
+	assert.Equal(t, "p/a: try 3", out.err.Error())
+
+	var retries []int
+
+	for _, e := range out.events {
+		if e.Kind == pipeline.EventStepRetry {
+			retries = append(retries, e.Try)
+		}
+	}
+
+	assert.Equal(t, []int{1, 2}, retries)
+}
+
+func TestRun_TimeoutBoundsEachTry(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", waitForCancel()).Timeout(10*time.Millisecond)))
+
+	require.ErrorIs(t, out.err, context.DeadlineExceeded)
+	assert.Equal(t, pipeline.ErrorTimeout, out.state.Element("p/a").Error.Kind)
+	assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome)
+}
+
+func TestRun_RunDoesNotStartWhenCheckUsedUpTheTry(t *testing.T) {
+	t.Parallel()
+
+	step := &checkStep{done: func() bool { return false }}
+	slowCheck := &slowChecker{checkStep: step}
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", slowCheck).Timeout(10*time.Millisecond)))
+
+	require.ErrorIs(t, out.err, context.DeadlineExceeded)
+	assert.Equal(t, int32(0), step.runCalls.Load(), "Run must not start after the try's time ran out")
+	assert.False(t, out.state.Element("p/a").RunCalled)
+}
+
+// slowChecker's Check outlasts its context, then reports not done.
+type slowChecker struct{ *checkStep }
+
+func (c *slowChecker) Check(ctx context.Context, _ *pipeline.StepContext) (bool, error) {
+	<-ctx.Done()
+
+	return false, nil
+}
+
+func TestRun_CheckErrorFailsTheStep(t *testing.T) {
+	t.Parallel()
+
+	step := &erroringCheck{}
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", step)))
+
+	require.ErrorContains(t, out.err, "p/a: cannot tell")
+	assert.False(t, step.ran)
+}
+
+type erroringCheck struct{ ran bool }
+
+func (e *erroringCheck) Check(context.Context, *pipeline.StepContext) (bool, error) {
+	return false, errors.New("cannot tell")
+}
+
+func (e *erroringCheck) Run(context.Context, *pipeline.StepContext) error {
+	e.ran = true
+
+	return nil
+}
+
+// -----------------------------------------------------------------------------
+// Panics (A2, A5, B1)
+// -----------------------------------------------------------------------------
+
+type panicCheck struct{}
+
+func (panicCheck) Check(context.Context, *pipeline.StepContext) (bool, error) { panic("boom") }
+func (panicCheck) Run(context.Context, *pipeline.StepContext) error           { return nil }
+
+// A2 and B1: a panic in Check fails that step and is recorded. Nothing
+// escapes Run, and nothing kills the process from a parallel group.
+func TestRun_A2_B1_PanicInCheckFailsTheStep(t *testing.T) {
+	t.Parallel()
+
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%v", parallel), func(t *testing.T) {
+			t.Parallel()
+
+			g := pipeline.Group("g", pipeline.Effect("a", panicCheck{}), pipeline.Effect("b", ok()))
+			if parallel {
+				g = g.Parallel(0).ContinueOnError()
+			}
+
+			out := runPlan(t, t.Context(), mustPlan(t, g))
+
+			var pe *pipeline.PanicError
+			require.ErrorAs(t, out.err, &pe)
+			assert.Equal(t, "boom", pe.Value)
+
+			el := out.state.Element("p/g/a")
+			assert.Equal(t, pipeline.StatusFailed, el.Status)
+			assert.Equal(t, pipeline.ErrorPanic, el.Error.Kind)
+		})
+	}
+}
+
+// A5: the error from a panic has the step's path and a type, and the stack is
+// recorded separately instead of in the message.
+func TestRun_A5_PanicErrorHasPathAndKeepsTheStackOutOfTheMessage(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(context.Context, *pipeline.StepContext) error { panic("boom") }))))
+
+	assert.Equal(t, "p/a: panic: boom", out.err.Error())
+
+	info := out.state.Element("p/a").Error
+	assert.Equal(t, "panic: boom", info.Message)
+	assert.Contains(t, info.Stack, "goroutine", "the stack is recorded")
+	assert.NotContains(t, info.Message, "\n")
+}
+
+// -----------------------------------------------------------------------------
+// Events from steps (A6, B5)
+// -----------------------------------------------------------------------------
+
+type chattyCheck struct{}
+
+func (chattyCheck) Check(_ context.Context, s *pipeline.StepContext) (bool, error) {
+	s.Info("from check")
+
+	return false, nil
+}
+
+func (chattyCheck) Run(context.Context, *pipeline.StepContext) error { return nil }
+
+// A6: Check runs after step.started, so nothing it emits comes first.
+func TestRun_A6_CheckRunsAfterTheStepStarts(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", chattyCheck{})))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, []string{
+		"step.started p/a", "message p/a from check", "step.running p/a", "step.finished p/a passed",
+	}, trace(out.events, pipeline.EventMessage))
+}
+
+// B5: a StepContext stops working when its step returns.
+func TestRun_B5_StepContextIsInertAfterTheStepReturns(t *testing.T) {
+	t.Parallel()
+
+	leaked := make(chan *pipeline.StepContext, 1)
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Effect("a", pipeline.StepFunc(func(_ context.Context, s *pipeline.StepContext) error {
+			leaked <- s
+
+			return nil
+		})),
+		pipeline.Effect("b", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			s := <-leaked
+			s.Info("late")
+
+			if err := s.Record("k", 1); !errors.Is(err, pipeline.ErrStepReturned) {
+				return fmt.Errorf("Record after return: %w", err)
+			}
+
+			if _, err := s.Recorded("p/a", "k", new(int)); !errors.Is(err, pipeline.ErrStepReturned) {
+				return fmt.Errorf("Recorded after return: %w", err)
+			}
+
+			return nil
+		})),
+	))
+
+	require.NoError(t, out.err)
+
+	for _, e := range out.events {
+		assert.NotEqual(t, "late", e.Message)
+	}
+}
+
+func TestRun_StepContextBasics(t *testing.T) {
+	t.Parallel()
+
+	var path, attempt string
+
+	var labels pipeline.L
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Group("g",
+		pipeline.Effect("a", pipeline.StepFunc(func(_ context.Context, s *pipeline.StepContext) error {
+			path, attempt, labels = s.Path(), strconv.Itoa(s.Attempt()), s.Labels()
+			s.Warn("careful")
+			s.Progress("copy", "copying", 3, 10)
+
+			return nil
+		})).Labels(pipeline.L{"node": "n1"}),
+	).Labels(pipeline.L{"dc": "DC1"})))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, "p/g/a", path)
+	assert.Equal(t, "1", attempt)
+	assert.Equal(t, pipeline.L{"dc": "DC1", "node": "n1"}, labels)
+
+	var sawWarn, sawProgress bool
+
+	for _, e := range out.events {
+		if e.Kind == pipeline.EventMessage && e.Level == "warn" && e.Message == "careful" && e.Path == "p/g/a" {
+			sawWarn = true
+		}
+
+		if e.Kind == pipeline.EventProgress && e.Key == "copy" && e.Current == 3 && e.Total == 10 {
+			sawProgress = true
+		}
+	}
+
+	assert.True(t, sawWarn)
+	assert.True(t, sawProgress)
+}
+
+func TestStepContext_ZeroValueIsInert(t *testing.T) {
+	t.Parallel()
+
+	var s pipeline.StepContext
+
+	s.Info("nothing happens")
+	assert.Empty(t, s.Path())
+	require.ErrorIs(t, s.Record("k", 1), pipeline.ErrStepReturned)
+
+	_, err := s.Recorded("p/a", "k", new(int))
+	require.ErrorIs(t, err, pipeline.ErrStepReturned)
+	require.ErrorIs(t, s.Item("n1", pipeline.ItemPassed, ""), pipeline.ErrStepReturned)
+	assert.Empty(t, s.PreviousItems())
+}
+
+// -----------------------------------------------------------------------------
+// Recorded values, items and custom events
+// -----------------------------------------------------------------------------
+
+func TestRun_RecordedValuesAreReadableByLaterSteps(t *testing.T) {
+	t.Parallel()
+
+	var got string
+
+	var found bool
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Effect("backup", pipeline.StepFunc(func(_ context.Context, s *pipeline.StepContext) error {
+			return s.Record("dir", "/var/backups/42")
+		})),
+		pipeline.Effect("restore", pipeline.StepFunc(func(_ context.Context, s *pipeline.StepContext) error {
+			var err error
+
+			found, err = s.Recorded("p/backup", "dir", &got)
+			if err != nil {
+				return err
+			}
+
+			missing, err := s.Recorded("p/backup", "nope", &got)
+			if missing || err != nil {
+				return errors.New("a missing value should report not found")
+			}
+
+			return nil
+		})),
+	))
+
+	require.NoError(t, out.err)
+	assert.True(t, found)
+	assert.Equal(t, "/var/backups/42", got)
+
+	v, ok := out.state.Value("p/backup", "dir")
+	require.True(t, ok)
+	assert.JSONEq(t, `"/var/backups/42"`, string(v))
+}
+
+func TestRun_RecordRejectsWhatItCannotStore(t *testing.T) {
+	t.Parallel()
+
+	var errs []error
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(_ context.Context, s *pipeline.StepContext) error {
+			errs = append(errs,
+				s.Record("", 1),
+				s.Record("nan", math.NaN()),
+				s.Record("big", strings.Repeat("x", pipeline.MaxRecordBytes)),
+				s.Record("fits", strings.Repeat("x", pipeline.MaxRecordBytes/2)),
+				s.Record("over", strings.Repeat("x", pipeline.MaxRecordBytes/2)),
+			)
+
+			return nil
+		}))))
+
+	require.NoError(t, out.err)
+	require.ErrorContains(t, errs[0], "record key is empty")
+	require.ErrorContains(t, errs[1], `record "nan"`)
+	require.ErrorContains(t, errs[2], "would exceed")
+	require.NoError(t, errs[3])
+	require.ErrorContains(t, errs[4], "would exceed", "the limit is per step, not per value")
+
+	_, ok := out.state.Value("p/a", "nan")
+	assert.False(t, ok, "a rejected value is not recorded")
+}
+
+func TestRun_Items(t *testing.T) {
+	t.Parallel()
+
+	var badStatus, previous error
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("stage", pipeline.StepFunc(
+		func(_ context.Context, s *pipeline.StepContext) error {
+			if len(s.PreviousItems()) != 0 {
+				previous = errors.New("a first attempt has no previous items")
+			}
+
+			badStatus = s.Item("node9", "maybe", "")
+
+			if err := s.Item("node7", pipeline.ItemFailed, "timeout"); err != nil {
+				return err
+			}
+
+			return s.Item("node8", pipeline.ItemPassed, "")
+		}))))
+
+	require.NoError(t, out.err)
+	require.NoError(t, previous)
+	require.ErrorContains(t, badStatus, `unknown item status "maybe"`)
+	assert.Equal(t, map[string]pipeline.ItemState{
+		"node7": {Status: pipeline.ItemFailed, Message: "timeout", Run: out.res.Run},
+		"node8": {Status: pipeline.ItemPassed, Run: out.res.Run},
+	}, out.state.Items("p/stage"))
+}
+
+func TestRun_CustomEvents(t *testing.T) {
+	t.Parallel()
+
+	var errs []error
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(_ context.Context, s *pipeline.StepContext) error {
+			errs = append(errs,
+				s.Custom("deploy.endpoint-ready", map[string]any{"url": "https://x", "port": 443}),
+				s.Custom("bad type", 1),
+				s.Custom("x.nan", math.NaN()),
+				s.Custom("x.big", strings.Repeat("x", pipeline.MaxCustomBytes)),
+			)
+
+			return nil
+		}))))
+
+	require.NoError(t, out.err)
+	require.NoError(t, errs[0])
+	require.ErrorContains(t, errs[1], "custom event type")
+	require.ErrorContains(t, errs[2], `custom event "x.nan"`)
+	require.ErrorContains(t, errs[3], "over the")
+
+	var customs []pipeline.Event
+
+	for _, e := range out.events {
+		if e.Kind == pipeline.EventCustom {
+			customs = append(customs, e)
+		}
+	}
+
+	require.Len(t, customs, 1, "rejected custom events record nothing")
+	assert.Equal(t, "deploy.endpoint-ready", customs[0].Type)
+	assert.Equal(t, "p/a", customs[0].Path)
+	assert.JSONEq(t, `{"url": "https://x", "port": 443}`, string(customs[0].Data))
+}
+
+// -----------------------------------------------------------------------------
+// Cancellation (A7)
+// -----------------------------------------------------------------------------
+
+// A7: steps not reached after a cancel are reported as not reached, and the
+// run as cancelled.
+func TestRun_A7_CancelLeavesEveryElementResolved(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	out := runPlan(t, ctx, mustPlan(t,
+		pipeline.Effect("a", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			cancel()
+
+			return nil
+		})),
+		pipeline.Effect("b", ok()),
+		pipeline.Group("g", pipeline.Effect("c", ok())),
+	))
+
+	require.ErrorIs(t, out.err, context.Canceled)
+	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+
+	for path, want := range map[string]pipeline.Status{
+		"p/a":   pipeline.StatusPassed,
+		"p/b":   pipeline.StatusNotReached,
+		"p/g":   pipeline.StatusNotReached,
+		"p/g/c": pipeline.StatusNotReached,
+	} {
+		assert.Equal(t, want, out.state.Element(path).Status, path)
+	}
+
+	require.Len(t, out.state.Attempts, 1)
+	assert.Equal(t, pipeline.OutcomeCancelled, out.state.Attempts[0].Outcome)
+	assert.True(t, out.state.Unfinished())
+}
+
+func TestRun_CancelDuringAStepFailsItAsCancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	out := runPlan(t, ctx, mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(ctx context.Context, _ *pipeline.StepContext) error {
+			cancel()
+			<-ctx.Done()
+
+			return ctx.Err()
+		})).Retry(3, time.Hour)))
+
+	require.ErrorIs(t, out.err, context.Canceled)
+	assert.Equal(t, pipeline.ErrorCancelled, out.state.Element("p/a").Error.Kind)
+	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+}
+
+func TestRun_CancelAfterAFailureLeavesTheRunFailed(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	// The cancel arrives as the failure is reported, after it interrupted
+	// nothing.
+	cancelOnFinish := pipeline.ObserverFunc(func(_ context.Context, e pipeline.Event) {
+		if e.Kind == pipeline.EventStepFinished {
+			cancel()
+		}
+	})
+
+	out := runPlan(t, ctx, mustPlan(t, pipeline.Effect("a", fail("boom"))), pipeline.WithObservers(cancelOnFinish))
+
+	require.ErrorContains(t, out.err, "p/a: boom")
+	assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome)
+}
+
+func TestRun_CancelAfterTheLastStepLeavesTheRunPassed(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	out := runPlan(t, ctx, mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(context.Context, *pipeline.StepContext) error {
+			cancel()
+
+			return nil
+		}))))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, pipeline.OutcomePassed, out.res.Outcome)
+}
+
+// -----------------------------------------------------------------------------
+// Observers (B2)
+// -----------------------------------------------------------------------------
+
+// B2: an observer panic is recovered outside the step, so the step still
+// passes. The observer is dropped and a warning recorded.
+func TestRun_B2_ObserverPanicDoesNotFailTheStep(t *testing.T) {
+	t.Parallel()
+
+	var badCalls atomic.Int32
+
+	bad := pipeline.ObserverFunc(func(_ context.Context, e pipeline.Event) {
+		badCalls.Add(1)
+
+		if e.Kind == pipeline.EventStepRunning {
+			panic("renderer bug")
+		}
+	})
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", ok()), pipeline.Effect("b", ok())),
+		pipeline.WithObservers(bad))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, pipeline.StatusPassed, out.state.Element("p/a").Status)
+	assert.Equal(t, int32(3), badCalls.Load(), "run.started, step.started, then the panic; nothing after")
+
+	var warned bool
+
+	for _, e := range out.events {
+		if e.Kind == pipeline.EventMessage && e.Level == "warn" && strings.Contains(e.Message, "renderer bug") {
+			warned = true
+		}
+	}
+
+	assert.True(t, warned)
+}
+
+func TestRun_ObserverCallsAreSerialised(t *testing.T) {
+	t.Parallel()
+
+	var inside, overlaps atomic.Int32
+
+	obs := pipeline.ObserverFunc(func(context.Context, pipeline.Event) {
+		if inside.Add(1) > 1 {
+			overlaps.Add(1)
+		}
+
+		time.Sleep(time.Millisecond)
+		inside.Add(-1)
+	})
+
+	chatty := pipeline.StepFunc(func(_ context.Context, s *pipeline.StepContext) error {
+		for i := range 5 {
+			s.Info(strconv.Itoa(i))
+		}
+
+		return nil
+	})
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Group("g",
+		pipeline.Effect("a", chatty), pipeline.Effect("b", chatty), pipeline.Effect("c", chatty)).Parallel(0)),
+		pipeline.WithObservers(obs))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, int32(0), overlaps.Load())
+}
+
+// -----------------------------------------------------------------------------
+// Journal rules
+// -----------------------------------------------------------------------------
+
+func TestRun_RefusesAJournalWhoseLatestAttemptPassed(t *testing.T) {
+	t.Parallel()
+
+	j := pipeline.MemoryJournal()
+	plan := mustPlan(t, pipeline.Effect("a", ok()))
+
+	_, err := pipeline.Run(t.Context(), plan, j)
+	require.NoError(t, err)
+
+	_, err = pipeline.Run(t.Context(), plan, j)
+	require.ErrorIs(t, err, pipeline.ErrAlreadyComplete)
+}
+
+func TestRun_TimestampsComeFromTheClock(t *testing.T) {
+	t.Parallel()
+
+	clock := &tickingClock{now: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", ok())), pipeline.WithClock(clock))
+
+	require.NoError(t, out.err)
+
+	for _, e := range out.events {
+		assert.False(t, e.TS.Before(clock.now), "timestamps come from the injected clock")
+		assert.Equal(t, time.UTC, e.TS.Location())
+	}
+
+	finished := out.events[len(out.events)-2]
+	require.Equal(t, pipeline.EventStepFinished, finished.Kind)
+	assert.Positive(t, finished.DurationMs)
+}
+
+// tickingClock advances a second every time it is read.
+type tickingClock struct {
+	mu   sync.Mutex
+	now  time.Time
+	read int
+}
+
+func (c *tickingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.read++
+
+	return c.now.Add(time.Duration(c.read-1) * time.Second)
+}
+
+func (c *tickingClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// -----------------------------------------------------------------------------
+// Output
+// -----------------------------------------------------------------------------
+
+// outputOf returns "stream: line" for every output event, and the warnings.
+func outputOf(events []pipeline.Event) ([]string, []string) {
+	var lines, warnings []string
+
+	for _, e := range events {
+		switch {
+		case e.Kind == pipeline.EventOutput:
+			lines = append(lines, e.Stream+": "+e.Line)
+		case e.Kind == pipeline.EventMessage && e.Level == "warn":
+			warnings = append(warnings, e.Message)
+		}
+	}
+
+	return lines, warnings
+}
+
+func TestRun_StdoutAndStderrAreRecordedLineByLine(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(_ context.Context, s *pipeline.StepContext) error {
+			_, _ = io.WriteString(s.Stdout(), "one\r\ntw")
+			_, _ = io.WriteString(s.Stderr(), "oops\n")
+			_, _ = io.WriteString(s.Stdout(), "o\n\r10%\r20%\rno newline")
+
+			return nil
+		}))))
+
+	require.NoError(t, out.err)
+
+	lines, warnings := outputOf(out.events)
+	assert.Equal(t, []string{
+		"stdout: one", "stderr: oops", "stdout: two", "stdout: 10%", "stdout: 20%", "stdout: no newline",
+	}, lines)
+	assert.Empty(t, warnings)
+
+	// The unterminated tail is recorded before the step finishes.
+	tail := slices.IndexFunc(out.events, func(e pipeline.Event) bool { return e.Line == "no newline" })
+	finished := slices.IndexFunc(out.events, func(e pipeline.Event) bool { return e.Kind == pipeline.EventStepFinished })
+	assert.Less(t, tail, finished)
+}
+
+func TestRun_SubprocessOutputWithAnOverLongLine(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("needs sh")
+	}
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+		func(ctx context.Context, s *pipeline.StepContext) error {
+			cmd := exec.CommandContext(ctx, "sh", "-c",
+				`echo before; head -c 40000 /dev/zero | tr '\0' a; echo; echo after >&2`)
+			cmd.Stdout, cmd.Stderr = s.Stdout(), s.Stderr()
+
+			return cmd.Run()
+		}))))
+
+	require.NoError(t, out.err)
+
+	var pieces []pipeline.Event
+
+	for _, e := range out.events {
+		if e.Kind == pipeline.EventOutput && strings.HasPrefix(e.Line, "aaa") {
+			pieces = append(pieces, e)
+		}
+	}
+
+	require.Len(t, pieces, 3, "40000 bytes in pieces of 16 KiB")
+	assert.False(t, pieces[0].Continued)
+	assert.True(t, pieces[1].Continued)
+	assert.True(t, pieces[2].Continued)
+	assert.Len(t, pieces[0].Line, pipeline.MaxOutputLine)
+
+	// exec copies stdout and stderr on separate goroutines, so lines from
+	// the two streams can be recorded in either order. Order holds within a
+	// stream.
+	lines, warnings := outputOf(out.events)
+	stdout := slices.DeleteFunc(slices.Clone(lines), func(l string) bool { return !strings.HasPrefix(l, "stdout: ") })
+	assert.Equal(t, "stdout: before", stdout[0])
+	assert.Contains(t, lines, "stderr: after")
+	assert.Len(t, warnings, 1, "one warning for the one long line")
+}
+
+func TestRun_WritesAfterTheStepReturnsFail(t *testing.T) {
+	t.Parallel()
+
+	leaked := make(chan io.Writer, 1)
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Effect("a", pipeline.StepFunc(func(_ context.Context, s *pipeline.StepContext) error {
+			leaked <- s.Stdout()
+
+			return nil
+		})),
+		pipeline.Effect("b", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			if _, err := io.WriteString(<-leaked, "late\n"); !errors.Is(err, pipeline.ErrStepReturned) {
+				return fmt.Errorf("write after return: %w", err)
+			}
+
+			return nil
+		})),
+	))
+
+	require.NoError(t, out.err)
+
+	lines, _ := outputOf(out.events)
+	assert.Empty(t, lines)
+
+	var zero pipeline.StepContext
+
+	_, err := zero.Stdout().Write([]byte("x\n"))
+	require.ErrorIs(t, err, pipeline.ErrStepReturned)
+}
+
+// A write the step's writer accepts is always recorded, even when it races
+// the step returning: a write either fails with ErrStepReturned or appears.
+func TestRun_AcceptedWritesAreNeverLost(t *testing.T) {
+	t.Parallel()
+
+	for range 20 {
+		var accepted atomic.Int32
+
+		writerDone := make(chan struct{})
+
+		out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
+			func(_ context.Context, s *pipeline.StepContext) error {
+				w := s.Stdout()
+
+				go func() {
+					defer close(writerDone)
+
+					for {
+						if _, err := io.WriteString(w, "line\n"); err != nil {
+							return
+						}
+
+						accepted.Add(1)
+					}
+				}()
+
+				time.Sleep(time.Millisecond)
+
+				return nil
+			}))))
+
+		<-writerDone
+		require.NoError(t, out.err)
+
+		lines, _ := outputOf(out.events)
+		require.Len(t, lines, int(accepted.Load()))
+	}
+}
+
+func kinds(events []pipeline.Event, kind pipeline.EventKind) []pipeline.Event {
+	return slices.DeleteFunc(slices.Clone(events), func(e pipeline.Event) bool { return e.Kind != kind })
+}
