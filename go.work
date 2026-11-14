@@ -3,7 +3,6 @@ go 1.26.0
 use (
 	.
 	./examples/demo
-	./examples/deploy
 	./examples/detached
 	./examples/runbook
 	./observers/terminal
