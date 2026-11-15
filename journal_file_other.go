@@ -10,7 +10,7 @@ import (
 
 // OpenJournal is not supported on this platform: the file journal needs
 // flock. Use [MemoryJournal].
-func OpenJournal(_ string, _ ...JournalOption) (*Journal, error) {
+func OpenJournal(_ string) (*Journal, error) {
 	return nil, fmt.Errorf("pipeline: file journals: %w", errors.ErrUnsupported)
 }
 

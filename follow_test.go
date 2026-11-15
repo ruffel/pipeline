@@ -180,14 +180,16 @@ func TestFollow_ReportsARunnerThatIsGone(t *testing.T) {
 
 	// The journal stops taking writes after the step starts: the run ends
 	// with no run.finished, as a crash would leave it.
-	j, err := pipeline.OpenJournal(path, pipeline.WithWriteHook(func(e pipeline.Event) error {
+	j, err := pipeline.OpenJournal(path)
+	require.NoError(t, err)
+
+	hooked(j, func(e pipeline.Event) error {
 		if e.Kind == pipeline.EventStepFinished {
 			return errors.New("crashed")
 		}
 
 		return nil
-	}))
-	require.NoError(t, err)
+	})
 
 	_, err = pipeline.Run(t.Context(), mustPlan(t, pipeline.Effect("a", ok())), j)
 	require.Error(t, err)

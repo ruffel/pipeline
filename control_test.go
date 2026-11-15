@@ -264,14 +264,16 @@ func TestRequestStop_ErrNotRunning(t *testing.T) {
 
 		path := journalPath(t)
 
-		j, err := pipeline.OpenJournal(path, pipeline.WithWriteHook(func(e pipeline.Event) error {
+		j, err := pipeline.OpenJournal(path)
+		require.NoError(t, err)
+
+		hooked(j, func(e pipeline.Event) error {
 			if e.Kind == pipeline.EventStepFinished {
 				return errors.New("crashed")
 			}
 
 			return nil
-		}))
-		require.NoError(t, err)
+		})
 
 		_, err = pipeline.Run(t.Context(), plan, j)
 		require.Error(t, err)

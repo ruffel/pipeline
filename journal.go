@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/ruffel/pipeline/internal/journalhook"
 )
 
 var (
@@ -76,16 +78,20 @@ type Journal struct {
 	hook   func(Event) error
 }
 
-// JournalOption configures a journal.
-type JournalOption func(*Journal)
+// A journal's write hook is how tests simulate crashes and full disks; see
+// the internal journalhook package.
+func init() { //nolint:gochecknoinits // The only way to reach a journal without exporting the hook.
+	journalhook.Set = func(journal, hook any) {
+		j, _ := journal.(*Journal)
+		fn, _ := hook.(func(Event) error)
 
-// WithWriteHook calls hook with each event, already numbered, before the
-// journal stores it. If hook returns an error, the write fails with it
-// exactly as a storage failure would, and the run stops. It exists for fault
-// injection in tests: see the pipelinetest package.
-func WithWriteHook(hook func(Event) error) JournalOption {
-	return func(j *Journal) {
-		j.hook = hook
+		if j == nil || fn == nil {
+			panic(fmt.Sprintf("journalhook.Set: want *Journal and func(Event) error, got %T and %T", journal, hook))
+		}
+
+		j.mu.Lock()
+		j.hook = fn
+		j.mu.Unlock()
 	}
 }
 
@@ -101,14 +107,8 @@ type store interface {
 
 // MemoryJournal returns a journal held in memory. It behaves like a file
 // journal, including encoding every event, but nothing survives the process.
-func MemoryJournal(opts ...JournalOption) *Journal {
-	j := &Journal{store: &memoryStore{}}
-
-	for _, o := range opts {
-		o(j)
-	}
-
-	return j
+func MemoryJournal() *Journal {
+	return &Journal{store: &memoryStore{}}
 }
 
 // Events decodes and returns every event in the journal, in order.

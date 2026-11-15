@@ -53,6 +53,7 @@ import (
 	"time"
 
 	"github.com/ruffel/pipeline"
+	"github.com/ruffel/pipeline/internal/journalhook"
 )
 
 // ErrCrashed is the error every write fails with after a simulated crash.
@@ -120,7 +121,7 @@ type Crash struct {
 func CrashAfter(path string, point Point) *Crash {
 	c := &Crash{}
 
-	c.Journal = pipeline.MemoryJournal(pipeline.WithWriteHook(func(e pipeline.Event) error {
+	c.Journal = hooked(pipeline.MemoryJournal(), func(e pipeline.Event) error {
 		if c.crashed.Load() {
 			return ErrCrashed
 		}
@@ -130,9 +131,16 @@ func CrashAfter(path string, point Point) *Crash {
 		}
 
 		return nil
-	}))
+	})
 
 	return c
+}
+
+// hooked installs hook on j: see the internal journalhook package.
+func hooked(j *pipeline.Journal, hook func(pipeline.Event) error) *pipeline.Journal {
+	journalhook.Set(j, hook)
+
+	return j
 }
 
 // Crashed reports whether the crash point was reached.

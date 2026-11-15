@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/ruffel/pipeline/internal/journalhook"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -116,8 +117,10 @@ func TestOpenJournal_WriteHookApplies(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "test.journal")
 
-	j, err := OpenJournal(path, WithWriteHook(func(Event) error { return os.ErrPermission }))
+	j, err := OpenJournal(path)
 	require.NoError(t, err)
+
+	journalhook.Set(j, func(Event) error { return os.ErrPermission })
 
 	_, err = j.append(Event{Kind: EventRunStarted})
 	require.ErrorIs(t, err, os.ErrPermission)
