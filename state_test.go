@@ -188,11 +188,11 @@ func TestReplay_ValuesAndItemsKeepTheLatest(t *testing.T) {
 	s := replay(t,
 		runStarted("r1", 1),
 		pipeline.Event{Kind: pipeline.EventValue, Run: "r1", Path: "p/backup", Key: "dir", Value: json.RawMessage(`"/old"`)},
-		pipeline.Event{Kind: pipeline.EventItem, Run: "r1", Path: "p/stage", Item: "node7", Status: pipeline.ItemFailed, Message: "timeout"},
-		pipeline.Event{Kind: pipeline.EventItem, Run: "r1", Path: "p/stage", Item: "node8", Status: pipeline.ItemPassed},
+		pipeline.Event{Kind: pipeline.EventItem, Run: "r1", Path: "p/stage", Item: "node7", ItemStatus: pipeline.ItemFailed, Message: "timeout"},
+		pipeline.Event{Kind: pipeline.EventItem, Run: "r1", Path: "p/stage", Item: "node8", ItemStatus: pipeline.ItemPassed},
 		runStarted("r2", 2),
 		pipeline.Event{Kind: pipeline.EventValue, Run: "r2", Path: "p/backup", Key: "dir", Value: json.RawMessage(`"/new"`)},
-		pipeline.Event{Kind: pipeline.EventItem, Run: "r2", Path: "p/stage", Item: "node7", Status: pipeline.ItemPassed},
+		pipeline.Event{Kind: pipeline.EventItem, Run: "r2", Path: "p/stage", Item: "node7", ItemStatus: pipeline.ItemPassed},
 	)
 
 	v, ok := s.Value("p/backup", "dir")

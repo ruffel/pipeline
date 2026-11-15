@@ -97,7 +97,7 @@ func TestPlainObserver_Rendering(t *testing.T) {
 		{Kind: pipeline.EventStepStarted, Path: "upgrade/apply"},
 		{Kind: pipeline.EventValue, Path: "upgrade/apply", Key: "previous", Value: json.RawMessage(`"8.1"`)},
 		{Kind: pipeline.EventOutput, Path: "upgrade/apply", Stream: "stdout", Line: "E: dpkg was interrupted"},
-		{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node7", Status: pipeline.ItemFailed, Message: "timeout"},
+		{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node7", ItemStatus: pipeline.ItemFailed, Message: "timeout"},
 		{Kind: pipeline.EventMessage, Path: "upgrade/apply", Level: pipeline.LevelWarn, Message: "careful"},
 		{Kind: pipeline.EventCustom, Path: "upgrade/apply", Type: "deploy.ready", Data: json.RawMessage(`{"port":443}`)},
 		{Kind: pipeline.EventStepRetry, Path: "upgrade/apply", Try: 1, Error: &pipeline.ErrorInfo{Message: "flaky"}},

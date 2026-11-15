@@ -219,12 +219,13 @@ type Event struct {
 	Value json.RawMessage `json:"value,omitempty"`
 
 	// item, message and progress.
-	Item    string     `json:"item,omitempty"`
-	Status  ItemStatus `json:"status,omitempty"`
-	Level   Level      `json:"level,omitempty"`
-	Message string     `json:"message,omitempty"`
-	Current int        `json:"current,omitempty"`
-	Total   int        `json:"total,omitempty"`
+	// Item and ItemStatus are an item event's target and its result.
+	Item       string     `json:"item,omitempty"`
+	ItemStatus ItemStatus `json:"itemStatus,omitempty"`
+	Level      Level      `json:"level,omitempty"`
+	Message    string     `json:"message,omitempty"`
+	Current    int        `json:"current,omitempty"`
+	Total      int        `json:"total,omitempty"`
 
 	// output. Continued marks every piece of a split long line but the first.
 	Stream    string `json:"stream,omitempty"`

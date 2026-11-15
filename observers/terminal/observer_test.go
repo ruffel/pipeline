@@ -70,10 +70,10 @@ func TestObserver_SequentialRun(t *testing.T) {
 		pipeline.Event{Kind: pipeline.EventStepRunning, Path: "upgrade/prechecks/ring"},
 		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/prechecks/ring", Outcome: pipeline.OutcomePassed, DurationMs: 1800},
 		pipeline.Event{Kind: pipeline.EventStepStarted, Path: "upgrade/prechecks/disks"},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/prechecks/disks", Item: "node1", Status: pipeline.ItemPassed},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/prechecks/disks", Item: "node2", Status: pipeline.ItemFailed, Message: "92% full"},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/prechecks/disks", Item: "node2", Status: pipeline.ItemPassed, Message: "cleaned"},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/prechecks/disks", Item: "node3", Status: pipeline.ItemSkipped, Message: "down"},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/prechecks/disks", Item: "node1", ItemStatus: pipeline.ItemPassed},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/prechecks/disks", Item: "node2", ItemStatus: pipeline.ItemFailed, Message: "92% full"},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/prechecks/disks", Item: "node2", ItemStatus: pipeline.ItemPassed, Message: "cleaned"},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/prechecks/disks", Item: "node3", ItemStatus: pipeline.ItemSkipped, Message: "down"},
 		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/prechecks/disks", Outcome: pipeline.OutcomePassed, DurationMs: 900},
 		pipeline.Event{Kind: pipeline.EventGroupFinished, Path: "upgrade/prechecks", Outcome: pipeline.OutcomePassed, DurationMs: 2700},
 		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/backup", Outcome: pipeline.OutcomeSkipped, Reason: pipeline.ReasonDone},
@@ -155,7 +155,7 @@ func TestObserver_ParallelLinesNameTheirElement(t *testing.T) {
 		pipeline.Event{Kind: pipeline.EventStepStarted, Path: "upgrade/nodes/node1/packages"},
 		pipeline.Event{Kind: pipeline.EventOutput, Path: "upgrade/nodes/node1/packages", Stream: "stdout", Line: "Unpacking"},
 		pipeline.Event{Kind: pipeline.EventOutput, Path: "upgrade/nodes/node10", Stream: "stderr", Line: "warning: low disk"},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/nodes/node10", Item: "disk0", Status: pipeline.ItemPassed},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/nodes/node10", Item: "disk0", ItemStatus: pipeline.ItemPassed},
 		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/nodes/node1/packages", Outcome: pipeline.OutcomePassed, DurationMs: 4000},
 		pipeline.Event{Kind: pipeline.EventGroupFinished, Path: "upgrade/nodes/node1", Outcome: pipeline.OutcomePassed, DurationMs: 4100},
 		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/nodes/node10", Outcome: pipeline.OutcomePassed, DurationMs: 5000},
@@ -209,7 +209,7 @@ func TestObserver_UndoCountsItsItems(t *testing.T) {
 	out := render(t,
 		pipeline.Event{Kind: pipeline.EventRunStarted, Path: "upgrade", Plan: upgrade(), Rollback: true},
 		pipeline.Event{Kind: pipeline.EventUndoStarted, Path: "upgrade/backup"},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/backup", Item: "node1", Status: pipeline.ItemPassed},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/backup", Item: "node1", ItemStatus: pipeline.ItemPassed},
 		pipeline.Event{Kind: pipeline.EventUndoFinished, Path: "upgrade/backup", Outcome: pipeline.OutcomeUndone},
 		pipeline.Event{Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomePassed},
 	)
@@ -226,7 +226,7 @@ func TestObserver_EveryLineOfAMultilineDetailIsPrefixed(t *testing.T) {
 	out := render(t,
 		pipeline.Event{Kind: pipeline.EventRunStarted, Path: "upgrade", Plan: rolling()},
 		pipeline.Event{Kind: pipeline.EventMessage, Path: "upgrade/nodes/node10", Level: pipeline.LevelInfo, Message: "checking\ncomplete"},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/nodes/node10", Item: "disk0", Status: pipeline.ItemFailed, Message: "a\nb"},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/nodes/node10", Item: "disk0", ItemStatus: pipeline.ItemFailed, Message: "a\nb"},
 		pipeline.Event{Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomePassed},
 	)
 
@@ -410,13 +410,13 @@ func TestObserver_EachRunStartsAfresh(t *testing.T) {
 	out := render(t,
 		pipeline.Event{Kind: pipeline.EventRunStarted, Path: "upgrade", Plan: upgrade()},
 		pipeline.Event{Kind: pipeline.EventStepStarted, Path: "upgrade/apply"},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node1", Status: pipeline.ItemFailed},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node1", ItemStatus: pipeline.ItemFailed},
 		pipeline.Event{Kind: pipeline.EventStopRequested},
 		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/backup", Outcome: pipeline.OutcomeFailed},
 		pipeline.Event{Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomeFailed},
 		pipeline.Event{Kind: pipeline.EventRunStarted, Path: "upgrade", Plan: upgrade(), Attempt: 2},
 		pipeline.Event{Kind: pipeline.EventStepStarted, Path: "upgrade/apply"},
-		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node2", Status: pipeline.ItemPassed},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node2", ItemStatus: pipeline.ItemPassed},
 		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/apply", Outcome: pipeline.OutcomePassed},
 		pipeline.Event{Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomePassed},
 	)
@@ -469,7 +469,7 @@ func TestObserver_ConcurrentEvents(t *testing.T) {
 	for _, path := range []string{"upgrade/nodes/node1/packages", "upgrade/nodes/node10"} {
 		wg.Go(func() {
 			for range 100 {
-				obs.OnEvent(context.Background(), pipeline.Event{Kind: pipeline.EventItem, Path: path, Item: "x", Status: pipeline.ItemPassed})
+				obs.OnEvent(context.Background(), pipeline.Event{Kind: pipeline.EventItem, Path: path, Item: "x", ItemStatus: pipeline.ItemPassed})
 			}
 
 			obs.OnEvent(context.Background(), pipeline.Event{Kind: pipeline.EventStepFinished, Path: path, Outcome: pipeline.OutcomePassed})
