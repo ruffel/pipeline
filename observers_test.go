@@ -8,8 +8,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ruffel/pipeline"
+	"github.com/ruffel/pipeline/pipelinetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -175,6 +177,71 @@ func TestPlainObserver_AttributesInterleavedOutput(t *testing.T) {
         │ nodes/node1/stop: stopping
         │ nodes/node2/stop: stopping
         │ nodes/node1/stop: [INFO] done
+`, buf.String())
+}
+
+// Two children of a parallel group can each hold a step of the same name,
+// and their lines interleave, so what is beneath them is named by its path
+// below the group. Everything else keeps its short name.
+func TestPlainObserver_NamesWhatRunsSideBySide(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	node := func(name string) pipeline.GroupNode {
+		return pipeline.Group(name, pipeline.Effect("drain", ok())).
+			OnFailure(pipeline.Effect("undrain", ok()))
+	}
+
+	plan, err := pipeline.NewPlan("upgrade",
+		pipeline.Group("prechecks", pipeline.Observe("disk", ok())).Parallel(2),
+		pipeline.Group("nodes", node("node1")).Parallel(2),
+		pipeline.Group("after", pipeline.Effect("drain", ok())),
+	)
+	require.NoError(t, err)
+
+	_, err = pipeline.Run(t.Context(), plan, pipeline.MemoryJournal(),
+		pipeline.WithObservers(pipeline.NewPlainObserver(&buf)),
+		pipeline.WithClock(pipelinetest.NewFakeClock(time.Unix(0, 0))))
+	require.NoError(t, err)
+
+	assert.Equal(t, `▶ upgrade
+  ▶ prechecks
+    ✓ disk
+  ✓ prechecks
+  ▶ nodes
+    ▶ node1
+      ✓ node1/drain
+    ✓ node1
+  ✓ nodes
+  ▶ after
+    ✓ drain
+  ✓ after
+✓ upgrade passed
+`, buf.String())
+}
+
+// A rollback's last line says what it did, not that something passed.
+func TestPlainObserver_ARollbackThatDoesNotPass(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	obs := pipeline.NewPlainObserver(&buf)
+
+	for _, e := range []pipeline.Event{
+		{Kind: pipeline.EventRunStarted, Path: "upgrade", Rollback: true},
+		{Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomeFailed},
+		{Kind: pipeline.EventRunStarted, Path: "upgrade"},
+		{Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomeFailed},
+	} {
+		obs.OnEvent(t.Context(), e)
+	}
+
+	assert.Equal(t, `▶ upgrade (rollback)
+✗ upgrade rollback failed
+▶ upgrade
+✗ upgrade failed
 `, buf.String())
 }
 

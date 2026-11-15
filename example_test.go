@@ -160,7 +160,7 @@ func ExampleRollback() {
 	//   ↶ index.html undone
 	//     │ script.js: [INFO] removing script.js
 	//   ↶ script.js undone
-	// ✓ publish passed
+	// ✓ publish rolled back
 	// error: <nil>
 	// files left: 1
 }

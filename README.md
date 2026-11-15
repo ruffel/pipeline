@@ -297,7 +297,7 @@ $ go run . rollback
   ↶ index.html undone (1ms)
     │ style.css: [INFO] removing style.css
   ↶ style.css undone (1ms)
-✓ publish passed (11ms)
+✓ publish rolled back (11ms)
 ```
 
 Nobody wrote a reverse plan. `Rollback` reads the journal, and:

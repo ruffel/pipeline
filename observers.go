@@ -65,22 +65,38 @@ func (o *JSONObserver) Err() error {
 //	▶ upgrade (rollback)
 //	  ⊘ apply not undone — no-undo
 //	  ↶ backup undone (12s)
-//	✓ upgrade passed (12.1s)
+//	✓ upgrade rolled back (12.1s)
 //
 // Groups and the run show when they start and finish, steps when they
 // finish. Output, messages, progress, items, custom events and retries are
 // marked │ and named by their step's path below the plan, since steps in a
-// parallel group interleave. Write errors are ignored.
+// parallel group interleave.
+//
+// For the same reason, anything beneath a child of a parallel group is named
+// by its path below that group, so the lines of two nodes upgraded side by
+// side can be told apart:
+//
+//	▶ nodes
+//	  ▶ node1
+//	  ▶ node2
+//	    ✓ node2/drain (2s)
+//	    ✓ node1/drain (2.1s)
+//
+// Write errors are ignored.
 type PlainObserver struct {
 	mu           sync.Mutex
 	w            io.Writer
 	root         string
+	rollback     bool
 	descriptions map[string]string
+	// names holds what to call each element that is not called by the last
+	// segment of its path.
+	names map[string]string
 }
 
 // NewPlainObserver returns a PlainObserver writing to w.
 func NewPlainObserver(w io.Writer) *PlainObserver {
-	return &PlainObserver{w: w, descriptions: map[string]string{}}
+	return &PlainObserver{w: w, descriptions: map[string]string{}, names: map[string]string{}}
 }
 
 // OnEvent implements [Observer].
@@ -94,20 +110,20 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 	case EventRunStarted:
 		o.started(e)
 	case EventRunFinished:
-		o.printf("%s %s %s%s%s\n", mark(e.Outcome), e.Path, e.Outcome, errorText(e.Error), elapsed(e.DurationMs))
+		o.printf("%s %s %s%s%s\n", mark(e.Outcome), e.Path, o.ended(e.Outcome), errorText(e.Error), elapsed(e.DurationMs))
 	case EventGroupStarted:
-		o.printf("%s▶ %s%s\n", indent, name(e.Path), o.description(e.Path))
+		o.printf("%s▶ %s%s\n", indent, o.name(e.Path), o.description(e.Path))
 	case EventGroupReset:
-		o.printf("%s↺ %s reset: a resume runs it again from the start\n", indent, name(e.Path))
+		o.printf("%s↺ %s reset: a resume runs it again from the start\n", indent, o.name(e.Path))
 	case EventStepStarted, EventUndoStarted:
 		if d := o.description(e.Path); d != "" {
-			o.printf("%s· %s%s\n", indent, name(e.Path), d)
+			o.printf("%s· %s%s\n", indent, o.name(e.Path), d)
 		}
 	case EventUndoFinished:
-		o.printf("%s%s %s %s%s%s%s\n", indent, mark(e.Outcome), name(e.Path), undoText(e.Outcome),
+		o.printf("%s%s %s %s%s%s%s\n", indent, mark(e.Outcome), o.name(e.Path), undoText(e.Outcome),
 			reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
 	case EventGroupFinished, EventStepFinished:
-		o.printf("%s%s %s%s%s%s\n", indent, mark(e.Outcome), name(e.Path), reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
+		o.printf("%s%s %s%s%s%s\n", indent, mark(e.Outcome), o.name(e.Path), reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
 	case EventOutput, EventMessage, EventProgress, EventItem, EventCustom, EventStepRetry:
 		o.detail(indent, e.Path, detailText(e))
 	case EventStopRequested:
@@ -122,17 +138,18 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 			o.printf("■ stop requested%s; running steps will finish\n", by)
 		}
 	case EventGateWaiting:
-		o.printf("%s⏸ %s%s%s\n", indent, name(e.Path), dash(e.Prompt), deadline(e.Deadline))
+		o.printf("%s⏸ %s%s%s\n", indent, o.name(e.Path), dash(e.Prompt), deadline(e.Deadline))
 	case EventGateReleased:
-		o.printf("%s▶ %s %s\n", indent, name(e.Path), releasedText(e))
+		o.printf("%s▶ %s %s\n", indent, o.name(e.Path), releasedText(e))
 	case EventStepRunning, EventValue:
 		// Bookkeeping for resume and rollback; nothing for a reader.
 	}
 }
 
-// started writes a run's first line, and keeps its plan's descriptions.
+// started writes a run's first line, and keeps what it needs of its plan.
 func (o *PlainObserver) started(e Event) {
 	o.root = e.Path
+	o.rollback = e.Rollback
 	o.capture(e.Plan)
 
 	rollback := ""
@@ -204,29 +221,67 @@ func (o *PlainObserver) printf(format string, args ...any) {
 	_, _ = fmt.Fprintf(o.w, format, args...)
 }
 
-// capture keeps the plan's descriptions, by path.
+// ended says how an attempt ended. A rollback that passed has run nothing:
+// it has rolled the plan back.
+func (o *PlainObserver) ended(outcome Outcome) string {
+	switch {
+	case !o.rollback:
+		return string(outcome)
+	case outcome == OutcomePassed:
+		return "rolled back"
+	default:
+		return "rollback " + string(outcome)
+	}
+}
+
+// capture keeps the plan's descriptions, by path, and the names of the
+// elements beneath a parallel group's children.
 func (o *PlainObserver) capture(spec *NodeSpec) {
 	clear(o.descriptions)
+	clear(o.names)
 
-	var walk func(NodeSpec)
+	// within is the path of the outermost parallel group around n, if any.
+	var walk func(n NodeSpec, within string)
 
-	walk = func(n NodeSpec) {
+	walk = func(n NodeSpec, within string) {
 		if n.Description != "" {
 			o.descriptions[n.Path] = n.Description
 		}
 
+		// A parallel group's own children are told apart by their names.
+		// What is beneath them is not: two of them can hold a step of the
+		// same name, and their lines interleave.
+		if below := strings.TrimPrefix(n.Path, within+"/"); within != "" && strings.Contains(below, "/") {
+			o.names[n.Path] = below
+		}
+
+		if within == "" && n.Parallel {
+			within = n.Path
+		}
+
 		for _, c := range n.Children {
-			walk(c)
+			walk(c, within)
 		}
 
 		if n.OnFailure != nil {
-			walk(*n.OnFailure)
+			walk(*n.OnFailure, within)
 		}
 	}
 
 	if spec != nil {
-		walk(*spec)
+		walk(*spec, "")
 	}
+}
+
+// name returns what to call the element at path: its path below the parallel
+// group it is inside, if another element there could share its name, and
+// otherwise the last segment of its path.
+func (o *PlainObserver) name(path string) string {
+	if n, ok := o.names[path]; ok {
+		return n
+	}
+
+	return name(path)
 }
 
 func (o *PlainObserver) description(path string) string {
