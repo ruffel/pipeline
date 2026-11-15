@@ -7,7 +7,11 @@ terminal, all recorded in one journal file, with no server. It is for tools
 that operators run against real systems: installers, upgrades, migrations,
 failovers, data repairs.
 
-![demo](./.vhs/demo.gif)
+![A run that fails, is resumed, and is then rolled back](./.vhs/demo.gif)
+
+The recording is [examples/quickstart](./examples/quickstart): a run fails
+part-way, the next run carries on from the failure, a rollback undoes all of
+it, and the journal remembers each attempt.
 
 It sits between a script and a workflow engine:
 
@@ -19,6 +23,22 @@ It sits between a script and a workflow engine:
 
 [DESIGN.md](./DESIGN.md) says why it works the way it does, and what it
 deliberately leaves out.
+
+This page builds the program in the recording a step at a time, then goes
+further:
+
+1. [A first pipeline](#a-first-pipeline): a plan, two steps and a run.
+2. [Make it resumable](#make-it-resumable): a journal file, and steps that can
+   tell whether their work is done.
+3. [Make it undoable](#make-it-undoable): steps that can reverse their work.
+4. [A tool around it](#a-tool-around-it): `run`, `rollback` and `status`
+   commands.
+5. [Bigger plans](#bigger-plans): groups, parallel work, failure handlers and
+   approval gates.
+6. [Operating a run](#operating-a-run): stopping it, watching it and reading
+   its status from another terminal.
+
+The [reference](#reference) after that has the rules in full.
 
 ## Install
 
@@ -35,7 +55,9 @@ go get github.com/ruffel/pipeline/observers/terminal
 It needs Go 1.26. File journals need Linux, macOS or a BSD; elsewhere
 `OpenJournal` returns an error.
 
-## Quick Start
+## A first pipeline
+
+A plan is a list of named steps, and the simplest step is a function:
 
 ```go
 package main
@@ -44,19 +66,14 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/ruffel/pipeline"
 )
 
 func main() {
-	plan, err := pipeline.NewPlan("deploy",
-		pipeline.Group("build",
-			pipeline.Effect("compile-api", compile("api")),
-			pipeline.Effect("compile-worker", compile("worker")),
-		).Parallel(2),
-		pipeline.Effect("push-image", compile("image")).Retry(3, time.Second),
-		pipeline.Observe("smoke-test", compile("smoke")).Timeout(time.Minute),
+	plan, err := pipeline.NewPlan("publish",
+		pipeline.Effect("style.css", pipeline.StepFunc(style)),
+		pipeline.Effect("index.html", pipeline.StepFunc(index)),
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -66,30 +83,396 @@ func main() {
 	_, err = pipeline.Run(context.Background(), plan, pipeline.MemoryJournal(),
 		pipeline.WithObservers(pipeline.NewPlainObserver(os.Stdout)))
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-// compile stands in for real work.
-func compile(what string) pipeline.StepFunc {
-	return func(_ context.Context, sc *pipeline.StepContext) error {
-		sc.Info("building " + what)
+func style(_ context.Context, sc *pipeline.StepContext) error {
+	sc.Info("writing style.css")
 
+	return os.WriteFile("style.css", []byte("h1 { color: teal }\n"), 0o600)
+}
+
+func index(_ context.Context, sc *pipeline.StepContext) error {
+	sc.Info("writing index.html")
+
+	return os.WriteFile("index.html", []byte("<h1>hello</h1>\n"), 0o600)
+}
+```
+
+```text
+$ go run .
+▶ publish
+    │ style.css: [INFO] writing style.css
+  ✓ style.css
+    │ index.html: [INFO] writing index.html
+  ✓ index.html
+✓ publish passed
+```
+
+- **`NewPlan`** checks the plan and returns it. Nothing has run yet.
+- **`Effect`** marks a step that changes something. There are
+  [two other kinds](#three-kinds-of-step).
+- **`Run`** runs the steps in order, stops at the first one that fails, and
+  returns its error.
+- **The observer** shows the run. `NewPlainObserver` writes these lines, and
+  there is a [styled terminal view and a JSON one](#observers).
+- **`MemoryJournal`** keeps the record of the run in memory, so it is lost when
+  the program ends. The next step changes that.
+
+## Make it resumable
+
+Give `Run` a file journal in place of the memory one:
+
+```go
+	j, err := pipeline.OpenJournal("site.jsonl")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer j.Close()
+
+	_, err = pipeline.Run(context.Background(), plan, j,
+		pipeline.WithObservers(pipeline.NewPlainObserver(os.Stdout)))
+```
+
+Every outcome is now written to `site.jsonl`, and synced, before the run moves
+on. Calling `Run` again with the same plan and the same journal doesn't start
+over. It starts a new **attempt**, which does only what is left.
+
+To see that, make the second step fail on the first attempt:
+
+```go
+func index(_ context.Context, sc *pipeline.StepContext) error {
+	if sc.Attempt() == 1 {
+		return errors.New("disk full")
+	}
+
+	sc.Info("writing index.html")
+
+	return os.WriteFile("index.html", []byte("<h1>hello</h1>\n"), 0o600)
+}
+```
+
+```text
+$ go run .
+▶ publish
+    │ style.css: [INFO] writing style.css
+  ✓ style.css (10ms)
+  ✗ index.html — disk full (4ms)
+✗ publish failed — publish/index.html: disk full (23ms)
+publish/index.html: disk full
+exit status 1
+
+$ go run .
+▶ publish
+  ⊘ style.css — earlier-attempt
+    │ index.html: [INFO] writing index.html
+  ✓ index.html (4ms)
+✓ publish passed (12ms)
+```
+
+The second attempt skipped `style.css`, because the journal says it passed, and
+ran `index.html`, which had failed. A third `go run .` is refused with
+`ErrAlreadyComplete`: the operation is finished.
+
+It is the same when the process dies instead of failing. After a crash, a
+`kill -9` or a reboot, the next run carries on from the journal. A step that
+was running when the process died is run again, so **a step's `Run` must be
+safe to call again** on work it has already partly done.
+
+### Steps that check their own work
+
+The journal knows what the run did. It can't know what has happened to the
+system since: `style.css` is skipped even if somebody has deleted it. A step
+that can tell whether its work is done says so with a `Check` method. A
+function can't have one, so the step becomes a type:
+
+```go
+// file is a step that writes one file.
+type file struct{ path, content string }
+
+func (f file) Run(_ context.Context, sc *pipeline.StepContext) error {
+	sc.Info("writing " + f.path)
+
+	return os.WriteFile(f.path, []byte(f.content), 0o600)
+}
+
+// Check reports whether the file is already as it should be.
+func (f file) Check(context.Context, *pipeline.StepContext) (bool, error) {
+	got, err := os.ReadFile(f.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	return string(got) == f.content, err
+}
+```
+
+One type now serves both steps, in place of the two functions:
+
+```go
+	plan, err := pipeline.NewPlan("publish",
+		pipeline.Effect("style.css", file{"style.css", "h1 { color: teal }\n"}),
+		pipeline.Effect("index.html", file{"index.html", "<h1>hello</h1>\n"}),
+	)
+```
+
+The journal from the last run is finished with, so remove it to start a new
+operation. The two files are still there:
+
+```text
+$ rm site.jsonl
+$ go run .
+▶ publish
+  ⊘ style.css — done (1ms)
+  ⊘ index.html — done (1ms)
+✓ publish passed (10ms)
+```
+
+Nothing was written, because each step asked the disk first. `Check` runs
+before every `Run`, on a first attempt too, and it must not change anything. A
+step whose file had gone would be run again, whatever a journal said.
+
+### Three kinds of step
+
+`Effect` is one of three kinds. The kind says what a later attempt does with a
+step that has already passed:
+
+| Kind      | For                                       | Once it has passed, a later attempt…                     |
+| --------- | ----------------------------------------- | -------------------------------------------------------- |
+| `Effect`  | Work that changes the system once         | Checks it again if it has a `Check`, otherwise skips it  |
+| `Ensure`  | A setting that can drift between attempts | Applies it again                                         |
+| `Observe` | Reading the system, such as health checks | Runs it again                                            |
+
+Make a health check an `Observe` step, so that a resumed run makes it again.
+Make a setting that something else can change back between attempts, such as a
+maintenance mode, an `Ensure` step. [Resume rules](#resume-rules) has every
+case.
+
+## Make it undoable
+
+A step that can reverse its work says how with an `Undo` method:
+
+```go
+// Undo removes the file. A file already gone is not an error: Undo can be
+// called twice.
+func (f file) Undo(_ context.Context, sc *pipeline.StepContext) error {
+	sc.Info("removing " + f.path)
+
+	err := os.Remove(f.path)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
+	}
+
+	return err
+}
+```
+
+`Rollback` takes what `Run` takes, the same plan and the same journal, so one
+argument can choose between them:
+
+```go
+	do := pipeline.Run
+	if len(os.Args) > 1 && os.Args[1] == "rollback" {
+		do = pipeline.Rollback
+	}
+
+	_, err = do(context.Background(), plan, j,
+		pipeline.WithObservers(pipeline.NewPlainObserver(os.Stdout)))
+```
+
+Remove `site.jsonl` and the two files to start from nothing, run it, and then
+roll it back:
+
+```text
+$ go run . rollback
+▶ publish (rollback)
+    │ index.html: [INFO] removing index.html
+  ↶ index.html undone (1ms)
+    │ style.css: [INFO] removing style.css
+  ↶ style.css undone (1ms)
+✓ publish passed (11ms)
+```
+
+Nobody wrote a reverse plan. `Rollback` reads the journal, and:
+
+- **It undoes the steps whose `Run` was called, last one first.** A step that
+  `Check` found already done when it was first reached was never run, so it is
+  left alone: a rollback undoes what the operation did, and nothing else. That
+  is why this one started from nothing. Rolling back the operation before it,
+  which wrote no files, removes none.
+- **A step with no `Undo` is reported and stays done.** The rollback carries
+  on, and still passes.
+- **It is an attempt like any other.** If an `Undo` fails, call `Rollback`
+  again and it carries on from that step. Like `Run`, an `Undo` must be safe
+  to call again.
+- **After a rollback, `Run` does the work again.**
+
+[Rollback rules](#rollback-rules) has the rest.
+
+## A tool around it
+
+A tool wants three commands: one to run or resume, one to roll back, and one
+to say where things stand. Each is a few lines around the journal.
+
+`run` is the same call for a first run and for a resume. What matters is what
+it tells the operator when it doesn't pass:
+
+```go
+const journal = "site.jsonl"
+
+func run(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) error {
+	j, err := pipeline.OpenJournal(journal)
+	if err != nil {
+		return err // ErrJournalBusy: another process is running it
+	}
+	defer j.Close()
+
+	// Ctrl-C stops the run once its running step finishes.
+	stopper := pipeline.NewStopper()
+	defer pipeline.HandleSignals(stopper, pipeline.SignalOptions{})()
+
+	res, err := pipeline.Run(ctx, plan, j,
+		pipeline.WithObservers(view), pipeline.WithStopper(stopper))
+
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, pipeline.ErrAlreadyComplete):
+		return errors.New("already published: roll it back, or use a new journal to publish again")
+	case errors.Is(err, pipeline.ErrRollbackUnfinished):
+		return errors.New("a rollback has not finished: run rollback again")
+	case errors.Is(err, pipeline.ErrStopped):
+		return errors.New("stopped: run again to resume")
+	case res != nil:
+		return errors.New("failed: fix the cause and run again to resume, or roll back")
+	default:
+		return err // refused before anything ran: a changed plan, or a busy journal
 	}
 }
 ```
 
-`MemoryJournal` keeps the record in memory, which is enough to try it. Give
-`Run` a [file journal](#long-running-pipelines) and the run can be resumed.
+`Run` returns nil when everything passed. Otherwise it returns the failed
+steps' errors, each in a `StepError` with its path, and `res.Outcome` says how
+the attempt ended: `failed`, `stopped` or `cancelled`. `res` is nil when `Run`
+refuses the journal before starting an attempt.
+
+```go
+func rollback(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) error {
+	j, err := pipeline.OpenJournal(journal)
+	if err != nil {
+		return err
+	}
+	defer j.Close()
+
+	_, err = pipeline.Rollback(ctx, plan, j, pipeline.WithObservers(view))
+
+	return err // if an Undo failed, rollback again carries on from it
+}
+```
+
+`status` needs no plan and no lock. `Inspect` reads the journal, even while a
+run is writing it:
+
+```go
+func status() error {
+	st, err := pipeline.Inspect(journal)
+	if err != nil {
+		return err
+	}
+
+	if len(st.Attempts) == 0 {
+		fmt.Println("nothing started: run publishes the site")
+
+		return nil
+	}
+
+	last := len(st.Attempts) - 1
+
+	for i, a := range st.Attempts {
+		what := "run"
+		if a.Rollback {
+			what = "rollback"
+		}
+
+		// An attempt with no outcome is still running, or its process died.
+		outcome := string(a.Outcome)
+
+		switch {
+		case outcome != "":
+		case st.Live && i == last:
+			outcome = "running"
+		default:
+			outcome = "interrupted"
+		}
+
+		fmt.Printf("attempt %d  %-8s  %s\n", a.Attempt, what, outcome)
+	}
+
+	fmt.Println()
+
+	for _, step := range st.Plan.Children {
+		fmt.Printf("  %-11s  %s\n", st.Element(step.Path).Status, step.Name)
+	}
+
+	fmt.Println()
+
+	switch latest := st.Attempts[last]; {
+	case st.Live:
+		fmt.Println("running now")
+	case latest.Rollback && latest.Outcome == pipeline.OutcomePassed:
+		fmt.Println("rolled back: run publishes it again")
+	case latest.Rollback:
+		fmt.Println("the rollback did not finish: run rollback again")
+	case latest.Outcome == pipeline.OutcomePassed:
+		fmt.Println("published: rollback undoes it")
+	default:
+		fmt.Println("unfinished: run carries on, rollback undoes it")
+	}
+
+	return nil
+}
+```
+
+The journal is the record that a resume and a rollback work from, so a tool
+should never tell its operator to delete one that isn't finished with.
+
+[examples/quickstart](./examples/quickstart) is this program, complete, with
+two more steps, the styled terminal view and a `-fail` flag. It is what the
+recording at the top shows:
+
+```bash
+cd examples/quickstart
+go run . run -fail index.html   # fails part-way
+go run . run                    # resumes: only what is left
+go run . rollback               # undoes it, last step first
+go run . status
+```
+
+```text
+attempt 1  run       failed
+attempt 2  run       passed
+attempt 3  rollback  passed
+
+  not-reached  style.css
+  not-reached  script.js
+  not-reached  index.html
+  not-reached  verify
+
+rolled back: run publishes it again
+```
 
 ## How it fits together
+
+That is the whole model. Its parts have names:
 
 - A **plan** is a tree of groups and steps, built once and validated by
   `NewPlan`. It is data: `Describe` renders it before anything changes, and it
   doesn't change during a run.
 - Every element has a **path** built from its parents' names, such as
-  `deploy/build/compile-api`. The path is its identity.
+  `publish/index.html`. The path is its identity.
 - A **step** is your code: a value with a `Run` method, and optionally `Check`
   and `Undo`.
 - A **journal** is the record of one operation: an append-only file of events.
@@ -109,86 +492,114 @@ func compile(what string) pipeline.StepFunc {
 Everything else follows from the journal being the one record: resume reads
 it, rollback reads it, and so does a viewer in another process.
 
-## Steps
+## Bigger plans
 
-Each step says how it behaves when an operation is resumed:
-
-| Kind      | For                                       | Once it has passed, a later attempt…                     |
-| --------- | ----------------------------------------- | -------------------------------------------------------- |
-| `Effect`  | Work that changes the system once         | Checks it again if it has a `Check`, otherwise skips it  |
-| `Ensure`  | A setting that can drift between attempts | Applies it again                                         |
-| `Observe` | Reading the system, such as health checks | Runs it again                                            |
-
-A step can also implement:
-
-- **`Check(ctx, sc) (bool, error)`**: whether its work is already done. It runs
-  before every `Run`, on first attempts too, and a step whose work is done is
-  skipped. It must not change the system.
-- **`Undo(ctx, sc) error`**: how to reverse its work, for `Rollback`.
-
-`Run` and `Undo` must be idempotent: a process can die after one of them
-changed the system and before the journal said so, and the next attempt calls
-it again.
-
-Both are given a context, and that is the only way a step is stopped. A
-timeout, a cancel and a second Ctrl-C all cancel it. A step that ignores its
-context runs on regardless, and whatever it then returns stands.
+A real plan has structure: checks first, work in batches, an approval before
+the risky part. Steps go in groups, and a group is built by a function:
 
 ```go
-type pushImage struct{ ref string }
-
-func (p pushImage) Check(ctx context.Context, sc *pipeline.StepContext) (bool, error) {
-	return registry.Has(ctx, p.ref)
+func newPlan(c *cluster) (*pipeline.Plan, error) {
+	return pipeline.NewPlan("upgrade",
+		prechecks(c),
+		pipeline.Effect("backup", backup{c}),
+		nodes("canary", c, c.nodes[:1]),
+		pipeline.Gate("continue", pipeline.GateOptions{
+			Prompt:    "The canary is upgraded. Upgrade the rest?",
+			Approvers: []pipeline.Approver{pipeline.StdinApprover()},
+		}),
+		nodes("rest", c, c.nodes[1:]),
+		pipeline.Observe("verify", verify{c}),
+	)
 }
 
-func (p pushImage) Run(ctx context.Context, sc *pipeline.StepContext) error {
-	return registry.Push(ctx, p.ref)
+// prechecks only read the cluster, so a resumed run makes them again.
+func prechecks(c *cluster) pipeline.GroupNode {
+	return pipeline.Group("prechecks",
+		pipeline.Observe("disk-space", diskSpace{c}),
+		pipeline.Observe("ring-healthy", ringHealthy{c}),
+	).Parallel(2)
 }
 
-func (p pushImage) Undo(ctx context.Context, sc *pipeline.StepContext) error {
-	return registry.Delete(ctx, p.ref)
+// nodes upgrades a batch of nodes, two at a time.
+func nodes(name string, c *cluster, batch []string) pipeline.GroupNode {
+	groups := make([]pipeline.Element, 0, len(batch))
+
+	for _, n := range batch {
+		groups = append(groups, node(c, n))
+	}
+
+	return pipeline.Group(name, groups...).Parallel(2)
+}
+
+// node upgrades one node. If that fails, the node is put back on its old
+// version, and a later attempt upgrades it from the start.
+func node(c *cluster, name string) pipeline.GroupNode {
+	return pipeline.Group(name,
+		pipeline.Effect("drain", drain{c, name}),
+		pipeline.Effect("packages", packages{c, name}).Retry(3, 10*time.Second),
+		pipeline.Effect("restart", restart{c, name}).Timeout(2*time.Minute),
+	).
+		RecoverOnFailure(pipeline.Effect("restore", restore{c, name})).
+		Labels(pipeline.L{"node": name})
 }
 ```
 
-`StepFunc` turns a plain function into a step with neither `Check` nor `Undo`.
-`Check` and `Undo` are found on the value you give the plan, so a wrapper
-around a step must forward them. `Describe` shows what each step has.
+`Describe` prints what that builds, before anything runs:
 
-The `StepContext` is the step's way into the run:
+```text
+upgrade
+├── prechecks (parallel, limit 2)
+│   ├── disk-space (observe)
+│   └── ring-healthy (observe)
+├── backup (effect, undo)
+├── canary (parallel, limit 2)
+│   └── node1
+│       ├── drain (effect)
+│       ├── packages (effect, 3 tries)
+│       ├── restart (effect)
+│       └── restore (effect, recovers the group on failure)
+├── continue (gate)
+├── rest (parallel, limit 2)
+│   ├── node2
+│   │   ├── drain (effect)
+│   │   ├── packages (effect, 3 tries)
+│   │   ├── restart (effect)
+│   │   └── restore (effect, recovers the group on failure)
+│   └── node3
+│       ├── drain (effect)
+│       ├── packages (effect, 3 tries)
+│       ├── restart (effect)
+│       └── restore (effect, recovers the group on failure)
+└── verify (observe)
+```
 
-- `Info`, `Warn`, `Progress`, `Stdout` and `Stderr` report what it is doing.
-- `Record` stores a small value durably, and `Recorded` reads it from a later
-  step, a later attempt or an `Undo`.
-- `Item` records a result for one target of a step that fans out, such as one
-  host, and `PreviousItems` reads them back on a later attempt.
-- `Inputs` returns what the run was given with `WithInputs`.
-- `Custom` sends an event of your own to observers.
-
-Steps are configured with `Retry`, `Timeout`, `Description` and `Labels`.
-`Retry(3, time.Second)` allows up to three tries within an attempt, a second
-apart, and `Timeout` bounds each try. A step's `Run` can return `ErrSkipGroup`
-or `ErrSkipRun` to end its group, or the run, early and as passed.
-
-Labels are for observers and viewers of your own, to group or filter by node,
-region or tenant. They are in the plan that every viewer is given, and a step
-reads its own with `sc.Labels()`. The built-in views don't show them.
-
-## Groups
+### Groups
 
 A group runs its children in order, or `Parallel(n)` at most `n` at a time.
-Groups nest to any depth, and their labels pass down to their children.
+`Parallel(0)` sets no limit, and a child that is itself a group counts as one.
+Groups nest to any depth.
 
-When a child fails, a group starts nothing new and lets running children finish.
-`CancelOnError` cancels them too, and `ContinueOnError` runs every child and
-fails at the end.
+When a child fails, a group starts nothing new and lets running children
+finish. `CancelOnError` cancels them too, and `ContinueOnError` runs every
+child and fails at the end.
 
-A group can name one step to run when it fails:
+On a resume, a group that passed is skipped whole, with one exception: a group
+that holds nothing but `Observe` steps, like `prechecks`, always runs again.
+
+### When a group fails
+
+A group can name one step to run when it fails. Which one depends on what a
+resume should do:
 
 - **`OnFailure(step)`** cleans up around the group's work, such as turning
-  monitoring back on. A later attempt resumes the group from where it failed.
-- **`RecoverOnFailure(step)`** takes the group back to where it started, such as
-  putting a node back on its old version. A later attempt runs the whole group
-  again.
+  monitoring back on. The work itself is left as it is, and a later attempt
+  resumes the group **from where it failed**.
+- **`RecoverOnFailure(step)`** takes the group back to where it started, such
+  as putting a node back on its old version. The group is reset, as if none of
+  it had run, and a later attempt runs the whole group **from the start**.
+
+The handler runs when the group fails, not when it is stopped, and the group
+still fails afterwards.
 
 Take care when an `OnFailure` step reverses one of the group's own steps, such
 as turning a maintenance mode off again. That step is still recorded as passed,
@@ -196,39 +607,91 @@ and if it is an `Effect` with no `Check`, a resumed attempt skips it. Make it
 an `Ensure` step, which is applied again whenever its group is entered, or give
 it a `Check`.
 
-## Laying out a plan
+### Passing values between steps
 
-A plan written as one nested expression gets hard to read. Lay it out like
-any other code:
+`Record` stores a small value in the journal, and `Recorded` reads it by the
+path of the step that stored it: from a later step, a later attempt, or an
+`Undo`.
 
 ```go
-func newPlan(c *cluster) (*pipeline.Plan, error) {
-	return pipeline.NewPlan("upgrade",
-		prechecks(c),
-		pipeline.Effect("backup", backup{c}),
-		nodes(c),
-		pipeline.Observe("verify", verify{c}),
-	)
-}
-
-// nodes upgrades every node, two at a time.
-func nodes(c *cluster) pipeline.GroupNode {
-	groups := make([]pipeline.Element, 0, len(c.nodes))
-
-	for _, name := range c.nodes {
-		groups = append(groups, node(c, name))
+func (b backup) Run(ctx context.Context, sc *pipeline.StepContext) error {
+	archive := filepath.Join(b.c.backups, "upgrade.tar")
+	if err := sc.Record("archive", archive); err != nil {
+		return err
 	}
 
-	return pipeline.Group("nodes", groups...).Parallel(2)
+	return b.c.archive(ctx, archive)
 }
 
-func node(c *cluster, name string) pipeline.GroupNode {
-	return pipeline.Group(name,
-		pipeline.Effect("packages", packages{c, name}),
-		pipeline.Effect("restart", restart{c, name}),
-	).Labels(pipeline.L{"node": name})
+// Undo reads what its own Run recorded.
+func (b backup) Undo(_ context.Context, sc *pipeline.StepContext) error {
+	var archive string
+	if found, err := sc.Recorded(sc.Path(), "archive", &archive); err != nil || !found {
+		return err
+	}
+
+	return os.RemoveAll(archive)
+}
+
+// restore reads it from another step, by that step's path.
+func (r restore) Run(ctx context.Context, sc *pipeline.StepContext) error {
+	var archive string
+
+	found, err := sc.Recorded("upgrade/backup", "archive", &archive)
+	if err != nil {
+		return err
+	}
+
+	if !found {
+		return errors.New("no backup was recorded")
+	}
+
+	return r.c.restore(ctx, r.node, archive)
 }
 ```
+
+The value is stored before `Record` returns, so it is there even if the step
+that recorded it is killed a moment later. Record what an `Undo` will need
+before acting, not after.
+
+### Gates
+
+A `Gate` waits for an approval before the run goes on, as `continue` does
+between the two batches above. It can also give up waiting:
+
+```go
+pipeline.Gate("continue", pipeline.GateOptions{
+	Prompt:    "The canary is upgraded. Upgrade the rest?",
+	Approvers: []pipeline.Approver{pipeline.StdinApprover()},
+	Timeout:   30 * time.Minute,
+	OnTimeout: pipeline.TimeoutStop,
+})
+```
+
+`StdinApprover` asks on the terminal and `FileApprover` waits for a flag file.
+`Approve` releases a gate from another process, by its path, so nothing has to
+wait on a terminal. `Timeout` is optional. When it passes, `TimeoutStop` stops
+the run, `TimeoutDecline` fails the gate, and `TimeoutContinue` releases it as
+if approved. A gate released in an earlier attempt doesn't wait again.
+
+### Settings on a step
+
+- **`Retry(3, 10*time.Second)`** allows up to three tries within an attempt,
+  ten seconds apart.
+- **`Timeout(d)`** bounds each try, by cancelling the step's context.
+- **`Description(text)`** is a line for the views to show beside the name.
+- **`Labels(l)`** are for observers and viewers of your own, to group or filter
+  by node, region or tenant. A group's labels pass down to everything in it.
+  They are in the plan that every viewer is given, and a step reads its own
+  with `sc.Labels()`. The built-in views don't show them.
+
+A step's `Run` can return `ErrSkipGroup` or `ErrSkipRun` to end its group, or
+the run, early and as passed.
+
+### Laying out a plan
+
+A plan written as one nested expression gets hard to read. The plan above is
+laid out like any other code:
 
 - **One function for each group.** The top of the plan then reads as a table
   of contents, and each group's settings sit beside its few lines.
@@ -240,29 +703,95 @@ func node(c *cluster, name string) pipeline.GroupNode {
 Every builder method returns a changed copy and leaves the original alone, so
 use what it returns: `g.Parallel(2)` on a line of its own changes nothing.
 
-## Long-running pipelines
+## Operating a run
 
-Give `Run` a file journal and the operation survives its process:
+### Stopping
 
-```go
-j, err := pipeline.OpenJournal("deploy.jsonl")
-if err != nil {
-	return err
-}
-defer j.Close()
+- **`Stopper`** stops a run gracefully: running steps finish and nothing new
+  starts. `HandleSignals` wires it to Ctrl-C: the first stops, the second
+  cancels the running steps.
+- **`RequestStop`** does either from another process.
+- **Cancelling the context** cancels the running steps.
 
-res, err := pipeline.Run(ctx, plan, j, pipeline.WithObservers(view))
-```
+A stopped, cancelled or crashed attempt leaves the operation unfinished, and
+the next `Run` resumes it. When `Run` returns after a stop or a cancel, its
+error matches `ErrStopped`, and `res.Outcome` says which it was.
 
-Every outcome is written to the journal, and synced, before the run moves on.
-If the journal can't be written, the run stops. A journal has one writer at a
-time: a second `OpenJournal` fails with `ErrJournalBusy`.
+### Watching and controlling from elsewhere
 
-`Run` returns nil when everything passed. Otherwise it returns the failed
-steps' errors, each in a `StepError` with its path, and `res.Outcome` says how
-the attempt ended: `failed`, `stopped` or `cancelled`.
+Any process can read the journal while a run writes it:
 
-### Resuming
+- **`Follow`** delivers its events to observers as they are written, like
+  `tail -f`. A viewer sees exactly what the runner's own observers saw.
+- **`Inspect`** replays it into a `State`: every attempt, and where each
+  element stands.
+
+An observer of your own, or a viewer in another language, reads the events
+themselves. [JOURNAL.md](./JOURNAL.md) lists every kind of event and its fields.
+
+`Approve` and `RequestStop` leave their requests in a directory that `Run`
+makes beside the journal, named after it with `.control` added, and return
+once the journal shows the run acted on them.
+
+The journal and that directory belong to the user who started the run, and
+only that user can read or write them. Viewers and approvers run as the same
+user. A journal has one writer at a time: a second `OpenJournal` fails with
+`ErrJournalBusy`, and the error names the process that last wrote to it.
+
+### Reading the status
+
+`State.Attempts` lists every run and rollback with its outcome, and
+`State.Element(path)` says where a group or a step stands:
+
+| Status        | The element…                                                      |
+| ------------- | ----------------------------------------------------------------- |
+| `not-reached` | Has not been started by any attempt, or was undone by a rollback  |
+| `started`     | Started and has not finished                                      |
+| `passed`      | Finished its work                                                 |
+| `skipped`     | Was not run, for the reason in `Reason`                           |
+| `failed`      | Failed or was cancelled, with the error in `Error`                |
+| `stopped`     | Is a group that a stop kept from starting some of its children    |
+
+Three of them are easy to misread:
+
+- **`started` is not the same as running.** When `State.Live` is true, a
+  process has the journal open and is working on it. When it is false, the
+  process that started the element died part-way, and the next `Run` picks it
+  up. The same goes for an attempt whose `Outcome` is empty.
+- **`skipped` usually means done.** The reasons `done`, `earlier-attempt` and
+  `settled` say the work was already complete. Any other reason says the run or
+  the group ended before the element was reached. `ElementState.Done` gives the
+  answer either way.
+- **`not-reached` after a rollback means undone.** A step that a rollback
+  undoes goes back to `not-reached`, ready to run again. A step whose `Undo`
+  failed keeps its status and has an `UndoError`, and a group around work that
+  could not be undone reads `started`.
+
+What an operator can do next depends only on the latest attempt:
+
+| Latest attempt             | Next                                                  |
+| -------------------------- | ----------------------------------------------------- |
+| A run that passed          | Nothing to do. `Rollback` undoes it                   |
+| A run that didn't          | `Run` resumes it, or `Rollback` undoes it             |
+| A rollback that passed     | It is undone. `Run` does the work again               |
+| A rollback that didn't     | `Rollback` again. `Run` is refused until it passes    |
+
+### Inputs
+
+`WithInputs` records what the plan was built from: answers, flags, discovery
+results. A resume must be given the same inputs, or `Run` returns
+`ErrInputsChanged`. A tool can read them back with `Inspect` and
+`State.DecodeInputs`, and build the same plan without asking again.
+`WithNewInputs` accepts a change, but work already done under the old inputs
+is not done again for it.
+
+Fields of type `Secret` are never stored, so they are supplied on every
+attempt, and their values are masked wherever a step writes them.
+`WithRedactor` masks anything else.
+
+## Reference
+
+### Resume rules
 
 Call `Run` again with the same plan and the same journal. It starts a new
 attempt that does only what is left:
@@ -291,77 +820,13 @@ The journal belongs to one operation and one plan:
 - **A finished journal is refused** with `ErrAlreadyComplete`, once its latest
   attempt has passed. Start a new journal for a new operation, or give `Force`
   to run the whole plan again.
+- **If the journal can't be written, the run stops.**
 
-### Inputs
-
-`WithInputs` records what the plan was built from: answers, flags, discovery
-results. A resume must be given the same inputs, or `Run` returns
-`ErrInputsChanged`. A tool can read them back with `Inspect` and
-`State.DecodeInputs`, and build the same plan without asking again.
-`WithNewInputs` accepts a change, but work already done under the old inputs
-is not done again for it.
-
-Fields of type `Secret` are never stored, so they are supplied on every
-attempt, and their values are masked wherever a step writes them.
-`WithRedactor` masks anything else.
-
-### Stopping
-
-- **`Stopper`** stops a run gracefully: running steps finish and nothing new
-  starts. `HandleSignals` wires it to Ctrl-C: the first stops, the second
-  cancels the running steps.
-- **`RequestStop`** does either from another process.
-- **Cancelling the context** cancels the running steps.
-
-A stopped, cancelled or crashed attempt leaves the operation unfinished, and
-the next `Run` resumes it. When `Run` returns after a stop or a cancel, its
-error matches `ErrStopped`, and `res.Outcome` says which it was.
-
-### Gates
-
-A `Gate` waits for an approval before the run goes on:
-
-```go
-pipeline.Gate("continue-dc2", pipeline.GateOptions{
-	Prompt:    "Upgrade datacenter DC2?",
-	Approvers: []pipeline.Approver{pipeline.StdinApprover()},
-	Timeout:   30 * time.Minute,
-	OnTimeout: pipeline.TimeoutStop,
-})
-```
-
-`StdinApprover` asks on the terminal and `FileApprover` waits for a flag file.
-`Approve` releases a gate from another process, by its path, so nothing has to
-wait on a terminal. `Timeout` is optional. When it passes, `TimeoutStop` stops
-the run, `TimeoutDecline` fails the gate, and `TimeoutContinue` releases it as
-if approved. A gate released in an earlier attempt doesn't wait again.
-
-### Watching and controlling from elsewhere
-
-Any process can read the journal while a run writes it:
-
-- **`Follow`** delivers its events to observers as they are written, like
-  `tail -f`. A viewer sees exactly what the runner's own observers saw.
-- **`Inspect`** replays it into a `State`: every attempt, where each element
-  stands, and whether a process is running it now (`Live`).
-
-An observer of your own, or a viewer in another language, reads the events
-themselves. [JOURNAL.md](./JOURNAL.md) lists every kind of event and its fields.
-
-`Approve` and `RequestStop` leave their requests in a directory that `Run`
-makes beside the journal, named after it with `.control` added, and return
-once the journal shows the run acted on them.
-
-The journal and that directory belong to the user who started the run, and
-only that user can read or write them. Viewers and approvers run as the same
-user.
-
-### Rolling back
+### Rollback rules
 
 `Rollback` undoes what the journal says was done. It takes every `Effect` and
 `Ensure` step whose `Run` was called, whether that `Run` passed, failed or was
 interrupted, and calls each one's `Undo`, one at a time, in reverse plan order.
-Nobody writes the reverse plan.
 
 - A step whose `Run` no attempt called isn't undone: one that `Check` found
   already done when it was first reached, for example. A step that an earlier
@@ -377,84 +842,41 @@ Nobody writes the reverse plan.
   carries on where it stopped, calling again an `Undo` that was interrupted.
 - After a rollback passes, `Run` runs what was undone again.
 
-An `Undo` often needs something its `Run` knew. Record it before acting, and
-`Undo` can read it even if `Run` was killed part-way:
+An `Undo` often needs something its `Run` knew, such as where it put a backup.
+Record it before acting, and `Undo` can read it even if `Run` was killed
+part-way: see [Passing values between steps](#passing-values-between-steps).
 
-```go
-type backup struct{ dir string }
+### What a step can do
 
-func (b backup) Run(ctx context.Context, sc *pipeline.StepContext) error {
-	archive := filepath.Join(b.dir, "backup.tar")
-	if err := sc.Record("archive", archive); err != nil {
-		return err
-	}
+A step is a value with a `Run` method. It can also have
+`Check(ctx, sc) (bool, error)`, which says whether its work is already done and
+must not change the system, and `Undo(ctx, sc) error`, which reverses it.
 
-	return writeArchive(ctx, archive)
-}
+`Run` and `Undo` must be idempotent: a process can die after one of them
+changed the system and before the journal said so, and the next attempt calls
+it again.
 
-func (b backup) Undo(_ context.Context, sc *pipeline.StepContext) error {
-	var archive string
-	if found, err := sc.Recorded(sc.Path(), "archive", &archive); err != nil || !found {
-		return err
-	}
+Both are given a context, and that is the only way a step is stopped. A
+timeout, a cancel and a second Ctrl-C all cancel it. A step that ignores its
+context runs on regardless, and whatever it then returns stands.
 
-	return os.RemoveAll(archive)
-}
-```
+`StepFunc` turns a plain function into a step with neither `Check` nor `Undo`.
+`Check` and `Undo` are found on the value you give the plan, so a wrapper
+around a step must forward them. `Describe` shows what each step has.
 
-### Putting it together
+The `StepContext` is the step's way into the run:
 
-A tool with a `run` and a `rollback` command needs little more than this:
+- `Info`, `Warn`, `Progress`, `Stdout` and `Stderr` report what it is doing.
+- `Record` stores a small value durably, and `Recorded` reads it from a later
+  step, a later attempt or an `Undo`.
+- `Item` records a result for one target of a step that fans out, such as one
+  host, and `PreviousItems` reads them back on a later attempt.
+- `Inputs` returns what the run was given with `WithInputs`.
+- `Attempt`, `Path` and `Labels` say which attempt this is, and the step's own
+  path and labels.
+- `Custom` sends an event of your own to observers.
 
-```go
-func run(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) error {
-	j, err := pipeline.OpenJournal("deploy.jsonl")
-	if err != nil {
-		return err // ErrJournalBusy: another process is running it
-	}
-	defer j.Close()
-
-	// Ctrl-C stops the run once its running steps finish.
-	stopper := pipeline.NewStopper()
-	defer pipeline.HandleSignals(stopper, pipeline.SignalOptions{})()
-
-	res, err := pipeline.Run(ctx, plan, j,
-		pipeline.WithObservers(view), pipeline.WithStopper(stopper))
-
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, pipeline.ErrAlreadyComplete):
-		return errors.New("already deployed: roll it back, or use a new journal for a new deploy")
-	case errors.Is(err, pipeline.ErrRollbackUnfinished):
-		return errors.New("a rollback has not finished: run rollback again")
-	case errors.Is(err, pipeline.ErrStopped):
-		return errors.New("stopped: run again to resume")
-	case res != nil:
-		return fmt.Errorf("%w\nfix the cause and run again to resume, or roll back", err)
-	default:
-		return err // refused before anything ran: a changed plan, or a busy journal
-	}
-}
-
-func rollback(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) error {
-	j, err := pipeline.OpenJournal("deploy.jsonl")
-	if err != nil {
-		return err
-	}
-	defer j.Close()
-
-	_, err = pipeline.Rollback(ctx, plan, j, pipeline.WithObservers(view))
-
-	return err // if an Undo failed, rollback again carries on from it
-}
-```
-
-`res` is nil when `Run` refuses the journal before starting an attempt. The
-journal is the record a rollback works from, so a tool should never tell its
-operator to delete one that isn't finished with.
-
-## Observers
+### Observers
 
 | Observer | Package                 | Output                                |
 | -------- | ----------------------- | ------------------------------------- |
@@ -471,7 +893,7 @@ printed before its question.
 
 During a run, a panic in an observer is recovered and that observer is dropped.
 
-## Testing
+### Testing
 
 The `pipelinetest` package tests steps and plans without a real system:
 
@@ -484,15 +906,20 @@ The `pipelinetest` package tests steps and plans without a real system:
 
 ## Examples
 
-- **[demo](./examples/demo)**: groups, parallelism, progress, output, retries
-  and a timeout, in each observer's format
-- **[migrate](./examples/migrate)**: a tool with `run`, `rollback` and `status`
-  commands: steps with `Check` and `Undo`, a failure handler, inputs read back
-  from the journal, and tests that crash its steps
+Each is a module of its own that runs with `go run .`, and says at the top of
+its `main.go` what to try.
+
+- **[quickstart](./examples/quickstart)**: the program this page builds. Three
+  steps with `Check` and `Undo`, and `run`, `rollback` and `status` commands
+- **[demo](./examples/demo)**: what a run shows. Groups, parallelism, progress,
+  output, retries and a timeout, in each observer's format
 - **[runbook](./examples/runbook)**: a failover runbook with approval gates,
   descriptions, and resuming from the journal
 - **[detached](./examples/detached)**: a run that other terminals watch,
   approve and stop
+- **[migrate](./examples/migrate)**: a complete tool. A failure handler, a
+  recorded value used by an `Undo`, inputs read back from the journal, a
+  secret, and tests that crash its steps
 
 ## Stability
 
