@@ -125,7 +125,7 @@ func run(args []string) error {
 		return errors.New("a rollback has not finished; run rollback again first")
 	case errors.Is(err, pipeline.ErrInputsChanged):
 		return fmt.Errorf("%s is a migration of another database; use its -state", o.journal)
-	case res != nil && res.Outcome != pipeline.OutcomeFailed:
+	case errors.Is(err, pipeline.ErrStopped):
 		return errors.New("stopped; run again to carry on, or roll back")
 	case res != nil:
 		return errors.New("failed; fix the cause and run again to carry on, or roll back")

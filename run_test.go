@@ -342,6 +342,7 @@ func TestRun_B6_QueuedChildrenDoNotStartAfterACancel(t *testing.T) {
 
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 	assert.Equal(t, pipeline.StatusPassed, out.state.Element("p/g/a").Status)
 	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/g/b").Status)
 	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/g/c").Status)
@@ -852,6 +853,7 @@ func TestRun_A7_CancelLeavesEveryElementResolved(t *testing.T) {
 
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 
 	for path, want := range map[string]pipeline.Status{
 		"p/a":   pipeline.StatusPassed,
@@ -883,6 +885,7 @@ func TestRun_CancelDuringAStepFailsItAsCancelled(t *testing.T) {
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.ErrorCancelled, out.state.Element("p/a").Error.Kind)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 }
 
 func TestRun_CancelAfterAFailureLeavesTheRunFailed(t *testing.T) {
