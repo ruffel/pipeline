@@ -21,8 +21,8 @@ github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3
 github.com/rivo/uniseg v0.2.0/go.mod h1:J6wj4VEh+S6ZtnVlnTBMWIodfgj8LQOQFoIToxlJtxc=
 github.com/rivo/uniseg v0.4.7 h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ=
 github.com/rivo/uniseg v0.4.7/go.mod h1:FN3SvrM+Zdj16jyLfmOkMNblXMcoc8DfTHruCPUcx88=
-github.com/ruffel/pipeline v0.2.1-0.20261114081110-bd267ba5bd25 h1:vEHh/zsm5fPt3EfKILHSYX0PV0vOFI92CvsFRhHi2b8=
-github.com/ruffel/pipeline v0.2.1-0.20261114081110-bd267ba5bd25/go.mod h1:7bqtGfxmnc/qKcJjZ4DMRu8+/1qhMWTZ6lIVWb3ajmc=
+github.com/ruffel/pipeline v0.2.1-0.20261115092915-e76458d634ef h1:rPNbXXG8pGBMyDRoIViYsNTD+jPcko0hgoBszyEV5o0=
+github.com/ruffel/pipeline v0.2.1-0.20261115092915-e76458d634ef/go.mod h1:7bqtGfxmnc/qKcJjZ4DMRu8+/1qhMWTZ6lIVWb3ajmc=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=
