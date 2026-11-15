@@ -87,14 +87,18 @@ resume or rollback needs may live only in one.
 **Decision:** Each step is an `Effect`, an `Ensure` or an `Observe`, chosen when
 the plan is built.
 
-- **Effect** changes the system once. Once it has finished, a resumed run checks
+- **Effect** changes the system once. Once it has passed, a resumed run checks
   it with its `Check`, or skips it if it has none.
 - **Ensure** sets something that can drift between attempts (a service disabled,
-  a maintenance mode), so it is never trusted from the journal and is applied
+  a maintenance mode), so its own passed outcome is never trusted: it is applied
   again whenever its group is entered.
 - **Observe** only reads the system, so its result goes stale. It runs whenever
   its group is entered, fails a resumed run exactly as it fails a first run, and
   may not have a `Check` or an `Undo`.
+
+A group is entered unless it is settled (below). The kinds differ in what a
+passed outcome is worth. With a `Check`, an `Effect` and an `Ensure` step resume
+alike: `Check`, then `Run` if the work isn't done.
 
 ## Check Always Runs Before Run
 
@@ -125,7 +129,8 @@ interrupted step depends on reading what its `Run` recorded.
 ## A Settled Group Is Skipped Whole
 
 **Decision:** On resume, a group that finished and passed in an earlier attempt
-is skipped as a unit: none of its steps run, nor their `Check`s.
+is settled, and is skipped as a unit: none of its steps run, nor their `Check`s.
+That includes its `Ensure` and `Observe` steps.
 
 Deciding step by step would re-run steps that a later step in the same group
 reversed. A group with only `Observe` steps beneath it never settles. Steps can
@@ -178,14 +183,16 @@ A run never goes on by itself sooner than its timeout after it starts waiting.
 `Approve` releases a gate from any process, so nothing has to wait on a
 terminal.
 
-## Control Requests Go Through the Journal
+## Control Requests Are Acknowledged Through the Journal
 
 **Decision:** `RequestStop` and `Approve` write a request into a directory beside
 the journal that only the run's user can write to, and return once the journal
 shows the run acted on it.
 
 Requests are scoped to the run in progress. The journal is how the requester
-knows it worked, with no socket or server between them.
+knows it worked, with no socket or server between them. The journal and the
+directory are readable and writable only by the run's user, so that is who can
+watch, approve and stop.
 
 ## Secrets Never Reach the Journal
 

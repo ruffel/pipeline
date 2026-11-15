@@ -127,7 +127,7 @@ func (g GroupNode) OnFailure(step StepNode) GroupNode {
 
 // RecoverOnFailure names a recovery step: an Effect step run when the group
 // fails, to take the group back to where it started, such as putting a node
-// back on its old version. It runs as an [GroupNode.OnFailure] step does,
+// back on its old version. It runs as a [GroupNode.OnFailure] step does,
 // except that the group is reset first: everything in it goes back to never
 // started, its recorded values and items are forgotten, and a later attempt
 // runs the whole group again.
@@ -174,8 +174,9 @@ type StepNode struct {
 	timeout     time.Duration
 }
 
-// Effect returns a step that changes the system once. On later attempts it is
-// checked with its Check, or skipped if it has none.
+// Effect returns a step that changes the system once. Once it has passed,
+// later attempts check it with its Check, or skip it if it has none. Until
+// then, every attempt that reaches it runs it.
 func Effect(name string, step Step) StepNode {
 	return newStepNode(name, KindEffect, step)
 }
