@@ -29,3 +29,9 @@ examples/migrate/migrate
 examples/migrate/migrate.jsonl
 examples/migrate/migrate.jsonl.control/
 examples/migrate/.migrate-state/
+examples/quickstart/quickstart
+examples/quickstart/site.jsonl
+examples/quickstart/site.jsonl.control/
+examples/quickstart/style.css
+examples/quickstart/script.js
+examples/quickstart/index.html

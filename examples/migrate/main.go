@@ -249,17 +249,19 @@ func status(args []string) error {
 		return nil
 	}
 
-	for _, a := range st.Attempts {
+	for i, a := range st.Attempts {
 		what := "run"
 		if a.Rollback {
 			what = "rollback"
 		}
 
+		// An attempt with no outcome is still running, or its process died.
+		// Only the latest can be running.
 		outcome := string(a.Outcome)
 
 		switch {
 		case outcome != "":
-		case st.Live:
+		case st.Live && i == len(st.Attempts)-1:
 			outcome = "in progress"
 		default:
 			outcome = "interrupted"
