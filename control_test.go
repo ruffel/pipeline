@@ -166,6 +166,7 @@ func TestRequestStop_CancelsARun(t *testing.T) {
 	out := lr.wait(t)
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 
 	state, err := pipeline.Inspect(lr.path)
 	require.NoError(t, err)
@@ -190,6 +191,7 @@ func TestRequestStop_ACancelAfterAGracefulStop(t *testing.T) {
 	out := lr.wait(t)
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 
 	state, err := pipeline.Inspect(lr.path)
 	require.NoError(t, err)

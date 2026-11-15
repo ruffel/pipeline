@@ -35,9 +35,14 @@ type Result struct {
 // starts nothing new. The run's outcome is then [OutcomeCancelled].
 //
 // A [Stopper] given with [WithStopper] stops the run gracefully instead:
-// running steps finish, nothing new starts, the outcome is
-// [OutcomeStopped], and Run returns [ErrStopped] (joined with the errors
-// of any steps that failed).
+// running steps finish, nothing new starts, and the outcome is
+// [OutcomeStopped].
+//
+// A run stopped or cancelled, by any of these or by [RequestStop], is
+// unfinished, and Run returns an error that matches [ErrStopped], joined
+// with the errors of any steps that failed. A cancel's error matches the
+// context's error too, such as [context.Canceled]. The Result's Outcome
+// says which it was.
 //
 // Other processes stop or cancel a run on a file journal with
 // [RequestStop], and approve its gates with [Approve]. Run makes a
@@ -267,6 +272,7 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	case err == nil:
 	case r.cut.Load():
 		outcome = OutcomeCancelled
+		err = stoppedErr(err)
 	case r.halted.Load():
 		outcome = OutcomeStopped
 		err = stoppedErr(err)
@@ -320,8 +326,9 @@ func (r *runner) work(ctx context.Context) error {
 	return err
 }
 
-// stoppedErr is the error a stopped run returns: ErrStopped alone if nothing
-// failed, or joined with the failures.
+// stoppedErr is the error a stopped or cancelled run returns: ErrStopped
+// alone if nothing failed, or joined with the failures. A cancel's failures
+// carry the context's error, so that still matches too.
 func stoppedErr(err error) error {
 	switch {
 	case onlyStopped(err):

@@ -322,6 +322,7 @@ func TestGate_ACancelEndsTheWait(t *testing.T) {
 
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 	assert.Equal(t, pipeline.ErrorCancelled, out.state.Element("p/go").Error.Kind)
 	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/after").Status)
 }
@@ -476,6 +477,7 @@ func TestGate_APendingStopOrCancelOutranksAnApproval(t *testing.T) {
 
 			require.ErrorIs(t, out.err, context.Canceled)
 			require.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+			require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 			require.Empty(t, kinds(out.events, pipeline.EventGateReleased), "the gate is not released")
 			require.Equal(t, pipeline.ErrorCancelled, out.state.Element("p/go").Error.Kind)
 		}

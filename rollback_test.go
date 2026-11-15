@@ -354,6 +354,7 @@ func TestRollback_StopAndCancel(t *testing.T) {
 		res, err := pipeline.Rollback(ctx, plan, j)
 		require.ErrorIs(t, err, context.Canceled)
 		assert.Equal(t, pipeline.OutcomeCancelled, res.Outcome)
+		require.ErrorIs(t, err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 		assert.Zero(t, c.get("undo a"))
 	})
 }

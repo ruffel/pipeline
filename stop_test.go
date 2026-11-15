@@ -269,6 +269,7 @@ func TestStop_ACancelOutranksAStop(t *testing.T) {
 
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 }
 
 // readyClock's waits are over as soon as they begin, so a wait between tries
@@ -377,6 +378,7 @@ func TestStopper_CancelCancelsTheRun(t *testing.T) {
 
 		require.ErrorIs(t, out.err, context.Canceled)
 		assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+		require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 		assert.Equal(t, &pipeline.StopRequest{
 			Mode: pipeline.StopCancel, By: "stopper", Who: "alice",
 		}, out.state.Attempts[0].Stop, "a cancel outranks a stop")
@@ -400,6 +402,7 @@ func TestStopper_CancelledBeforeTheRun(t *testing.T) {
 
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 	assert.Zero(t, c.get("first"))
 	assert.Equal(t, pipeline.StopCancel, out.state.Attempts[0].Stop.Mode)
 }
@@ -422,6 +425,7 @@ func TestStopper_StoppedAndCancelledBeforeTheRun(t *testing.T) {
 
 		require.ErrorIs(t, out.err, context.Canceled)
 		require.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+		require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 		require.Zero(t, c.get("first"))
 	}
 }
@@ -451,6 +455,7 @@ func TestStopper_StoppedAndCancelledInAParallelGroup(t *testing.T) {
 
 		require.ErrorIs(t, out.err, context.Canceled)
 		require.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+		require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 		require.Zero(t, c.get("second"))
 		require.Equal(t, pipeline.StatusFailed, out.state.Element("p/g").Status, "cut short, not stopped")
 	}
@@ -479,6 +484,7 @@ func TestStopper_ACancelPendingAtAGateOutranksItsApproval(t *testing.T) {
 
 		require.ErrorIs(t, out.err, context.Canceled)
 		require.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+		require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 		require.Empty(t, kinds(out.events, pipeline.EventGateReleased))
 	}
 }
@@ -503,6 +509,85 @@ func TestStopper_ACancelPendingBetweenTriesOutranksAStop(t *testing.T) {
 
 		require.ErrorIs(t, out.err, context.Canceled)
 		require.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+		require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 		require.Equal(t, pipeline.ErrorCancelled, out.state.Element("p/a").Error.Kind)
 	}
+}
+
+// Every way of cancelling a run, or a rollback, ends it unfinished, as a
+// stop does: the error matches ErrStopped, and still the context's error,
+// and the outcome says it was a cancel.
+func TestCancel_MatchesErrStopped(t *testing.T) {
+	t.Parallel()
+
+	cancelling := map[string]func(t *testing.T, j *pipeline.Journal, plan *pipeline.Plan, do attemptFunc) (*pipeline.Result, error){
+		"the context": func(t *testing.T, j *pipeline.Journal, plan *pipeline.Plan, do attemptFunc) (*pipeline.Result, error) {
+			t.Helper()
+
+			ctx, cancel := context.WithCancel(t.Context())
+
+			return do(ctx, plan, j, pipeline.WithObservers(onRunning(cancel)))
+		},
+		"a Stopper": func(t *testing.T, j *pipeline.Journal, plan *pipeline.Plan, do attemptFunc) (*pipeline.Result, error) {
+			t.Helper()
+
+			s := pipeline.NewStopper()
+
+			return do(t.Context(), plan, j, pipeline.WithStopper(s),
+				pipeline.WithObservers(onRunning(func() { s.Cancel("alice") })))
+		},
+	}
+
+	for name, cancelWith := range cancelling {
+		t.Run("run, by "+name, func(t *testing.T) {
+			t.Parallel()
+
+			plan := mustPlan(t, pipeline.Effect("wait", waitForCancel()))
+
+			res, err := cancelWith(t, pipeline.MemoryJournal(), plan, pipeline.Run)
+
+			require.ErrorIs(t, err, pipeline.ErrStopped)
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, pipeline.OutcomeCancelled, res.Outcome)
+		})
+
+		t.Run("rollback, by "+name, func(t *testing.T) {
+			t.Parallel()
+
+			var c calls
+
+			plan := mustPlan(t,
+				pipeline.Effect("a", undoable{c: &c, name: "a"}),
+				pipeline.Effect("b", undoable{c: &c, name: "b", undo: func(ctx context.Context, _ *pipeline.StepContext) error {
+					<-ctx.Done()
+
+					return ctx.Err()
+				}}),
+			)
+			j := pipeline.MemoryJournal()
+
+			require.NoError(t, resumeOn(t, j, plan).err)
+
+			res, err := cancelWith(t, j, plan, pipeline.Rollback)
+
+			require.ErrorIs(t, err, pipeline.ErrStopped)
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, pipeline.OutcomeCancelled, res.Outcome)
+			assert.Zero(t, c.get("undo a"))
+		})
+	}
+}
+
+type attemptFunc func(context.Context, *pipeline.Plan, *pipeline.Journal, ...pipeline.Option) (*pipeline.Result, error)
+
+// onRunning calls fn when a step's Run is about to be called, or a rollback
+// starts an undo.
+func onRunning(fn func()) pipeline.Observer {
+	var once sync.Once
+
+	return pipeline.ObserverFunc(func(_ context.Context, e pipeline.Event) {
+		if e.Kind == pipeline.EventStepRunning || e.Kind == pipeline.EventUndoStarted {
+			once.Do(fn)
+		}
+	})
 }

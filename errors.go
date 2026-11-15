@@ -26,9 +26,11 @@ var (
 	// it first.
 	ErrRollbackUnfinished = errors.New("pipeline: the journal's rollback has not finished")
 
-	// ErrStopped is returned by [Run] when a [Stopper] or [RequestStop]
-	// stopped the run before its work was done. The run is unfinished, and a later Run
-	// resumes it.
+	// ErrStopped is matched by the error [Run] and [Rollback] return when
+	// the attempt was stopped or cancelled before its work was done: by a
+	// [Stopper], by [RequestStop], or by cancelling its context. The
+	// attempt is unfinished, and a later one carries on from it. The
+	// Result's Outcome says whether it was stopped or cancelled.
 	ErrStopped = errors.New("pipeline: the run was stopped")
 
 	// ErrStepReturned is returned by [StepContext] methods called after the

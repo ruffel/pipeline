@@ -57,6 +57,7 @@ func TestHandleSignals_StopThenCancel(t *testing.T) { //nolint:paralleltest // S
 	out := lr.wait(t)
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+	require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 	assert.Equal(t, syscall.SIGUSR1, <-seen)
 
 	state, err := pipeline.Inspect(lr.path)

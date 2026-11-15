@@ -297,7 +297,8 @@ attempt, and their values are masked wherever a step writes them.
 - **Cancelling the context** cancels the running steps.
 
 A stopped, cancelled or crashed attempt leaves the operation unfinished, and
-the next `Run` resumes it.
+the next `Run` resumes it. When `Run` returns after a stop or a cancel, its
+error matches `ErrStopped`, and `res.Outcome` says which it was.
 
 ### Gates
 
@@ -395,7 +396,7 @@ func run(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) error
 	stopper := pipeline.NewStopper()
 	defer pipeline.HandleSignals(stopper, pipeline.SignalOptions{})()
 
-	res, err := pipeline.Run(ctx, plan, j,
+	_, err = pipeline.Run(ctx, plan, j,
 		pipeline.WithObservers(view), pipeline.WithStopper(stopper))
 
 	switch {
@@ -405,7 +406,7 @@ func run(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) error
 		return errors.New("already deployed: remove deploy.jsonl to start again")
 	case errors.Is(err, pipeline.ErrRollbackUnfinished):
 		return errors.New("a rollback has not finished: run rollback again")
-	case res != nil && res.Outcome != pipeline.OutcomeFailed:
+	case errors.Is(err, pipeline.ErrStopped):
 		return errors.New("stopped: run again to resume")
 	default:
 		return fmt.Errorf("%w\nfix the cause and run again to resume, or roll back", err)
@@ -424,8 +425,6 @@ func rollback(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) 
 	return err // if an Undo failed, rollback again carries on from it
 }
 ```
-
-`res` is nil when `Run` refuses the journal before starting an attempt.
 
 ## Observers
 

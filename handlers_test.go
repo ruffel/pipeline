@@ -293,6 +293,7 @@ func TestFailureHandlers_NotAfterAStopOrCancel(t *testing.T) {
 
 		require.ErrorContains(t, out.err, "boom")
 		assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+		require.ErrorIs(t, out.err, pipeline.ErrStopped, "a cancelled run is unfinished, as a stopped one is")
 		assert.Zero(t, c.get("handler"))
 		assert.NotContains(t, trace(out.events), "step.started p/g/handler", "the handler doesn't start")
 	})
