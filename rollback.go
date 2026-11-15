@@ -19,11 +19,13 @@ import (
 // An Undo can read what the step's Run recorded, with
 // [StepContext.Recorded], even if that Run was interrupted. A step undone
 // goes back to never started, its recorded values and items are forgotten,
-// and the groups around it are no longer settled. Once a rollback passes,
-// gates wait again, and [Run] runs what it undid again.
+// and the groups around it are no longer settled: [ElementState] says where
+// they then stand. Once a rollback passes, gates wait again, and [Run] runs
+// what it undid again.
 //
 // Rollback stops at the first Undo that fails, and returns its error in a
-// [StepError]. A stop or cancel, as for Run, keeps the next Undo from
+// [StepError]. The step keeps its outcome, with the error beside it in
+// [ElementState.UndoError]. A stop or cancel, as for Run, keeps the next Undo from
 // starting. Until a rollback passes, Run refuses the journal with
 // [ErrRollbackUnfinished]; calling Rollback again carries on where the last
 // one stopped, without undoing anything twice.

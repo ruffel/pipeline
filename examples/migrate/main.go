@@ -45,7 +45,7 @@ commands:
   plan      print the plan, and what each step can check and undo
   run       apply the migrations, or carry on applying them
   rollback  undo what the journal says was done
-  status    show the attempts so far, and the database
+  status    show the attempts so far, each step, and the database
 `
 
 func main() {
@@ -230,8 +230,9 @@ func build(o *options, f faults) (*pipeline.Plan, inputs, error) {
 	return p, in, err
 }
 
-// status shows the attempts so far, from the journal alone, and what the
-// database itself says. It works while a run is in progress.
+// status shows the attempts so far and where each step stands, from the
+// journal alone, and what the database itself says. It works while a run is
+// in progress.
 func status(args []string) error {
 	fs, o := flags("status")
 	_ = fs.Parse(args)
@@ -281,6 +282,12 @@ func status(args []string) error {
 		fmt.Println("\nunfinished; run carries on, rollback undoes it")
 	}
 
+	fmt.Println()
+
+	if st.Plan != nil {
+		show(st, *st.Plan)
+	}
+
 	db := database{file: filepath.Join(o.state, "database.json")}
 
 	s, err := db.load()
@@ -296,4 +303,28 @@ func status(args []string) error {
 	fmt.Printf("\ndatabase: version %d (%s), maintenance mode %v\n", len(s.Applied), applied, s.Maintenance)
 
 	return nil
+}
+
+// show prints where everything beneath n stands. A step a rollback undid is
+// back to not-reached, and one whose Undo failed says so.
+func show(st *pipeline.State, n pipeline.NodeSpec) {
+	for _, c := range n.Children {
+		el := st.Element(c.Path)
+
+		note := ""
+
+		switch {
+		case el.UndoError != nil:
+			note = " (undo failed: " + el.UndoError.Message + ")"
+		case el.Error != nil && c.Kind != pipeline.KindGroup:
+			note = " (" + el.Error.Message + ")"
+		case el.Reason != "":
+			note = " (" + string(el.Reason) + ")"
+		}
+
+		indent := strings.Repeat("  ", strings.Count(c.Path, "/")-1)
+
+		fmt.Printf("  %-12s%s%s%s\n", el.Status, indent, c.Name, note)
+		show(st, c)
+	}
 }

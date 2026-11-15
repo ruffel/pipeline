@@ -48,8 +48,10 @@ type State struct {
 	Live bool
 
 	elements map[string]ElementState
-	values   map[string]map[string]json.RawMessage
-	items    map[string]map[string]ItemState
+	// kinds is the kind of every element of the latest attempt's plan.
+	kinds  map[string]Kind
+	values map[string]map[string]json.RawMessage
+	items  map[string]map[string]ItemState
 	// gates are the paths of the gates that have waited.
 	gates map[string]bool
 }
@@ -70,11 +72,22 @@ type AttemptState struct {
 	Rollback bool
 }
 
-// ElementState is where one group or step stands.
+// ElementState is where one group or step stands. The plan's root is a group
+// like any other: it starts and finishes with each attempt that runs it.
+//
+// A rollback changes where elements stand. A step it undoes goes back to
+// [StatusNotReached]. A group around such a step is then [StatusStarted],
+// part-way through, while work beneath it is still done: a step that could
+// not be undone, or a gate still released. Once nothing beneath it is left
+// but what Observe steps read, the group goes back to StatusNotReached, and
+// so does everything beneath it.
 type ElementState struct {
 	Status Status
 	Reason Reason
 	Error  *ErrorInfo
+	// UndoError is the error from the step's Undo, when a rollback's latest
+	// try at it failed. The step keeps the Status its Run left it with.
+	UndoError *ErrorInfo
 	// Run is the attempt that last started or finished the element.
 	Run string
 	// Done means the element's work is complete: it passed, was skipped
@@ -118,6 +131,7 @@ func Replay(events []Event) (*State, error) {
 func newState() *State {
 	return &State{
 		elements: map[string]ElementState{},
+		kinds:    map[string]Kind{},
 		values:   map[string]map[string]json.RawMessage{},
 		items:    map[string]map[string]ItemState{},
 		gates:    map[string]bool{},
@@ -247,7 +261,12 @@ func (s *State) apply(e Event) {
 	case EventUndoFinished:
 		s.undone(e)
 	case EventUndoStarted:
-		// The step is undone only once its undo passes.
+		// The step is undone only once its undo passes. A new try at it
+		// replaces what the last one failed with.
+		if el, ok := s.elements[e.Path]; ok {
+			el.UndoError = nil
+			s.elements[e.Path] = el
+		}
 	case EventValue:
 		if s.values[e.Path] == nil {
 			s.values[e.Path] = map[string]json.RawMessage{}
@@ -280,6 +299,20 @@ func (s *State) applyAttempt(e Event) {
 			Run: e.Run, Attempt: e.Attempt, Started: e.TS, Rollback: e.Rollback,
 		})
 
+		clear(s.kinds)
+
+		if e.Plan != nil {
+			s.index(*e.Plan)
+		}
+
+		// The root has no group events of its own: a run starts and
+		// finishes it. A rollback leaves it to what it undoes.
+		if !e.Rollback {
+			el := s.elements[e.Path]
+			el.Status, el.Reason, el.Error, el.Run, el.Done = StatusStarted, "", nil, e.Run, false
+			s.elements[e.Path] = el
+		}
+
 		return
 	}
 
@@ -293,6 +326,10 @@ func (s *State) applyAttempt(e Event) {
 	case EventRunFinished:
 		s.Attempts[n-1].Finished = e.TS
 		s.Attempts[n-1].Outcome = e.Outcome
+
+		if !s.Attempts[n-1].Rollback {
+			s.finish(e)
+		}
 
 		if s.Attempts[n-1].Rollback && e.Outcome == OutcomePassed {
 			s.unreleaseGates()
@@ -348,39 +385,97 @@ func (s *State) gate(e Event) {
 
 // undone applies a rollback's undo of a step. A step undone goes back to
 // never started, with its recorded values and items forgotten, and the
-// groups around it are no longer settled. One whose undo failed or was
-// skipped keeps its outcome.
+// groups around it are no longer settled. One whose undo was skipped keeps
+// its outcome, and so does one whose undo failed, with the error beside it.
 func (s *State) undone(e Event) {
+	path := e.Path
+
+	if e.Outcome == OutcomeFailed {
+		if el, ok := s.elements[path]; ok {
+			el.UndoError = e.Error
+			s.elements[path] = el
+		}
+	}
+
 	if e.Outcome != OutcomeUndone {
 		return
 	}
 
-	path := e.Path
-
 	delete(s.elements, path)
 	delete(s.values, path)
 	delete(s.items, path)
-	s.unsettle(path)
+	s.unwind(path)
 }
 
 // unreleaseGates applies a rollback that passed: every gate waits again.
 func (s *State) unreleaseGates() {
 	for path := range s.gates {
 		delete(s.elements, path)
-		s.unsettle(path)
+		s.unwind(path)
 	}
 }
 
-// unsettle clears Done on the groups around path, so a later attempt enters
-// them again.
-func (s *State) unsettle(path string) {
+// unwind applies the loss of the element at path, undone or waiting again,
+// to the groups around it, innermost first. None of them is settled any
+// more, so a later attempt enters them again. While work beneath a group is
+// still done, the group is part-way through: started. Once only what Observe
+// steps read is left beneath it, the group and everything beneath it go back
+// to never started.
+func (s *State) unwind(path string) {
 	for i := strings.LastIndexByte(path, '/'); i >= 0; i = strings.LastIndexByte(path, '/') {
 		path = path[:i]
 
+		if !s.workBeneath(path) {
+			s.reset(path)
+			delete(s.elements, path)
+
+			continue
+		}
+
 		if el, ok := s.elements[path]; ok {
 			el.Done = false
+
+			if el.Status != StatusNotReached {
+				el.Status, el.Reason, el.Error = StatusStarted, "", nil
+			}
+
 			s.elements[path] = el
 		}
+	}
+}
+
+// workBeneath reports whether a step or gate beneath the group at path still
+// stands for something: it was reached, or its Run was called. Observe steps
+// don't count: they change nothing. An element the plan doesn't name counts,
+// so a journal replayed without its plan forgets nothing it shouldn't.
+func (s *State) workBeneath(path string) bool {
+	for p, el := range s.elements {
+		if !strings.HasPrefix(p, path+"/") {
+			continue
+		}
+
+		if kind, ok := s.kinds[p]; ok && (kind == KindGroup || kind == KindObserve) {
+			continue
+		}
+
+		if el.Status != StatusNotReached || el.RunCalled {
+			return true
+		}
+	}
+
+	return false
+}
+
+// index notes the kind of n and of everything beneath it.
+func (s *State) index(n NodeSpec) {
+	s.kinds[n.Path] = n.Kind
+
+	for _, c := range n.Children {
+		s.index(c)
+	}
+
+	if n.OnFailure != nil {
+		s.index(*n.OnFailure)
 	}
 }
 
