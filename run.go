@@ -64,6 +64,10 @@ type Result struct {
 // passed ([ErrRollbackUnfinished]), and one whose latest attempt passed
 // ([ErrAlreadyComplete]) unless [Force] is given. After a rollback passes,
 // Run runs what it undid again.
+//
+// The Result is nil when Run refuses the journal, or fails before an attempt
+// has started. Once an attempt has started, Run returns its Result whatever
+// the error, and its Outcome says how the attempt ended.
 func Run(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, error) {
 	return attempt(ctx, plan, j, opts, false)
 }

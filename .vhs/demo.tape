@@ -1,4 +1,4 @@
-# Pipeline demo — generates vhs/demo.gif for the README.
+# Pipeline demo — generates .vhs/demo.gif for the README.
 
 Output .vhs/demo.gif
 
@@ -12,4 +12,4 @@ Set TypingSpeed 50ms
 
 Type "go run ./examples/demo"
 Enter
-Sleep 8s
+Sleep 11s

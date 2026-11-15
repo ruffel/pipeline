@@ -31,9 +31,13 @@ import (
 // a fresh system, such as a new fake; newStep is called with it to build the
 // step, and again to build the step the resumed run uses, as a restarted
 // process would. So a step whose Check reads its own memory, not the
-// system, fails the check. Checks on the system's final state belong in a
-// t.Cleanup that newSystem registers: they then run once for each crash
-// point. The options are [RunStep]'s, and apply to every run.
+// system, has its Run called a second time.
+//
+// CheckIdempotent itself only sees whether the resumed run passes. A step
+// that does its work twice without an error, such as one that appends a line
+// to a file again, is caught by a check on the system's final state. Put
+// those checks in a t.Cleanup that newSystem registers: they then run once
+// for each crash point. The options are [RunStep]'s, and apply to every run.
 func CheckIdempotent[S any](t *testing.T, newSystem func(t *testing.T) S, newStep func(S) pipeline.StepNode,
 	opts ...StepOption,
 ) {
