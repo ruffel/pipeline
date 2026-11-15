@@ -129,8 +129,8 @@ func backup(state string) func(context.Context, *pipeline.StepContext) error {
 
 func installPackages(node string, fail bool) func(context.Context, *pipeline.StepContext) error {
 	return func(ctx context.Context, sc *pipeline.StepContext) error {
-		for _, pkg := range []string{"hyperstore-core", "hyperstore-gateway", "hyperstore-tools"} {
-			_, _ = fmt.Fprintf(sc.Stdout(), "Unpacking %s (8.2) on %s ...\n", pkg, node)
+		for _, pkg := range []string{"app-core", "app-gateway", "app-tools"} {
+			_, _ = fmt.Fprintf(sc.Stdout(), "Unpacking %s (2.4) on %s ...\n", pkg, node)
 
 			if err := sleep(ctx, 1500*time.Millisecond); err != nil {
 				return err

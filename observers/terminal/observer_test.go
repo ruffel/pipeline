@@ -79,7 +79,7 @@ func TestObserver_SequentialRun(t *testing.T) {
 		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/backup", Outcome: pipeline.OutcomeSkipped, Reason: pipeline.ReasonDone},
 		pipeline.Event{Kind: pipeline.EventStepStarted, Path: "upgrade/apply"},
 		pipeline.Event{Kind: pipeline.EventValue, Path: "upgrade/apply", Key: "previous", Value: json.RawMessage(`"8.1"`)},
-		pipeline.Event{Kind: pipeline.EventOutput, Path: "upgrade/apply", Stream: "stdout", Line: "Unpacking hyperstore (8.2) ..."},
+		pipeline.Event{Kind: pipeline.EventOutput, Path: "upgrade/apply", Stream: "stdout", Line: "Unpacking app-core (2.4) ..."},
 		pipeline.Event{Kind: pipeline.EventOutput, Path: "upgrade/apply", Stream: "stderr", Line: "E: dpkg was interrupted"},
 		pipeline.Event{Kind: pipeline.EventMessage, Path: "upgrade/apply", Level: pipeline.LevelWarn, Message: "careful"},
 		pipeline.Event{Kind: pipeline.EventProgress, Path: "upgrade/apply", Message: "configuring", Current: 2, Total: 3},
@@ -112,7 +112,7 @@ func TestObserver_SequentialRun(t *testing.T) {
 ✓ prechecks (2.7s)
 ⊘ backup — done
 · apply — Install the packages
-│ Unpacking hyperstore (8.2) ...
+│ Unpacking app-core (2.4) ...
 │ E: dpkg was interrupted
 │ [WARN] careful
 │ ◷ configuring (2/3)
