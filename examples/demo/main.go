@@ -66,21 +66,13 @@ func observer(format string, w io.Writer) (pipeline.Observer, error) {
 	}
 }
 
+// The plan's groups, one function each, so the plan above reads as a table of
+// contents and each group's settings sit beside its few lines.
+
 func preflight() pipeline.GroupNode {
 	return pipeline.Group("preflight",
-		pipeline.Observe("check-cluster", pipeline.StepFunc(func(_ context.Context, sc *pipeline.StepContext) error {
-			sc.Info("connecting to cluster...")
-			sleep()
-			sc.Info("cluster healthy ✓")
-
-			return nil
-		})),
-		pipeline.Observe("validate-config", pipeline.StepFunc(func(_ context.Context, sc *pipeline.StepContext) error {
-			sc.Info("validating deployment config")
-			sleep()
-
-			return nil
-		})),
+		pipeline.Observe("check-cluster", pipeline.StepFunc(checkCluster)),
+		pipeline.Observe("validate-config", pipeline.StepFunc(validateConfig)),
 	).Description("Read-only checks before anything changes")
 }
 
@@ -89,6 +81,54 @@ func build() pipeline.GroupNode {
 		pipeline.Effect("compile-api", compile("api")),
 		pipeline.Effect("compile-worker", compile("worker")),
 	).Parallel(2)
+}
+
+func migrate() pipeline.GroupNode {
+	return pipeline.Group("db-migrate",
+		pipeline.Effect("apply-schema", pipeline.StepFunc(applySchema)).
+			Description("Apply the schema migrations"),
+	)
+}
+
+func deploy() pipeline.GroupNode {
+	return pipeline.Group("deploy",
+		pipeline.Effect("push-image", pipeline.StepFunc(pushImage)),
+	)
+}
+
+func release() pipeline.GroupNode {
+	return pipeline.Group("release",
+		pipeline.Effect("publish", pipeline.StepFunc(publish)),
+	)
+}
+
+func test() pipeline.GroupNode {
+	return pipeline.Group("test",
+		pipeline.Observe("unit-tests", pipeline.StepFunc(unitTests)),
+		// Its Check finds the work done, so its Run is never called.
+		pipeline.Ensure("lint", passedInCI{}),
+		pipeline.Observe("integration", pipeline.StepFunc(integration)).
+			Timeout(500*time.Millisecond),
+		pipeline.Observe("flaky-test", flaky()).
+			Retry(3, 200*time.Millisecond),
+	).Parallel(4).ContinueOnError()
+}
+
+// The steps.
+
+func checkCluster(_ context.Context, sc *pipeline.StepContext) error {
+	sc.Info("connecting to cluster...")
+	sleep()
+	sc.Info("cluster healthy ✓")
+
+	return nil
+}
+
+func validateConfig(_ context.Context, sc *pipeline.StepContext) error {
+	sc.Info("validating deployment config")
+	sleep()
+
+	return nil
 }
 
 // compile simulates compiling a service.
@@ -105,104 +145,92 @@ func compile(service string) pipeline.StepFunc {
 	}
 }
 
-func migrate() pipeline.GroupNode {
-	return pipeline.Group("db-migrate",
-		pipeline.Effect("apply-schema", pipeline.StepFunc(func(_ context.Context, sc *pipeline.StepContext) error {
-			out, errOut := sc.Stdout(), sc.Stderr()
+func applySchema(_ context.Context, sc *pipeline.StepContext) error {
+	out, errOut := sc.Stdout(), sc.Stderr()
 
-			sc.Info("starting database migrations...")
-			sleep()
+	sc.Info("starting database migrations...")
+	sleep()
 
-			fmt.Fprintln(out, "--> applying 001_initial_schema.sql")
-			sleep()
-			fmt.Fprintln(out, "--> applying 002_add_user_indexes.sql")
-			sleep()
-			fmt.Fprintln(errOut, "WARNING: index 'idx_email' already exists, skipping")
-			sleep()
-			fmt.Fprintln(out, "--> applying 003_drop_legacy_tables.sql")
+	fmt.Fprintln(out, "--> applying 001_initial_schema.sql")
+	sleep()
+	fmt.Fprintln(out, "--> applying 002_add_user_indexes.sql")
+	sleep()
+	fmt.Fprintln(errOut, "WARNING: index 'idx_email' already exists, skipping")
+	sleep()
+	fmt.Fprintln(out, "--> applying 003_drop_legacy_tables.sql")
 
-			sc.Info("database migrations complete")
+	sc.Info("database migrations complete")
 
-			return nil
-		})).Description("Apply the schema migrations"),
-	)
+	return nil
 }
 
-func deploy() pipeline.GroupNode {
-	return pipeline.Group("deploy",
-		pipeline.Effect("push-image", pipeline.StepFunc(func(_ context.Context, sc *pipeline.StepContext) error {
-			const total = 5
+func pushImage(_ context.Context, sc *pipeline.StepContext) error {
+	const total = 5
 
-			for i := 1; i <= total; i++ {
-				sc.Progress("push", "pushing image layers", i, total)
-				sleep()
-			}
+	for i := 1; i <= total; i++ {
+		sc.Progress("push", "pushing image layers", i, total)
+		sleep()
+	}
 
-			sc.Info("image pushed to registry.example.com/app:v1.2.3")
+	sc.Info("image pushed to registry.example.com/app:v1.2.3")
 
-			return nil
-		})),
-	)
+	return nil
 }
 
-func release() pipeline.GroupNode {
-	return pipeline.Group("release",
-		pipeline.Effect("publish", pipeline.StepFunc(func(_ context.Context, sc *pipeline.StepContext) error {
-			sc.Info("publishing the release")
+func publish(_ context.Context, sc *pipeline.StepContext) error {
+	sc.Info("publishing the release")
 
-			const total = 3
+	const total = 3
 
-			for i := 1; i <= total; i++ {
-				sleep()
-				sc.Progress("upload", "uploading release notes", i, total)
-			}
+	for i := 1; i <= total; i++ {
+		sleep()
+		sc.Progress("upload", "uploading release notes", i, total)
+	}
 
-			return sc.Custom("deploy.released", map[string]string{"version": "v1.2.3"})
-		})),
-	)
+	return sc.Custom("deploy.released", map[string]string{"version": "v1.2.3"})
 }
 
-func test() pipeline.GroupNode {
-	flaky := 0
+func unitTests(_ context.Context, sc *pipeline.StepContext) error {
+	for _, line := range []string{
+		"=== RUN   TestUserService",
+		"--- PASS: TestUserService (0.3s)",
+		"=== RUN   TestOrderService",
+		"--- PASS: TestOrderService (0.2s)",
+		"PASS",
+	} {
+		fmt.Fprintln(sc.Stdout(), line)
+		sleep()
+	}
 
-	return pipeline.Group("test",
-		pipeline.Observe("unit-tests", pipeline.StepFunc(func(_ context.Context, sc *pipeline.StepContext) error {
-			for _, line := range []string{
-				"=== RUN   TestUserService",
-				"--- PASS: TestUserService (0.3s)",
-				"=== RUN   TestOrderService",
-				"--- PASS: TestOrderService (0.2s)",
-				"PASS",
-			} {
-				fmt.Fprintln(sc.Stdout(), line)
-				sleep()
-			}
+	return nil
+}
 
-			return nil
-		})),
-		// Its Check finds the work done, so its Run is never called.
-		pipeline.Ensure("lint", passedInCI{}),
-		pipeline.Observe("integration", pipeline.StepFunc(func(ctx context.Context, sc *pipeline.StepContext) error {
-			sc.Info("starting slow integration test...")
+// integration takes longer than its step's timeout allows.
+func integration(ctx context.Context, sc *pipeline.StepContext) error {
+	sc.Info("starting slow integration test...")
 
-			select {
-			case <-time.After(5 * time.Second):
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		})).Timeout(500*time.Millisecond),
-		pipeline.Observe("flaky-test", pipeline.StepFunc(func(_ context.Context, sc *pipeline.StepContext) error {
-			flaky++
-			if flaky < 3 {
-				return errors.New("network flake")
-			}
+	select {
+	case <-time.After(5 * time.Second):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
-			sc.Info("passed on try 3")
+// flaky returns a step that fails twice, then passes.
+func flaky() pipeline.StepFunc {
+	tries := 0
 
-			return nil
-		})).Retry(3, 200*time.Millisecond),
-	).Parallel(4).ContinueOnError()
+	return func(_ context.Context, sc *pipeline.StepContext) error {
+		tries++
+		if tries < 3 {
+			return errors.New("network flake")
+		}
+
+		sc.Info("passed on try 3")
+
+		return nil
+	}
 }
 
 // passedInCI is a step whose work is already done.

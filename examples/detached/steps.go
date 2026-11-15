@@ -15,30 +15,47 @@ import (
 // The plan is a mock rolling upgrade. Its steps only sleep, print and leave
 // marker files in a state directory, but each has the shape a real one would.
 func newPlan(state, fail string) (*pipeline.Plan, error) {
-	nodes := make([]pipeline.Element, 0, 4)
-
-	for _, n := range []string{"node1", "node2", "node3", "node4"} {
-		nodes = append(nodes, pipeline.Group(n,
-			pipeline.Effect("packages", marked(state, n+"-packages", installPackages(n, n == fail))).
-				Description("Install the new packages"),
-			pipeline.Effect("restart", marked(state, n+"-restart", restart(n))),
-		))
-	}
-
 	return pipeline.NewPlan("upgrade",
-		pipeline.Group("prechecks",
-			pipeline.Observe("health", pipeline.StepFunc(health)),
-			pipeline.Ensure("disk-space", pipeline.StepFunc(diskSpace)),
-		).Description("Read-only checks before anything changes"),
+		prechecks(),
 		pipeline.Effect("backup", marked(state, "backup", backup(state))).
 			Description("Snapshot the configuration"),
 		pipeline.Gate("approve", pipeline.GateOptions{
 			Prompt:    "Upgrade the nodes?",
 			Approvers: approvers(state),
 		}),
-		pipeline.Group("nodes", nodes...).Parallel(2).
-			Description("Two nodes at a time"),
+		nodes(state, fail),
 		pipeline.Effect("finalise", marked(state, "finalise", finalise)),
+	)
+}
+
+func prechecks() pipeline.GroupNode {
+	return pipeline.Group("prechecks",
+		pipeline.Observe("health", pipeline.StepFunc(health)),
+		pipeline.Ensure("disk-space", pipeline.StepFunc(diskSpace)),
+	).Description("Read-only checks before anything changes")
+}
+
+// nodes upgrades every node, two at a time. A plan with repeated structure is
+// built with a loop: one function makes the group for one node.
+func nodes(state, fail string) pipeline.GroupNode {
+	names := []string{"node1", "node2", "node3", "node4"}
+	groups := make([]pipeline.Element, 0, len(names))
+
+	for _, name := range names {
+		groups = append(groups, node(state, name, name == fail))
+	}
+
+	return pipeline.Group("nodes", groups...).
+		Parallel(2).
+		Description("Two nodes at a time")
+}
+
+// node upgrades one node. With fail set, its packages fail to install.
+func node(state, name string, fail bool) pipeline.GroupNode {
+	return pipeline.Group(name,
+		pipeline.Effect("packages", marked(state, name+"-packages", installPackages(name, fail))).
+			Description("Install the new packages"),
+		pipeline.Effect("restart", marked(state, name+"-restart", restart(name))),
 	)
 }
 

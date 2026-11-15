@@ -181,6 +181,50 @@ A group can name one step to run when it fails:
   putting a node back on its old version. A later attempt runs the whole group
   again.
 
+## Laying out a plan
+
+A plan written as one nested expression gets hard to read. Lay it out like
+any other code:
+
+```go
+func newPlan(c *cluster) (*pipeline.Plan, error) {
+	return pipeline.NewPlan("upgrade",
+		prechecks(c),
+		pipeline.Effect("backup", backup{c}),
+		nodes(c),
+		pipeline.Observe("verify", verify{c}),
+	)
+}
+
+// nodes upgrades every node, two at a time.
+func nodes(c *cluster) pipeline.GroupNode {
+	groups := make([]pipeline.Element, 0, len(c.nodes))
+
+	for _, name := range c.nodes {
+		groups = append(groups, node(c, name))
+	}
+
+	return pipeline.Group("nodes", groups...).Parallel(2)
+}
+
+func node(c *cluster, name string) pipeline.GroupNode {
+	return pipeline.Group(name,
+		pipeline.Effect("packages", packages{c, name}),
+		pipeline.Effect("restart", restart{c, name}),
+	).Labels(pipeline.L{"node": name})
+}
+```
+
+- **One function for each group.** The top of the plan then reads as a table
+  of contents, and each group's settings sit beside its few lines.
+- **A loop for repeated structure,** with one function building the group for
+  one node, datacenter or tenant.
+- **A struct for each step,** holding what it works on. The plan names the
+  step, and its `Check`, `Run` and `Undo` live together elsewhere.
+
+Every builder method returns a changed copy and leaves the original alone, so
+use what it returns: `g.Parallel(2)` on a line of its own changes nothing.
+
 ## Long-running pipelines
 
 Give `Run` a file journal and the operation survives its process:
