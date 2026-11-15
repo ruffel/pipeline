@@ -487,5 +487,5 @@ func TestPlainObserver_ARollback(t *testing.T) {
 	assert.Equal(t, "▶ p (rollback)", lines[0])
 	assert.Equal(t, "  ⊘ apply not undone — no-undo", lines[1])
 	assert.True(t, strings.HasPrefix(lines[2], "  ↶ backup undone"), lines[2])
-	assert.True(t, strings.HasPrefix(lines[3], "✓ p passed"), lines[3])
+	assert.True(t, strings.HasPrefix(lines[3], "✓ p rolled back"), lines[3])
 }
