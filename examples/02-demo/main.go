@@ -45,8 +45,8 @@ func main() {
 	}
 
 	// The journal is in memory: this demo is about what a run shows, not
-	// about resuming one. See examples/quickstart for that, then
-	// examples/runbook, examples/detached and examples/migrate.
+	// about resuming one. See examples/01-quickstart for that, then
+	// examples/03-runbook, examples/04-detached and examples/05-migrate.
 	_, err = pipeline.Run(context.Background(), plan, pipeline.MemoryJournal(), pipeline.WithObservers(view))
 	if err != nil {
 		if _, ok := errors.AsType[*pipeline.StepError](err); ok {

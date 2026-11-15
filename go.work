@@ -2,10 +2,6 @@ go 1.26.0
 
 use (
 	.
-	./examples/demo
-	./examples/detached
-	./examples/migrate
-	./examples/quickstart
-	./examples/runbook
+	./examples
 	./observers/terminal
 )

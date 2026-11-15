@@ -1,5 +1,5 @@
 # Records .vhs/demo.gif for the README: a run that fails, is resumed, and is
-# rolled back, using examples/quickstart. Regenerate it with `just gif`.
+# rolled back, using examples/01-quickstart. Regenerate it with `just gif`.
 
 Output .vhs/demo.gif
 
@@ -15,7 +15,7 @@ Set TypingSpeed 40ms
 
 # Start from nothing, with the build cached so each command answers at once.
 Hide
-Type "cd examples/quickstart && rm -rf site.jsonl site.jsonl.control style.css script.js index.html && go build -o /dev/null . && clear"
+Type "cd examples/01-quickstart && rm -rf site.jsonl site.jsonl.control style.css script.js index.html && go build -o /dev/null . && clear"
 Enter
 Sleep 8s
 Show

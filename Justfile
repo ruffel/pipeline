@@ -53,25 +53,19 @@ sync-submodules:
         (cd "$mod" && GOWORK=off go get "github.com/ruffel/pipeline@${sha}")
     done
 
-# Build all example modules and run their tests (they are not covered by `test`)
+# Build the examples and run their tests (they are not covered by `test`)
 build-examples:
-    for dir in examples/*/; do \
-        (cd $dir && go build ./... && go test ./...) || exit 1; \
-    done
+    cd examples && go build ./... && go test ./...
 
 # Point submodules at the version about to be released. Run before tagging.
 # go.sum entries for the new version land via `just tidy` once the tag exists.
 prepare-release version:
     cd observers/terminal && go mod edit -require=github.com/ruffel/pipeline@{{ version }}
 
-# Run the demo (formats: terminal, plain, json)
-# (its run fails on purpose, so its exit status is ignored)
-demo format="terminal":
-    -cd examples/demo && go run . -format {{ format }}
-
-# Run the runbook example (interactive; pass gates with y)
-demo-runbook format="terminal":
-    cd examples/runbook && go run . -format {{ format }}
+# Run an example by its number: `just example 2`, `just example 5 status`
+# (02-demo's run fails on purpose, so the exit status is ignored)
+example n *args:
+    -cd examples/0{{ n }}-* && go run . {{ args }}
 
 # Regenerate the README demo GIF
 gif:

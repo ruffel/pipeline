@@ -19,16 +19,7 @@ updates:
           - "*"
 
   - package-ecosystem: "gomod"
-    directory: "/examples/demo"
-    schedule:
-      interval: "weekly"
-    groups:
-      go-dependencies:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "gomod"
-    directory: "/examples/runbook"
+    directory: "/examples"
     schedule:
       interval: "weekly"
     groups:
