@@ -37,7 +37,7 @@ const (
 // Lifecycle events are synced to disk before the write returns; output,
 // progress and messages are not. If a write or sync fails, every later write
 // fails too, until the journal is opened again.
-func OpenJournal(journal string, opts ...JournalOption) (*Journal, error) {
+func OpenJournal(journal string) (*Journal, error) {
 	// The journal is read back by its path, so make it absolute now: a later
 	// change of working directory must not point reads somewhere else.
 	journal, err := filepath.Abs(journal)
@@ -77,13 +77,7 @@ func OpenJournal(journal string, opts ...JournalOption) (*Journal, error) {
 		return nil, err
 	}
 
-	j := &Journal{store: &fileStore{path: journal, f: f, sync: f.Sync}, seq: seq, path: journal}
-
-	for _, o := range opts {
-		o(j)
-	}
-
-	return j, nil
+	return &Journal{store: &fileStore{path: journal, f: f, sync: f.Sync}, seq: seq, path: journal}, nil
 }
 
 // openJournalFile opens path for appending, creating it if need be.

@@ -313,13 +313,13 @@ func TestRedactor_CoversEveryErrorRunReturns(t *testing.T) {
 		t.Parallel()
 
 		diskErr := errors.New("write /mnt/" + secret + "/journal: disk full")
-		j := pipeline.MemoryJournal(pipeline.WithWriteHook(func(e pipeline.Event) error {
+		j := hooked(pipeline.MemoryJournal(), func(e pipeline.Event) error {
 			if e.Kind == pipeline.EventStepStarted {
 				return diskErr
 			}
 
 			return nil
-		}))
+		})
 
 		_, err := pipeline.Run(t.Context(), mustPlan(t, pipeline.Effect("a", ok())), j, pipeline.WithRedactor(hideSecret))
 		require.ErrorIs(t, err, diskErr)

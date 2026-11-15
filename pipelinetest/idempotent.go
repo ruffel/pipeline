@@ -107,7 +107,7 @@ func crashAtEvent(path string, n int) *Crash {
 
 	var seen atomic.Int64
 
-	c.Journal = pipeline.MemoryJournal(pipeline.WithWriteHook(func(e pipeline.Event) error {
+	c.Journal = hooked(pipeline.MemoryJournal(), func(e pipeline.Event) error {
 		if c.crashed.Load() {
 			return ErrCrashed
 		}
@@ -117,7 +117,7 @@ func crashAtEvent(path string, n int) *Crash {
 		}
 
 		return nil
-	}))
+	})
 
 	return c
 }
