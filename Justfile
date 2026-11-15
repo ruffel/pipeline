@@ -53,10 +53,10 @@ sync-submodules:
         (cd "$mod" && GOWORK=off go get "github.com/ruffel/pipeline@${sha}")
     done
 
-# Build all example modules (they are not covered by `test`)
+# Build all example modules and run their tests (they are not covered by `test`)
 build-examples:
     for dir in examples/*/; do \
-        (cd $dir && go build ./...); \
+        (cd $dir && go build ./... && go test ./...) || exit 1; \
     done
 
 # Point submodules at the version about to be released. Run before tagging.

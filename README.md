@@ -228,6 +228,9 @@ The `pipelinetest` package tests steps and plans without a real system:
 
 - **[demo](./examples/demo)**: groups, parallelism, progress, output, retries
   and a timeout, in each observer's format
+- **[migrate](./examples/migrate)**: a tool with `run`, `rollback` and `status`
+  commands: steps with `Check` and `Undo`, a failure handler, inputs read back
+  from the journal, and tests that crash its steps
 - **[runbook](./examples/runbook)**: a failover runbook with approval gates,
   descriptions, and resuming from the journal
 - **[detached](./examples/detached)**: a run that other terminals watch,

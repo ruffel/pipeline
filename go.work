@@ -4,6 +4,7 @@ use (
 	.
 	./examples/demo
 	./examples/detached
+	./examples/migrate
 	./examples/runbook
 	./observers/terminal
 )
