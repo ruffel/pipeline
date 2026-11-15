@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ruffel/pipeline"
+	"github.com/ruffel/pipeline/pipelinetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -255,4 +256,181 @@ func TestEventKind_Durable(t *testing.T) {
 	} {
 		assert.False(t, k.Durable(), k)
 	}
+}
+
+// The plan's root has a state like any group's, taken from its attempts.
+func TestState_TheRootFollowsItsAttempts(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	plan := mustPlan(t,
+		pipeline.Effect("a", undoable{c: &c, name: "a"}),
+		pipeline.Effect("b", undoable{c: &c, name: "b", runFails: &fails}),
+	)
+	j := pipeline.MemoryJournal()
+
+	assert.Equal(t, pipeline.StatusNotReached, state(t, j).Element("p").Status)
+
+	require.Error(t, resumeOn(t, j, plan).err)
+
+	root := state(t, j).Element("p")
+	assert.Equal(t, pipeline.StatusFailed, root.Status)
+	assert.False(t, root.Done)
+	require.NotNil(t, root.Error)
+	assert.Contains(t, root.Error.Message, "b failed")
+
+	fails = false
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+
+	root = state(t, j).Element("p")
+	assert.Equal(t, pipeline.StatusPassed, root.Status)
+	assert.True(t, root.Done)
+	assert.Nil(t, root.Error)
+}
+
+// A run that crashed leaves its root started, like the step it was in.
+func TestState_TheRootOfACrashedRunIsStarted(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	plan := mustPlan(t, pipeline.Effect("a", undoable{c: &c, name: "a"}))
+	crash := pipelinetest.CrashAfter("p/a", pipelinetest.Running)
+
+	_, err := pipeline.Run(t.Context(), plan, crash.Journal)
+	require.ErrorIs(t, err, pipelinetest.ErrCrashed)
+
+	assert.Equal(t, pipeline.StatusStarted, state(t, crash.Journal).Element("p").Status)
+}
+
+// An Undo that fails shows on its step, which keeps the outcome of its Run.
+func TestState_AFailedUndoShowsOnItsStep(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	plan := mustPlan(t,
+		pipeline.Effect("a", undoable{c: &c, name: "a"}),
+		pipeline.Effect("b", undoable{c: &c, name: "b", undoFails: &fails}),
+	)
+	j := pipeline.MemoryJournal()
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+	assert.Nil(t, state(t, j).Element("p/b").UndoError)
+
+	require.Error(t, resumeRollback(t, j, plan).err)
+
+	b := state(t, j).Element("p/b")
+	assert.Equal(t, pipeline.StatusPassed, b.Status, "the step is still done")
+	assert.True(t, b.Done)
+	require.NotNil(t, b.UndoError)
+	assert.Contains(t, b.UndoError.Message, "undo b failed")
+	assert.Nil(t, state(t, j).Element("p/a").UndoError)
+
+	fails = false
+
+	require.NoError(t, resumeRollback(t, j, plan).err)
+
+	b = state(t, j).Element("p/b")
+	assert.Equal(t, pipeline.StatusNotReached, b.Status)
+	assert.Nil(t, b.UndoError)
+}
+
+// After a rollback that undid everything, nothing reads as done: not the
+// groups around the steps, the plan, nor what Observe steps once read.
+func TestState_AfterAFullRollbackNothingIsReached(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	plan := mustPlan(t,
+		pipeline.Group("pre", pipeline.Observe("look", noop())),
+		pipeline.Group("g",
+			pipeline.Effect("a", undoable{c: &c, name: "a"}),
+			pipeline.Effect("b", undoable{c: &c, name: "b"}),
+		),
+		pipeline.Observe("verify", noop()),
+	)
+	j := pipeline.MemoryJournal()
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+	require.NoError(t, resumeRollback(t, j, plan).err)
+
+	s := state(t, j)
+
+	for _, path := range []string{"p", "p/pre", "p/pre/look", "p/g", "p/g/a", "p/g/b", "p/verify"} {
+		el := s.Element(path)
+		assert.Equal(t, pipeline.StatusNotReached, el.Status, path)
+		assert.False(t, el.Done, path)
+	}
+
+	// And a run does it all again.
+	require.NoError(t, resumeOn(t, j, plan).err)
+	assert.Equal(t, pipeline.StatusPassed, state(t, j).Element("p/g").Status)
+	assert.Equal(t, 2, c.get("a"))
+}
+
+// A group that failed, and whose steps a rollback undid, no longer reads as
+// failed.
+func TestState_ARolledBackFailureIsNotReached(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	plan := mustPlan(t,
+		pipeline.Group("g",
+			pipeline.Effect("a", undoable{c: &c, name: "a"}),
+			pipeline.Effect("b", undoable{c: &c, name: "b", runFails: &fails}),
+		),
+	)
+	j := pipeline.MemoryJournal()
+
+	require.Error(t, resumeOn(t, j, plan).err)
+	require.NoError(t, resumeRollback(t, j, plan).err)
+
+	g := state(t, j).Element("p/g")
+	assert.Equal(t, pipeline.StatusNotReached, g.Status)
+	assert.Nil(t, g.Error)
+	assert.Equal(t, pipeline.StatusNotReached, state(t, j).Element("p").Status)
+}
+
+// A step a rollback could not undo keeps its outcome, so the groups around
+// it are part-way: started, and not done.
+func TestState_APartialRollbackLeavesItsGroupsStarted(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	plan := mustPlan(t,
+		pipeline.Group("pre", pipeline.Observe("look", noop())),
+		pipeline.Group("g",
+			pipeline.Effect("kept", noop()),
+			pipeline.Effect("a", undoable{c: &c, name: "a"}),
+		),
+		pipeline.Group("h", pipeline.Effect("b", undoable{c: &c, name: "b"})),
+	)
+	j := pipeline.MemoryJournal()
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+	require.NoError(t, resumeRollback(t, j, plan).err)
+
+	s := state(t, j)
+
+	assert.Equal(t, pipeline.StatusPassed, s.Element("p/g/kept").Status)
+	assert.Equal(t, pipeline.StatusNotReached, s.Element("p/g/a").Status)
+
+	for _, path := range []string{"p", "p/g"} {
+		el := s.Element(path)
+		assert.Equal(t, pipeline.StatusStarted, el.Status, path)
+		assert.False(t, el.Done, path)
+		assert.Nil(t, el.Error, path)
+	}
+
+	assert.Equal(t, pipeline.StatusNotReached, s.Element("p/h").Status)
+	assert.Equal(t, pipeline.StatusPassed, s.Element("p/pre/look").Status, "an observation beside work that is still done is kept")
 }
