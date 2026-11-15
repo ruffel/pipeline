@@ -42,47 +42,54 @@ type faults struct {
 // migration to version 2 has one step fewer than one to version 3, which is
 // why the target is an input.
 func newPlan(db *database, in inputs, f faults) (*pipeline.Plan, error) {
+	return pipeline.NewPlan("migrate",
+		preflight(db, in.Target),
+		pipeline.Effect("backup", backup{db: db}).
+			Description("Copies the database aside"),
+		changeSchema(db, in.Target, f),
+		pipeline.Observe("verify", verify{db: db, target: in.Target}).
+			Description("Checks the schema is at the target version"),
+	)
+}
+
+// preflight reads the database and changes nothing. A group of Observe steps
+// runs on every attempt: what it read last time has gone stale.
+func preflight(db *database, target int) pipeline.GroupNode {
+	return pipeline.Group("preflight",
+		pipeline.Observe("connect", pipeline.StepFunc(connect)).
+			Description("Checks the database answers"),
+		pipeline.Observe("pending", pending{db: db, target: target}).
+			Description("Reports which migrations are still to apply"),
+	).Description("Read-only checks")
+}
+
+// changeSchema applies the migrations up to target, in maintenance mode. If
+// one fails, the group's handler lets the application write again.
+func changeSchema(db *database, target int, f faults) pipeline.GroupNode {
 	reopen := maintenance{db: db, on: false}
 
 	// The migrations, between the two changes of mode.
-	changes := make([]pipeline.Element, 0, in.Target+2)
+	steps := make([]pipeline.Element, 0, target+2)
 
 	// Ensure, not Effect: the mode can drift between attempts. When a
-	// migration fails, the group's failure handler turns it off, so the
-	// attempt that resumes must turn it on again.
-	changes = append(changes, pipeline.Ensure("maintenance-on", maintenance{db: db, on: true}).
+	// migration fails, the handler turns it off, so the attempt that resumes
+	// must turn it on again.
+	steps = append(steps, pipeline.Ensure("maintenance-on", maintenance{db: db, on: true}).
 		Description("Stops the application writing while the schema changes"))
 
-	for _, m := range migrations[:in.Target] {
-		changes = append(changes, pipeline.Effect(m.name, migration{
+	for _, m := range migrations[:target] {
+		steps = append(steps, pipeline.Effect(m.name, migration{
 			db: db, name: m.name, fail: f.fail == m.name, pace: f.pace,
 		}).Description(m.does))
 	}
 
-	changes = append(changes, pipeline.Effect("maintenance-off", reopen).
+	steps = append(steps, pipeline.Effect("maintenance-off", reopen).
 		Description("Lets the application write again"))
 
-	return pipeline.NewPlan("migrate",
-		// A group of Observe steps runs on every attempt: what it read
-		// last time has gone stale.
-		pipeline.Group("preflight",
-			pipeline.Observe("connect", pipeline.StepFunc(connect)).
-				Description("Checks the database answers"),
-			pipeline.Observe("pending", pending{db: db, target: in.Target}).
-				Description("Reports which migrations are still to apply"),
-		).Description("Read-only checks"),
-
-		pipeline.Effect("backup", backup{db: db}).
-			Description("Copies the database aside"),
-
-		pipeline.Group("schema", changes...).
-			OnFailure(pipeline.Effect("reopen", reopen).
-				Description("Lets the application write again while the failure is looked at")).
-			Description("Changes the schema, in maintenance mode"),
-
-		pipeline.Observe("verify", verify{db: db, target: in.Target}).
-			Description("Checks the schema is at the target version"),
-	)
+	return pipeline.Group("schema", steps...).
+		Description("Changes the schema, in maintenance mode").
+		OnFailure(pipeline.Effect("reopen", reopen).
+			Description("Lets the application write again while the failure is looked at"))
 }
 
 // connect checks the database answers. It prints the password it was given,

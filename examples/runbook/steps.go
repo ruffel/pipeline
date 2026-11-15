@@ -12,47 +12,19 @@ import (
 	"github.com/ruffel/pipeline"
 )
 
+// newPlan is the runbook: checks, a gate, the failover, more checks, and a
+// gate for the paperwork. Each group is a function below.
 func newPlan(c *cluster, approvers []pipeline.Approver, fail string) (*pipeline.Plan, error) {
 	return pipeline.NewPlan("db-failover",
-		pipeline.Group("preflight",
-			pipeline.Observe("check-cluster", report("primary db1 and replica db2 reachable", 300*time.Millisecond)).
-				Description("Verifies both database nodes are reachable"),
-			pipeline.Observe("check-replica-lag", report("replication lag 0.4s, within threshold", 300*time.Millisecond)).
-				Description("The replica must be under 5s behind before cutting over"),
-		).Description("Read-only checks, safe to run again"),
+		preflight(),
 
 		pipeline.Gate("confirm-failover", pipeline.GateOptions{
 			Prompt:    "Proceed with failover? Traffic pauses for ~30s",
 			Approvers: approvers,
 		}).Description("The last safe moment to abort"),
 
-		pipeline.Group("failover",
-			pipeline.Effect("demote-primary", change{
-				c: c, fail: fail == "demote-primary",
-				done:  func(s *clusterState) bool { return slices.Contains(s.ReadOnly, "db1") },
-				apply: func(s *clusterState) { s.ReadOnly = append(s.ReadOnly, "db1") },
-				msg:   "db1 set read-only",
-			}).Description("Sets the current primary read-only"),
-			pipeline.Effect("promote-replica", change{
-				c: c, fail: fail == "promote-replica",
-				done:  func(s *clusterState) bool { return s.Primary == "db2" },
-				apply: func(s *clusterState) { s.Primary = "db2" },
-				msg:   "db2 promoted to primary",
-			}).Description("Promotes the replica to primary"),
-			pipeline.Effect("update-dns", change{
-				c: c, fail: fail == "update-dns",
-				done:  func(s *clusterState) bool { return s.DNS == "db2" },
-				apply: func(s *clusterState) { s.DNS = "db2" },
-				msg:   "db.internal points at db2",
-			}).Description("Repoints db.internal at the new primary"),
-		).Description("Changes the cluster; each step asks it whether its change is made"),
-
-		pipeline.Group("verify",
-			pipeline.Observe("smoke-test", report("round-trip write OK", 500*time.Millisecond)).
-				Description("Round-trip write against the new primary"),
-			pipeline.Observe("check-metrics", report("error rate 0.02%, nominal", 600*time.Millisecond)).
-				Description("Error rate must stay under 0.1%"),
-		).Parallel(2).Description("Health checks after the failover"),
+		failover(c, fail),
+		verify(),
 
 		// A gate also waits while a person does work the runbook can't.
 		pipeline.Gate("incident-doc", pipeline.GateOptions{
@@ -60,6 +32,48 @@ func newPlan(c *cluster, approvers []pipeline.Approver, fail string) (*pipeline.
 			Approvers: approvers,
 		}).Description("A manual step: the paper trail lives outside this tool"),
 	)
+}
+
+func preflight() pipeline.GroupNode {
+	return pipeline.Group("preflight",
+		pipeline.Observe("check-cluster", report("primary db1 and replica db2 reachable", 300*time.Millisecond)).
+			Description("Verifies both database nodes are reachable"),
+		pipeline.Observe("check-replica-lag", report("replication lag 0.4s, within threshold", 300*time.Millisecond)).
+			Description("The replica must be under 5s behind before cutting over"),
+	).Description("Read-only checks, safe to run again")
+}
+
+// failover changes the cluster. fail names a step whose Run fails.
+func failover(c *cluster, fail string) pipeline.GroupNode {
+	return pipeline.Group("failover",
+		pipeline.Effect("demote-primary", change{
+			c: c, fail: fail == "demote-primary",
+			done:  func(s *clusterState) bool { return slices.Contains(s.ReadOnly, "db1") },
+			apply: func(s *clusterState) { s.ReadOnly = append(s.ReadOnly, "db1") },
+			msg:   "db1 set read-only",
+		}).Description("Sets the current primary read-only"),
+		pipeline.Effect("promote-replica", change{
+			c: c, fail: fail == "promote-replica",
+			done:  func(s *clusterState) bool { return s.Primary == "db2" },
+			apply: func(s *clusterState) { s.Primary = "db2" },
+			msg:   "db2 promoted to primary",
+		}).Description("Promotes the replica to primary"),
+		pipeline.Effect("update-dns", change{
+			c: c, fail: fail == "update-dns",
+			done:  func(s *clusterState) bool { return s.DNS == "db2" },
+			apply: func(s *clusterState) { s.DNS = "db2" },
+			msg:   "db.internal points at db2",
+		}).Description("Repoints db.internal at the new primary"),
+	).Description("Changes the cluster; each step asks it whether its change is made")
+}
+
+func verify() pipeline.GroupNode {
+	return pipeline.Group("verify",
+		pipeline.Observe("smoke-test", report("round-trip write OK", 500*time.Millisecond)).
+			Description("Round-trip write against the new primary"),
+		pipeline.Observe("check-metrics", report("error rate 0.02%, nominal", 600*time.Millisecond)).
+			Description("Error rate must stay under 0.1%"),
+	).Parallel(2).Description("Health checks after the failover")
 }
 
 // approvers answers the gates: the operator at the terminal, or, with -yes,
