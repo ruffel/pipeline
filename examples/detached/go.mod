@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/charmbracelet/x/term v0.2.2
-	github.com/ruffel/pipeline v0.2.1-0.20261113093659-980b63d382e0
+	github.com/ruffel/pipeline v0.3.0
 	github.com/ruffel/pipeline/observers/terminal v0.0.0
 )
 

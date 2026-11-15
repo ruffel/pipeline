@@ -1,4 +1,4 @@
-// Package linesplit splits process output into lines for the executors' output
+// Package linesplit splits process output into lines for a step's output
 // writers. Lines end at "\n", "\r\n" or a lone "\r", so progress output that
 // redraws a line arrives as one line per update, and lines longer than a limit
 // are split into chunks instead of failing.

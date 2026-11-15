@@ -15,10 +15,11 @@
 //	go run . run        # resumes: 001 is checked, not applied again
 //	go run . rollback   # or undoes what was done, in reverse
 //
-// Stop it part-way with Ctrl-C, or kill it with kill -9 from another
-// terminal, and run it again: it carries on from the journal.
+// Stop it part-way with Ctrl-C, or kill it from another terminal, and run it
+// again: it carries on from the journal.
 //
 //	go run . run -pace 5s
+//	pkill -9 migrate    # from another terminal: go run's own pid is not the tool's
 //
 // A stopped or killed run leaves the database in maintenance mode, as status
 // shows: only a failure runs the schema group's handler, which turns it off.
@@ -309,22 +310,32 @@ func status(args []string) error {
 // back to not-reached, and one whose Undo failed says so.
 func show(st *pipeline.State, n pipeline.NodeSpec) {
 	for _, c := range n.Children {
-		el := st.Element(c.Path)
-
-		note := ""
-
-		switch {
-		case el.UndoError != nil:
-			note = " (undo failed: " + el.UndoError.Message + ")"
-		case el.Error != nil && c.Kind != pipeline.KindGroup:
-			note = " (" + el.Error.Message + ")"
-		case el.Reason != "":
-			note = " (" + string(el.Reason) + ")"
-		}
-
-		indent := strings.Repeat("  ", strings.Count(c.Path, "/")-1)
-
-		fmt.Printf("  %-12s%s%s%s\n", el.Status, indent, c.Name, note)
+		showOne(st, c, "")
 		show(st, c)
 	}
+
+	// A group's failure handler is a step too, though not one of its
+	// children: it runs only if the group fails, and a rollback undoes it.
+	if n.OnFailure != nil {
+		showOne(st, *n.OnFailure, " (runs if "+n.Name+" fails)")
+	}
+}
+
+func showOne(st *pipeline.State, n pipeline.NodeSpec, what string) {
+	el := st.Element(n.Path)
+
+	note := ""
+
+	switch {
+	case el.UndoError != nil:
+		note = " (undo failed: " + el.UndoError.Message + ")"
+	case el.Error != nil && n.Kind != pipeline.KindGroup:
+		note = " (" + el.Error.Message + ")"
+	case el.Reason != "":
+		note = " (" + string(el.Reason) + ")"
+	}
+
+	indent := strings.Repeat("  ", strings.Count(n.Path, "/")-1)
+
+	fmt.Printf("  %-12s%s%s%s%s\n", el.Status, indent, n.Name, what, note)
 }

@@ -32,7 +32,7 @@ const (
 )
 
 // StepContext gives a running step access to the run: messages, progress,
-// output, per-target results, recorded values and custom events. The executor makes
+// output, per-target results, recorded values and custom events. A run makes
 // one for each step, shared by its Check and Run and all their tries.
 //
 // A StepContext stops working when its step returns. Later calls record

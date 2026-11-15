@@ -45,11 +45,16 @@ func main() {
 	}
 
 	// The journal is in memory: this demo is about what a run shows, not
-	// about resuming one. See examples/runbook and examples/detached.
+	// about resuming one. See examples/migrate, examples/runbook and
+	// examples/detached for that.
 	_, err = pipeline.Run(context.Background(), plan, pipeline.MemoryJournal(), pipeline.WithObservers(view))
+	if err != nil {
+		if _, ok := errors.AsType[*pipeline.StepError](err); ok {
+			fmt.Println("\n(The integration test times out on purpose: its group continues on error, so the others finish.)")
+		}
 
-	if _, ok := errors.AsType[*pipeline.StepError](err); ok {
-		fmt.Println("\n(The integration test times out on purpose: its group continues on error, so the others finish.)")
+		// A run that failed is a command that failed.
+		os.Exit(1)
 	}
 }
 
@@ -92,6 +97,8 @@ func migrate() pipeline.GroupNode {
 
 func deploy() pipeline.GroupNode {
 	return pipeline.Group("deploy",
+		// Its Check finds the work done, so its Run is never called.
+		pipeline.Effect("create-namespace", namespace{}),
 		pipeline.Effect("push-image", pipeline.StepFunc(pushImage)),
 	)
 }
@@ -105,8 +112,7 @@ func release() pipeline.GroupNode {
 func test() pipeline.GroupNode {
 	return pipeline.Group("test",
 		pipeline.Observe("unit-tests", pipeline.StepFunc(unitTests)),
-		// Its Check finds the work done, so its Run is never called.
-		pipeline.Ensure("lint", passedInCI{}),
+		pipeline.Observe("lint", pipeline.StepFunc(lint)),
 		pipeline.Observe("integration", pipeline.StepFunc(integration)).
 			Timeout(500*time.Millisecond),
 		pipeline.Observe("flaky-test", flaky()).
@@ -233,16 +239,25 @@ func flaky() pipeline.StepFunc {
 	}
 }
 
-// passedInCI is a step whose work is already done.
-type passedInCI struct{}
+func lint(_ context.Context, sc *pipeline.StepContext) error {
+	sleep()
+	sc.Info("no issues")
 
-func (passedInCI) Check(_ context.Context, sc *pipeline.StepContext) (bool, error) {
-	sc.Info("already passed in CI")
+	return nil
+}
+
+// namespace creates the namespace the release goes into. Here it is already
+// there, as its Check finds: a step that changes the system says how to tell
+// its work is done, so that it is never done twice.
+type namespace struct{}
+
+func (namespace) Check(_ context.Context, sc *pipeline.StepContext) (bool, error) {
+	sc.Info("namespace app already exists")
 
 	return true, nil
 }
 
-func (passedInCI) Run(context.Context, *pipeline.StepContext) error {
+func (namespace) Run(context.Context, *pipeline.StepContext) error {
 	return nil
 }
 

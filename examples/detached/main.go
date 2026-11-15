@@ -17,10 +17,10 @@
 //	go run . status
 //	go run . run
 //
-// Add -fail node3 to the first run to see a node fail and the rest finish;
-// run again without it to resume. Ctrl-C in the runner stops it gracefully,
-// and a second Ctrl-C cancels the running steps. Killing a viewer never
-// affects the run.
+// Add -fail node3 to the first run to see a node fail while the node beside
+// it finishes; run again without it to resume. Ctrl-C in the runner stops it
+// gracefully, and a second Ctrl-C cancels the running steps. Killing a viewer
+// never affects the run.
 package main
 
 import (

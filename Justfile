@@ -65,8 +65,9 @@ prepare-release version:
     cd observers/terminal && go mod edit -require=github.com/ruffel/pipeline@{{ version }}
 
 # Run the demo (formats: terminal, plain, json)
+# (its run fails on purpose, so its exit status is ignored)
 demo format="terminal":
-    cd examples/demo && go run . -format {{ format }}
+    -cd examples/demo && go run . -format {{ format }}
 
 # Run the runbook example (interactive; pass gates with y)
 demo-runbook format="terminal":

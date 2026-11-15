@@ -6,6 +6,9 @@ import "context"
 //
 // Run must be idempotent: after a crash part-way through it, it may be called
 // again on a system it has already partly changed.
+//
+// Run should return when ctx is done. That is how a timeout and a cancel
+// reach it: nothing else can stop a step, and one that ignores ctx runs on.
 type Step interface {
 	Run(ctx context.Context, s *StepContext) error
 }

@@ -8,8 +8,11 @@ import (
 
 // Observer receives every event after the journal has stored it. Calls are
 // serialised, in journal order, from the goroutine that wrote the event, so
-// an observer that blocks stalls the run: put anything that writes to a
-// terminal, socket or pipe behind an asynchronous wrapper.
+// an observer that blocks stalls the run. Put one that can block for long,
+// such as one writing to a socket or a pipe, behind a [NewAsyncObserver]. A
+// view of the run on its own terminal is usually called directly, and has to
+// be beside a [StdinApprover], so a gate's line is written before its
+// question.
 //
 // A panic in OnEvent is recovered. That observer receives nothing more, and a
 // warning is recorded.
