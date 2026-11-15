@@ -7,7 +7,7 @@ terminal, all from one journal file, with no server. It is for tools that
 operators run against real systems: installers, upgrades, migrations,
 failovers, data repairs.
 
-![demo](https://vhs.charm.sh/vhs-6b0W5VnjsJ8GpqRxTUpyt9.gif)
+![demo](./.vhs/demo.gif)
 
 ## Install
 
