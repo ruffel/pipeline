@@ -771,6 +771,8 @@ Any process can read the journal while a run writes it:
 
 An observer of your own, or a viewer in another language, reads the events
 themselves. [JOURNAL.md](./JOURNAL.md) lists every kind of event and its fields.
+[examples/06-web](./examples/06-web) is such a viewer: a web page built on
+`Inspect`, `Follow`, `Approve` and `RequestStop`.
 
 `Approve` and `RequestStop` leave their requests in a directory that `Run`
 makes beside the journal, named after it with `.control` added, and return
@@ -964,6 +966,9 @@ its own directory, and says at the top of its `main.go` what to try.
 5. **[05-migrate](./examples/05-migrate)**: a complete tool. A failure handler,
    a recorded value used by an `Undo`, inputs read back from the journal, a
    secret, and tests that crash its steps
+6. **[06-web](./examples/06-web)**: a viewer in a browser, in a process of its
+   own. Where every step stands, the events as they are written, and buttons
+   to approve a gate or stop the run
 
 ## Stability
 

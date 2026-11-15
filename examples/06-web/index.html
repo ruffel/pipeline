@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pipeline viewer</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --panel: #ffffff; --line: #dcdcd6; --text: #1d1d1b; --dim: #6b6b66;
+    --passed: #1a7f4b; --failed: #c0392b; --started: #1f6feb; --waiting: #b26a00; --idle: #8a8a84;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --panel: #1f1f23; --line: #34343a; --text: #e8e8e4; --dim: #9a9a94;
+      --passed: #4cc38a; --failed: #ff7b72; --started: #6cb0ff; --waiting: #f0b35a; --idle: #77777f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 8px; }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
+  .dim { color: var(--dim); }
+  .grow { flex: 1; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px;
+            min-width: 0; }
+  .cols { display: grid; gap: 16px; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+  @media (max-width: 800px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor;
+           font-size: 12px; white-space: nowrap; }
+  .passed, .skipped.done { color: var(--passed); }
+  .failed { color: var(--failed); }
+  .started { color: var(--started); }
+  .waiting, .stopped { color: var(--waiting); }
+  .not-reached, .skipped, .interrupted { color: var(--idle); }
+  button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { border-color: var(--waiting); color: var(--waiting); }
+  ul.tree, ul.tree ul { list-style: none; margin: 0; padding: 0; }
+  ul.tree ul { margin-left: 10px; padding-left: 14px; border-left: 1px solid var(--line); }
+  .row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 3px 0; }
+  .row .name { font-weight: 600; overflow-wrap: anywhere; }
+  .row .note { flex-basis: 100%; font-size: 13px; overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 3px 12px 3px 0; white-space: nowrap; }
+  #log { margin: 0; max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #log .t { color: var(--dim); }
+  #problem { color: var(--failed); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>pipeline viewer</h1>
+    <code id="journal" class="dim"></code>
+    <span class="grow"></span>
+    <span id="live" class="badge not-reached">loading</span>
+    <button id="stop" disabled title="Let running steps finish, and start nothing new">Stop</button>
+    <button id="cancel" disabled title="Cancel the running steps">Cancel</button>
+  </header>
+  <div id="problem" role="alert"></div>
+  <div class="cols">
+    <div style="display: grid; gap: 16px; align-content: start; min-width: 0;">
+      <section>
+        <h2>Attempts</h2>
+        <div id="attempts" class="dim">none yet</div>
+        <p id="next" style="margin: 8px 0 0"></p>
+      </section>
+      <section>
+        <h2>Plan</h2>
+        <div id="plan" class="dim">no run has started on this journal</div>
+      </section>
+    </div>
+    <section>
+      <h2>Events</h2>
+      <pre id="log" class="mono dim">waiting for events</pre>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+// make builds an element. Everything from the journal is set as text, never
+// as HTML: step names, messages and output are whatever the tool wrote.
+function make(tag, cls, text) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+async function post(path, fields, button) {
+  button.disabled = true;
+  $('problem').textContent = '';
+  try {
+    const res = await fetch(path, { method: 'POST', body: new URLSearchParams(fields) });
+    if (!res.ok) $('problem').textContent = (await res.text()).trim();
+  } catch (err) {
+    $('problem').textContent = String(err);
+  }
+  refresh();
+}
+
+function drawAttempts(state) {
+  const box = $('attempts');
+  if (state.attempts.length === 0) {
+    box.textContent = 'none yet';
+    box.className = 'dim';
+    $('next').textContent = '';
+    return;
+  }
+
+  const table = make('table');
+  state.attempts.forEach((a, i) => {
+    // An attempt with no outcome is running, or its process died. Only the
+    // latest can be running.
+    const latest = i === state.attempts.length - 1;
+    const outcome = a.outcome || (state.live && latest ? 'running' : 'interrupted');
+    const cls = a.outcome ? a.outcome : (outcome === 'running' ? 'started' : 'interrupted');
+    const tr = make('tr');
+    tr.append(make('td', 'dim', 'attempt ' + a.attempt), make('td', '', a.rollback ? 'rollback' : 'run'));
+    const td = make('td');
+    td.append(make('span', 'badge ' + cls, outcome));
+    tr.append(td, make('td', 'dim', new Date(a.started).toLocaleTimeString()));
+    table.append(tr);
+  });
+  box.className = '';
+  box.replaceChildren(table);
+
+  // What can be done next depends only on the latest attempt.
+  const last = state.attempts[state.attempts.length - 1];
+  let next;
+  if (state.live) next = 'A process is working on it now.';
+  else if (last.rollback && last.outcome === 'passed') next = 'Rolled back: run does the work again.';
+  else if (last.rollback) next = 'The rollback did not finish: run rollback again.';
+  else if (last.outcome === 'passed') next = 'Finished: rollback undoes it.';
+  else next = 'Unfinished: run resumes it, or rollback undoes it.';
+  $('next').textContent = next;
+}
+
+function drawElement(el) {
+  const li = make('li');
+  const row = make('div', 'row');
+
+  // started means running only while a process holds the journal.
+  let label = el.status;
+  let cls = el.status;
+  if (el.waiting) { label = 'waiting'; cls = 'waiting'; }
+  else if (el.status === 'started' && !liveNow) { label = 'interrupted'; cls = 'interrupted'; }
+  else if (el.status === 'skipped' && el.done) { label = 'done'; cls = 'skipped done'; }
+
+  row.append(make('span', 'badge ' + cls, label), make('span', 'name', el.name));
+
+  const kind = el.handler ? 'runs if the group fails' : el.kind;
+  row.append(make('span', 'dim', kind + (el.reason ? ' · ' + el.reason : '')));
+
+  if (el.waiting) {
+    const button = make('button', 'primary', 'Approve');
+    button.onclick = () => post('/approve', { gate: el.path }, button);
+    row.append(button);
+  }
+
+  const note = el.waiting ? el.prompt : el.description;
+  if (note) row.append(make('span', 'note dim', note));
+  // A group's error repeats its steps', and a stopped element's says only
+  // that it was stopped.
+  if (el.error && el.status === 'failed' && el.kind !== 'group') {
+    row.append(make('span', 'note failed', el.error));
+  }
+  if (el.undoError) row.append(make('span', 'note failed', 'undo failed: ' + el.undoError));
+
+  li.append(row);
+  if (el.children) {
+    const ul = make('ul');
+    el.children.forEach((c) => ul.append(drawElement(c)));
+    li.append(ul);
+  }
+  return li;
+}
+
+let liveNow = false;
+
+function draw(state) {
+  liveNow = state.live;
+  $('journal').textContent = state.journal;
+  $('live').textContent = state.live ? 'running' : 'not running';
+  $('live').className = 'badge ' + (state.live ? 'started' : 'not-reached');
+  $('stop').disabled = $('cancel').disabled = !state.live;
+
+  drawAttempts(state);
+
+  if (state.plan) {
+    const ul = make('ul', 'tree');
+    ul.append(drawElement(state.plan));
+    $('plan').className = '';
+    $('plan').replaceChildren(ul);
+  }
+}
+
+// line turns one journal event into a line of the log, or nothing for the
+// kinds that the plan above already shows.
+function line(e) {
+  const path = e.path || '';
+  switch (e.kind) {
+    case 'run.started': return (e.rollback ? 'rollback' : 'run') + ' started, attempt ' + e.attempt;
+    case 'run.finished': return 'attempt ' + e.outcome;
+    case 'step.finished':
+    case 'group.finished':
+      return path + ' ' + e.outcome + (e.reason ? ' (' + e.reason + ')' : '') +
+        (e.error && e.kind === 'step.finished' && e.outcome === 'failed' ? ': ' + e.error.message : '');
+    case 'undo.finished': return path + ' ' + e.outcome + (e.error ? ': ' + e.error.message : '');
+    case 'group.reset': return path + ' reset';
+    case 'gate.waiting': return path + ' waiting: ' + (e.prompt || '');
+    case 'gate.released': return path + ' released';
+    case 'stop.requested': return 'stop requested';
+    case 'step.retry': return path + ' try ' + e.try + ' failed, retrying';
+    case 'message': return path + ' [' + e.level + '] ' + e.message;
+    case 'output': return path + ' | ' + e.line;
+    case 'progress': return path + ' ' + (e.message || '') + ' ' + e.current + '/' + e.total;
+    case 'item': return path + ' ' + e.item + ' ' + e.itemStatus + (e.message ? ': ' + e.message : '');
+    default: return null;
+  }
+}
+
+let seen = 0;
+let pending = null;
+
+function onEvent(e) {
+  // A stream that reconnects sends again what it sent before.
+  if (e.seq <= seen) return;
+  seen = e.seq;
+
+  const text = line(e);
+  if (text !== null) {
+    const log = $('log');
+    if (log.classList.contains('dim')) { log.textContent = ''; log.classList.remove('dim'); }
+    const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    log.append(make('span', 't', new Date(e.ts).toLocaleTimeString() + '  '), text + '\n');
+    if (atEnd) log.scrollTop = log.scrollHeight;
+  }
+
+  // The state is redrawn from the journal, not worked out from the events:
+  // Inspect already knows how every event changes where things stand.
+  clearTimeout(pending);
+  pending = setTimeout(refresh, 100);
+}
+
+async function refresh() {
+  try {
+    const state = await (await fetch('/state')).json();
+    draw(state);
+    return state;
+  } catch (err) {
+    $('problem').textContent = 'the viewer is not answering: ' + err;
+    return null;
+  }
+}
+
+$('stop').onclick = () => post('/stop', { mode: 'graceful' }, $('stop'));
+$('cancel').onclick = () => post('/stop', { mode: 'cancel' }, $('cancel'));
+
+(async () => {
+  const state = await refresh();
+  seen = state ? state.lastSeq : 0;
+
+  const stream = new EventSource('/events?after=' + seen);
+  stream.onmessage = (m) => onEvent(JSON.parse(m.data));
+  stream.addEventListener('failed', (m) => { $('problem').textContent = m.data; stream.close(); });
+
+  // Whether a process holds the journal is not an event, so ask now and then.
+  setInterval(refresh, 2000);
+})();
+</script>
+</body>
+</html>
