@@ -25,3 +25,7 @@ examples/detached/detached
 examples/detached/upgrade.jsonl
 examples/detached/upgrade.jsonl.control/
 examples/detached/.detached-state/
+examples/migrate/migrate
+examples/migrate/migrate.jsonl
+examples/migrate/migrate.jsonl.control/
+examples/migrate/.migrate-state/
