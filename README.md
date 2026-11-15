@@ -283,6 +283,9 @@ Any process can read the journal while a run writes it:
 - **`Inspect`** replays it into a `State`: every attempt, where each element
   stands, and whether a process is running it now (`Live`).
 
+An observer of your own, or a viewer in another language, reads the events
+themselves. [JOURNAL.md](./JOURNAL.md) lists every kind of event and its fields.
+
 `Approve` and `RequestStop` leave their requests in a directory that `Run`
 makes beside the journal, named after it with `.control` added, and return
 once the journal shows the run acted on them.
