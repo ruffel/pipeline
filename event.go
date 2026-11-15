@@ -177,7 +177,8 @@ const (
 )
 
 // Event is one line of the journal, and what observers receive. Which fields
-// are set depends on Kind.
+// are set depends on Kind: JOURNAL.md, in the repository, lists them for each
+// kind, with the values they take.
 type Event struct {
 	V    int       `json:"v"`
 	Seq  int64     `json:"seq"`
