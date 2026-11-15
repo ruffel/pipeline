@@ -9,37 +9,37 @@ import (
 	"slices"
 	"time"
 
-	"github.com/ruffel/pipeline/runbook"
+	"github.com/ruffel/pipeline"
 )
 
-func newPlan(c *cluster, approvers []runbook.Approver, fail string) (*runbook.Plan, error) {
-	return runbook.NewPlan("db-failover",
-		runbook.Group("preflight",
-			runbook.Observe("check-cluster", report("primary db1 and replica db2 reachable", 300*time.Millisecond)).
+func newPlan(c *cluster, approvers []pipeline.Approver, fail string) (*pipeline.Plan, error) {
+	return pipeline.NewPlan("db-failover",
+		pipeline.Group("preflight",
+			pipeline.Observe("check-cluster", report("primary db1 and replica db2 reachable", 300*time.Millisecond)).
 				Description("Verifies both database nodes are reachable"),
-			runbook.Observe("check-replica-lag", report("replication lag 0.4s, within threshold", 300*time.Millisecond)).
+			pipeline.Observe("check-replica-lag", report("replication lag 0.4s, within threshold", 300*time.Millisecond)).
 				Description("The replica must be under 5s behind before cutting over"),
 		).Description("Read-only checks, safe to run again"),
 
-		runbook.Gate("confirm-failover", runbook.GateOptions{
+		pipeline.Gate("confirm-failover", pipeline.GateOptions{
 			Prompt:    "Proceed with failover? Traffic pauses for ~30s",
 			Approvers: approvers,
 		}).Description("The last safe moment to abort"),
 
-		runbook.Group("failover",
-			runbook.Effect("demote-primary", change{
+		pipeline.Group("failover",
+			pipeline.Effect("demote-primary", change{
 				c: c, fail: fail == "demote-primary",
 				done:  func(s *clusterState) bool { return slices.Contains(s.ReadOnly, "db1") },
 				apply: func(s *clusterState) { s.ReadOnly = append(s.ReadOnly, "db1") },
 				msg:   "db1 set read-only",
 			}).Description("Sets the current primary read-only"),
-			runbook.Effect("promote-replica", change{
+			pipeline.Effect("promote-replica", change{
 				c: c, fail: fail == "promote-replica",
 				done:  func(s *clusterState) bool { return s.Primary == "db2" },
 				apply: func(s *clusterState) { s.Primary = "db2" },
 				msg:   "db2 promoted to primary",
 			}).Description("Promotes the replica to primary"),
-			runbook.Effect("update-dns", change{
+			pipeline.Effect("update-dns", change{
 				c: c, fail: fail == "update-dns",
 				done:  func(s *clusterState) bool { return s.DNS == "db2" },
 				apply: func(s *clusterState) { s.DNS = "db2" },
@@ -47,15 +47,15 @@ func newPlan(c *cluster, approvers []runbook.Approver, fail string) (*runbook.Pl
 			}).Description("Repoints db.internal at the new primary"),
 		).Description("Changes the cluster; each step asks it whether its change is made"),
 
-		runbook.Group("verify",
-			runbook.Observe("smoke-test", report("round-trip write OK", 500*time.Millisecond)).
+		pipeline.Group("verify",
+			pipeline.Observe("smoke-test", report("round-trip write OK", 500*time.Millisecond)).
 				Description("Round-trip write against the new primary"),
-			runbook.Observe("check-metrics", report("error rate 0.02%, nominal", 600*time.Millisecond)).
+			pipeline.Observe("check-metrics", report("error rate 0.02%, nominal", 600*time.Millisecond)).
 				Description("Error rate must stay under 0.1%"),
 		).Parallel(2).Description("Health checks after the failover"),
 
 		// A gate also waits while a person does work the runbook can't.
-		runbook.Gate("incident-doc", runbook.GateOptions{
+		pipeline.Gate("incident-doc", pipeline.GateOptions{
 			Prompt:    "Update the incident doc with the failover time, then approve",
 			Approvers: approvers,
 		}).Description("A manual step: the paper trail lives outside this tool"),
@@ -63,14 +63,14 @@ func newPlan(c *cluster, approvers []runbook.Approver, fail string) (*runbook.Pl
 }
 
 // approvers answers the gates: the operator at the terminal, or, with -yes,
-// an approver that approves at once. [runbook.Approve] can release a gate
+// an approver that approves at once. [pipeline.Approve] can release a gate
 // from another terminal too.
-func approvers(yes bool) []runbook.Approver {
+func approvers(yes bool) []pipeline.Approver {
 	if yes {
-		return []runbook.Approver{autoApprove{}}
+		return []pipeline.Approver{autoApprove{}}
 	}
 
-	return []runbook.Approver{runbook.StdinApprover()}
+	return []pipeline.Approver{pipeline.StdinApprover()}
 }
 
 // autoApprove is an Approver that approves every gate as soon as it waits.
@@ -79,7 +79,7 @@ type autoApprove struct{}
 
 func (autoApprove) Name() string { return "-yes" }
 
-func (autoApprove) Wait(context.Context, runbook.GateInfo) (string, error) {
+func (autoApprove) Wait(context.Context, pipeline.GateInfo) (string, error) {
 	return who(), nil
 }
 
@@ -93,7 +93,7 @@ type change struct {
 	fail  bool
 }
 
-func (s change) Check(context.Context, *runbook.StepContext) (bool, error) {
+func (s change) Check(context.Context, *pipeline.StepContext) (bool, error) {
 	st, err := s.c.load()
 	if err != nil {
 		return false, err
@@ -102,7 +102,7 @@ func (s change) Check(context.Context, *runbook.StepContext) (bool, error) {
 	return s.done(&st), nil
 }
 
-func (s change) Run(ctx context.Context, sc *runbook.StepContext) error {
+func (s change) Run(ctx context.Context, sc *pipeline.StepContext) error {
 	if err := sleep(ctx, 400*time.Millisecond); err != nil {
 		return err
 	}
@@ -128,8 +128,8 @@ func (s change) Run(ctx context.Context, sc *runbook.StepContext) error {
 }
 
 // report is a read-only step that waits for d and reports msg.
-func report(msg string, d time.Duration) runbook.StepFunc {
-	return func(ctx context.Context, sc *runbook.StepContext) error {
+func report(msg string, d time.Duration) pipeline.StepFunc {
+	return func(ctx context.Context, sc *pipeline.StepContext) error {
 		if err := sleep(ctx, d); err != nil {
 			return err
 		}

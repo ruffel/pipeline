@@ -1,16 +1,20 @@
-// Package pipeline provides observable task pipelines: define stages and
-// steps, and an [Executor] handles sequencing, parallelism and flow control
-// while emitting structured events to registered [Observer] implementations.
+// Package pipeline runs durable, resumable plans: trees of groups and steps
+// whose outcomes are recorded in a journal, so a run can be stopped, resumed
+// after a crash, and watched from another process.
 //
-// The package separates three concerns:
+// A plan is data. It is built once, validated by [NewPlan], and does not change
+// during a run:
 //
-//   - Definition: [Pipeline], [Stage] and [Step] describe the work, built
-//     via [NewPipeline], [NewStage], [NewParallelStage] and [NewStep].
-//   - Execution: [Executor.Run] validates and runs the pipeline, applying
-//     conditions, sentinel flow control ([ErrSkipStage], [ErrSkipPipeline])
-//     and per-step middleware ([WithRetry], [WithTimeout]).
-//   - Observation: every lifecycle transition and in-flight signal is
-//     delivered as an [Event] to observers, decoupling execution from
-//     presentation. Ready-made observers live in the observers/ submodules,
-//     and steps emit their own events via the EmitX helpers.
+//	plan, err := pipeline.NewPlan("upgrade",
+//	    pipeline.Group("prechecks", checks...).Parallel(8).ContinueOnError(),
+//	    pipeline.Effect("backup", backup{}),
+//	    pipeline.Group("node1",
+//	        pipeline.Effect("stop", stop{n}),
+//	        pipeline.Effect("packages", packages{n}),
+//	        pipeline.Observe("verify", verify{n}),
+//	    ).Labels(pipeline.L{"node": "node1"}),
+//	)
+//
+// Every element has a path built from its name and its parents' names, such
+// as "upgrade/node1/packages". The path is the element's identity.
 package pipeline

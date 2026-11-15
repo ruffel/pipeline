@@ -1,4 +1,4 @@
-// Command detached shows a runbook run that outlives its terminal: the run
+// Command detached shows a run that outlives its terminal: the run
 // writes a journal, and any other terminal can watch it, approve its gate,
 // stop it, or see where it stands. Stop it, or kill it, and running it
 // again resumes where it left off.
@@ -35,8 +35,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ruffel/pipeline/observers/terminal/runbookterm"
-	"github.com/ruffel/pipeline/runbook"
+	"github.com/ruffel/pipeline"
+	"github.com/ruffel/pipeline/observers/terminal"
 )
 
 const usage = `usage: detached <command> [flags]
@@ -95,8 +95,8 @@ func run(args []string) error {
 		return err
 	}
 
-	j, err := runbook.OpenJournal(*journal)
-	if errors.Is(err, runbook.ErrJournalBusy) {
+	j, err := pipeline.OpenJournal(*journal)
+	if errors.Is(err, pipeline.ErrJournalBusy) {
 		return fmt.Errorf("%s is in use by another run; follow it with: detached watch", *journal)
 	}
 
@@ -113,7 +113,7 @@ func run(args []string) error {
 	// OnSignal must not block, or the next signal waits: stderr can be a
 	// full pipe. Its notices are written on another goroutine, and dropped
 	// if that one is stuck.
-	stopper := runbook.NewStopper()
+	stopper := pipeline.NewStopper()
 	notices := make(chan string, 2)
 	stops := 0
 
@@ -123,7 +123,7 @@ func run(args []string) error {
 		}
 	}()
 
-	release := runbook.HandleSignals(stopper, runbook.SignalOptions{OnSignal: func(s os.Signal) {
+	release := pipeline.HandleSignals(stopper, pipeline.SignalOptions{OnSignal: func(s os.Signal) {
 		if s == syscall.SIGHUP {
 			return
 		}
@@ -148,16 +148,16 @@ func run(args []string) error {
 	// hold up the run. When the gate is answered at this terminal, though,
 	// the view is called directly, so the gate's prompt is on screen before
 	// StdinApprover asks.
-	var view runbook.Observer = runbookterm.New(os.Stdout)
+	var view pipeline.Observer = terminal.New(os.Stdout)
 
-	var async *runbook.AsyncObserver
+	var async *pipeline.AsyncObserver
 	if !interactive() {
-		async = runbook.NewAsyncObserver(view, runbook.DefaultChatterLimit)
+		async = pipeline.NewAsyncObserver(view, pipeline.DefaultChatterLimit)
 		view = async
 	}
 
-	_, err = runbook.Run(context.Background(), plan, j,
-		runbook.WithObservers(view), runbook.WithStopper(stopper), runbook.WithRunLabels(runbook.L{"operator": who()}))
+	_, err = pipeline.Run(context.Background(), plan, j,
+		pipeline.WithObservers(view), pipeline.WithStopper(stopper), pipeline.WithRunLabels(pipeline.L{"operator": who()}))
 
 	if async != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -166,7 +166,7 @@ func run(args []string) error {
 		_ = async.Close(ctx)
 	}
 
-	if errors.Is(err, runbook.ErrAlreadyComplete) {
+	if errors.Is(err, pipeline.ErrAlreadyComplete) {
 		return fmt.Errorf("%s holds a finished upgrade; remove it and %s to start again", *journal, *state)
 	}
 
@@ -185,16 +185,16 @@ func watch(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	history := runbook.HistoryLifecycle
+	history := pipeline.HistoryLifecycle
 	if *all {
-		history = runbook.HistoryAll
+		history = pipeline.HistoryAll
 	}
 
-	err := runbook.Follow(ctx, *journal, runbook.FollowOptions{History: history, KeepFollowing: *keep},
-		runbookterm.New(os.Stdout))
+	err := pipeline.Follow(ctx, *journal, pipeline.FollowOptions{History: history, KeepFollowing: *keep},
+		terminal.New(os.Stdout))
 
 	switch {
-	case errors.Is(err, runbook.ErrRunnerGone):
+	case errors.Is(err, pipeline.ErrRunnerGone):
 		return errors.New("the run ended without finishing, and nothing is running it; resume it with: detached run")
 	case ctx.Err() != nil:
 		return nil
@@ -212,8 +212,8 @@ func approve(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := runbook.Approve(ctx, *journal, *gate, who())
-	if errors.Is(err, runbook.ErrGateNotWaiting) {
+	err := pipeline.Approve(ctx, *journal, *gate, who())
+	if errors.Is(err, pipeline.ErrGateNotWaiting) {
 		return fmt.Errorf("%s is not waiting for approval", *gate)
 	}
 
@@ -227,15 +227,15 @@ func stop(args []string) error {
 	cancelSteps := fs.Bool("cancel", false, "cancel the running steps instead of letting them finish")
 	_ = fs.Parse(args)
 
-	mode := runbook.StopGraceful
+	mode := pipeline.StopGraceful
 	if *cancelSteps {
-		mode = runbook.StopCancel
+		mode = pipeline.StopCancel
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	return runbook.RequestStop(ctx, *journal, mode, who())
+	return pipeline.RequestStop(ctx, *journal, mode, who())
 }
 
 // status shows where the run stands, from the journal alone.
@@ -243,7 +243,7 @@ func status(args []string) error {
 	fs, journal := flags("status")
 	_ = fs.Parse(args)
 
-	st, err := runbook.Inspect(*journal)
+	st, err := pipeline.Inspect(*journal)
 	if err != nil {
 		return err
 	}
@@ -268,9 +268,9 @@ func status(args []string) error {
 
 	fmt.Printf("attempt %d: %s\n\n", last.Attempt, outcome)
 
-	var show func(n runbook.NodeSpec)
+	var show func(n pipeline.NodeSpec)
 
-	show = func(n runbook.NodeSpec) {
+	show = func(n pipeline.NodeSpec) {
 		for _, c := range n.Children {
 			el := st.Element(c.Path)
 

@@ -10,6 +10,6 @@ Set Padding 20
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 50ms
 
-Type "go run ./examples/deploy"
+Type "go run ./examples/demo"
 Enter
 Sleep 8s

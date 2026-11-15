@@ -68,9 +68,6 @@ prepare-release version:
 demo format="terminal":
     cd examples/demo && go run . -format {{ format }}
 
-demo-deploy format="terminal":
-    cd examples/deploy && go run . -format {{ format }}
-
 # Run the runbook example (interactive; pass gates with y)
 demo-runbook format="terminal":
     cd examples/runbook && go run . -format {{ format }}

@@ -26,8 +26,8 @@ import (
 	"os/user"
 	"path/filepath"
 
-	"github.com/ruffel/pipeline/observers/terminal/runbookterm"
-	"github.com/ruffel/pipeline/runbook"
+	"github.com/ruffel/pipeline"
+	"github.com/ruffel/pipeline/observers/terminal"
 )
 
 func main() {
@@ -68,7 +68,7 @@ func run(yes bool, format, journal, state, fail string) error {
 		return err
 	}
 
-	j, err := runbook.OpenJournal(journal)
+	j, err := pipeline.OpenJournal(journal)
 	if err != nil {
 		return err
 	}
@@ -77,21 +77,21 @@ func run(yes bool, format, journal, state, fail string) error {
 
 	// Ctrl-C stops the run once its running steps finish, and at a gate
 	// stops it without approving; a second Ctrl-C cancels the running steps.
-	stopper := runbook.NewStopper()
+	stopper := pipeline.NewStopper()
 
-	release := runbook.HandleSignals(stopper, runbook.SignalOptions{})
+	release := pipeline.HandleSignals(stopper, pipeline.SignalOptions{})
 	defer release()
 
-	_, err = runbook.Run(context.Background(), plan, j,
-		runbook.WithObservers(view), runbook.WithStopper(stopper), runbook.WithRunLabels(runbook.L{"operator": who()}),
-		runbook.WithInputs(inputs{Cluster: file}))
+	_, err = pipeline.Run(context.Background(), plan, j,
+		pipeline.WithObservers(view), pipeline.WithStopper(stopper), pipeline.WithRunLabels(pipeline.L{"operator": who()}),
+		pipeline.WithInputs(inputs{Cluster: file}))
 
 	switch {
-	case errors.Is(err, runbook.ErrInputsChanged):
+	case errors.Is(err, pipeline.ErrInputsChanged):
 		return fmt.Errorf("%s is a failover of another cluster; use its -state, or remove it to start again", journal)
-	case errors.Is(err, runbook.ErrAlreadyComplete):
+	case errors.Is(err, pipeline.ErrAlreadyComplete):
 		return fmt.Errorf("%s holds a finished failover; remove it and %s to start again", journal, state)
-	case errors.Is(err, runbook.ErrStopped):
+	case errors.Is(err, pipeline.ErrStopped):
 		return errors.New("stopped; run again to resume")
 	default:
 		return err
@@ -105,14 +105,14 @@ type inputs struct {
 
 // observer shows the run. It is called on the run's goroutine, so the view
 // and a gate's question on the terminal stay in order.
-func observer(format string, w io.Writer) (runbook.Observer, error) {
+func observer(format string, w io.Writer) (pipeline.Observer, error) {
 	switch format {
 	case "terminal":
-		return runbookterm.New(w), nil
+		return terminal.New(w), nil
 	case "plain":
-		return runbook.NewPlainObserver(w), nil
+		return pipeline.NewPlainObserver(w), nil
 	case "json":
-		return runbook.NewJSONObserver(w), nil
+		return pipeline.NewJSONObserver(w), nil
 	default:
 		return nil, fmt.Errorf("unknown format %q: use terminal, plain or json", format)
 	}

@@ -17,7 +17,6 @@
 Thumbs.db
 
 examples/demo/demo
-examples/deploy/deploy
 examples/runbook/runbook
 examples/runbook/runbook.jsonl
 examples/runbook/runbook.jsonl.control/
