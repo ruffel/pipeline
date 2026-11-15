@@ -839,16 +839,46 @@ func (r *runner) backoff(ctx context.Context, n *node, err error) error {
 	}
 }
 
-// try runs one Check and, if the work isn't done, Run. It reports whether
-// Check found the work done.
+// try runs one Check and, if the work isn't done, Run, within the step's
+// timeout. It reports whether Check found the work done.
 func (r *runner) try(ctx context.Context, n *node, sc *StepContext, ranOnce *bool) (bool, error) {
-	if n.timeout > 0 {
-		var cancel context.CancelFunc
-
-		ctx, cancel = context.WithTimeout(ctx, n.timeout)
-		defer cancel()
+	if n.timeout <= 0 {
+		return r.checkAndRun(ctx, n, sc, ranOnce)
 	}
 
+	tctx, cancel := context.WithTimeout(ctx, n.timeout)
+	defer cancel()
+
+	done, err := r.checkAndRun(tctx, n, sc, ranOnce)
+	if overran(ctx, tctx, err) {
+		return false, overrunError(n.timeout)
+	}
+
+	return done, err
+}
+
+// overran reports whether a try, or an Undo, that was given tctx took longer
+// than its timeout and still claimed to succeed: it returned nil, or a skip,
+// after tctx's deadline. A step that watches its context returns the
+// context's error instead, and fails with that. One cut short by ctx, the
+// run's own context, was cancelled and did not overrun.
+func overran(ctx, tctx context.Context, err error) bool {
+	if err != nil && skipOf(err) == "" {
+		return false
+	}
+
+	return ctx.Err() == nil && errors.Is(tctx.Err(), context.DeadlineExceeded)
+}
+
+// overrunError is what a step fails with when it overruns its timeout. It
+// matches [context.DeadlineExceeded], as the error of a step that stopped in
+// time does.
+func overrunError(timeout time.Duration) error {
+	return fmt.Errorf("pipeline: returned after its %s timeout had passed: %w", timeout, context.DeadlineExceeded)
+}
+
+// checkAndRun runs one Check and, if the work isn't done, Run.
+func (r *runner) checkAndRun(ctx context.Context, n *node, sc *StepContext, ranOnce *bool) (bool, error) {
 	if checker, ok := n.step.(Checker); ok {
 		var done bool
 

@@ -466,6 +466,32 @@ func TestRollback_KeepsTheInputs(t *testing.T) {
 	assert.Equal(t, "8.1", got.Version)
 }
 
+// An Undo is bounded as a try is: one that returns nil after its timeout
+// has failed, and the rollback is unfinished.
+func TestRollback_AnUndoThatOverrunsItsTimeoutFails(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	late := func(ctx context.Context, _ *pipeline.StepContext) error {
+		<-ctx.Done()
+
+		return nil
+	}
+
+	plan := mustPlan(t, pipeline.Effect("a", undoable{c: &c, name: "a", undo: late}).Timeout(10*time.Millisecond))
+	j := pipeline.MemoryJournal()
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+
+	out := resumeRollback(t, j, plan)
+	require.ErrorIs(t, out.err, context.DeadlineExceeded)
+	require.ErrorContains(t, out.err, "returned after its 10ms timeout had passed")
+
+	_, err := pipeline.Run(t.Context(), plan, j)
+	require.ErrorIs(t, err, pipeline.ErrRollbackUnfinished)
+}
+
 func TestPlainObserver_ARollback(t *testing.T) {
 	t.Parallel()
 
