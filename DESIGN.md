@@ -1,57 +1,208 @@
 # Pipeline Design Decisions
 
-## Observer Failures
+## Why it exists
 
-**Decision:** Observer failures are non-fatal and are not part of the
-executor's error model.
+Go has a gap between a shell script and a workflow engine. Scripts and
+`errgroup` keep no record, can't resume after a failure, and can't roll back.
+Temporal and its kin are durable, but need a server or a database and a
+deterministic-replay programming model. Ansible and Salt can't be embedded in a
+Go program or unit tested there.
 
-The executor's return value should only be concerned if the pipeline work
-succeeded? Output problems are a separate concern. A deploy step that completed
-successfully should not look like a failed deploy because a log file filled the
-disk after the fact.
+pipeline fills that gap for tools that operators run against real systems:
+plan it, run it, kill it, resume it, roll it back, and watch it from anywhere,
+all from one journal file, with no server.
 
-For that reason, observers that care about durable or machine-consumed output
-should expose their own error state.
+It deliberately does not do:
 
-Panics in observers remain fatal. This decision only covers ordinary write or
-delivery failures.
+- **Deterministic replay of code.** Steps are idempotent units, and the journal
+  records outcomes, not instructions.
+- **Distributed workers.** Remote work is the step's job (ssh, salt, an API).
+- **Databases.** A journal is a file or memory.
+- **Changing the plan mid-run, or loops.**
+- **Launching processes, serving HTTP, or authentication.** The name on a stop
+  or an approval is whatever the requester says it is.
+- **A file journal on Windows.** The package builds there, and `OpenJournal`
+  returns an error.
 
-## Terminal Events After Cancellation
+## The Plan Is Data
 
-**Decision:** If the run context has already been cancelled, terminal lifecycle
-events are still delivered with cancellation stripped from the observer
-context.
+**Decision:** A plan is built once, validated by `NewPlan`, and does not change
+during a run. Anything dynamic is worked out before building it.
 
-Users still need a final passed or failed event to render a summary, write a
-last log line, or flush a UI. If terminal events inherited cancellation, the
-observer would often see a cancelled context exactly when that final state was
-most important. Non-terminal events keep the original cancellation state so
-observers can still tell whether they were emitted before or after cancellation.
+The whole plan is known and printable (`Describe`) before anything changes, and
+viewers in other processes can render it from the journal. A plan whose shape
+depends on something only running code can discover is built after a read-only
+discovery phase, whose result is an input (`WithInputs`), so a resume builds the
+same plan even if the system has changed since.
 
-## Skip Events for Bypassed Steps
+## Identity Is the Path
 
-**Decision:** When a step ends a sequential stage via `ErrSkipStage`, every
-bypassed step emits a `StepSkippedEvent`. Work bypassed by `ErrSkipPipeline`
-(remaining steps and stages) emits nothing.
+**Decision:** An element's identity is the path of names from the root, such as
+`upgrade/node1/packages`. Renaming a step changes its identity.
 
-`PipelineStartedEvent` carries the full definition precisely so observers can
-pre-render the plan. A step that silently never runs leaves such UIs with an
-unresolved entry, so bypassed steps are accounted for individually.
+Names are unique among siblings and limited to letters, digits, `.`, `_` and
+`-`, because paths are used in file names and command arguments.
 
-`ErrSkipPipeline` is intentionally asymmetric: it means "the pipeline is done,
-successfully" — the run has reached its conclusion early, and the remaining
-stages are not skipped work that needs accounting. A cascade of stage and step
-skip events would bury that signal in noise. Observers that need to show
-unvisited stages can diff the definition against the events received.
+## A Changed Plan Is Refused
 
-## Panic Recovery
+**Decision:** `Run` refuses a journal whose attempts used a plan of a different
+shape (`ErrPlanChanged`). The shape is the plan's fingerprint: its ordered paths
+and each element's kind.
 
-**Decision:** The executor recovers panics during `Step.Run` and in stage and step `Condition` functions, but does NOT recover panics in observers or executor scaffolding.
+Descriptions, labels, parallel limits, timeouts, retries and gate options are
+not part of the fingerprint, so a rebuilt tool that changed only those can
+resume. Inputs are compared separately (`ErrInputsChanged`).
 
-A panic in a condition fails its stage or step like an error from `Run` would: a started event, then a failed event. A step's condition runs on an executor goroutine in a parallel stage, where an unrecovered panic kills the process and the caller can't recover it.
+## The Journal Is the Source of Truth
 
-- **Reason for catching panics within steps:**
-  A pipeline is often the backbone for an installer, CI runner, or orchestrator, executing arbitrary user-defined steps. A nil-pointer crash or logic bug in a single user-supplied step must NOT crash the entire execution engine. The engine must survive to wrap the panic as an error, gracefully fail the stage, and emit the final failure event so observers (and users) know what went wrong. Do not flag the `defer func() { if r := recover() ... }` block in `executor.go` as a "swallowed panic"—it is an intentional fault boundary to protect the lifecycle loop.
+**Decision:** Every lifecycle record (a run, group or step starting or
+finishing, a recorded value, an item, a gate waiting or released, an undo, a
+stop request) is written and synced before any observer is told. If a write
+fails, the run stops.
 
-- **Reason for NOT catching panics elsewhere (in observers):**
-  We intentionally do not wrap `Observer.OnEvent` calls in a recover block because there is no mechanism to handle the error. The `OnEvent` signature does not return an error, and keeping it simple is a core design goal. If we caught a panic, the executor couldn't report it via the pipeline's event system without risking recursive deadlocks, nor could it cleanly return it up the chain during a teardown phase. It is better to let the program crash than to silently swallow an observer exception and complicate the API.
+Progress, messages, output, custom events and retries go into the same file
+without a sync, so a crash can lose the last of them, never a lifecycle record.
+One file means one sequence and one thing to follow. Output is bounded where it
+is written (`MaxOutputLine`, `MaxStepOutput`), so the journal stays quick to
+replay.
+
+Resume, rollback, `Inspect` and every viewer read the journal through the same
+replay, so they can't disagree about where a run stands.
+
+There is no rotation or compaction: a consumer starts a new journal for a new
+operation.
+
+## Events Are Decoded Records
+
+**Decision:** An event is a decoded journal record, and errors in it are data:
+a kind, a message and, for a panic, a stack.
+
+An observer in the runner gets exactly what a viewer replaying the journal with
+`Follow` gets, so it behaves the same in both places. Custom events carry their
+data as JSON for the same reason. They are best-effort records, so nothing that
+resume or rollback needs may live only in one.
+
+## Three Kinds of Step
+
+**Decision:** Each step is an `Effect`, an `Ensure` or an `Observe`, chosen when
+the plan is built.
+
+- **Effect** changes the system once. Once it has finished, a resumed run checks
+  it with its `Check`, or skips it if it has none.
+- **Ensure** sets something that can drift between attempts (a service disabled,
+  a maintenance mode), so it is never trusted from the journal and is applied
+  again whenever its group is entered.
+- **Observe** only reads the system, so its result goes stale. It runs whenever
+  its group is entered, fails a resumed run exactly as it fails a first run, and
+  may not have a `Check` or an `Undo`.
+
+## Check Always Runs Before Run
+
+**Decision:** A step's `Check`, when it has one, runs before every `Run`: on a
+first attempt, on a resume, and on every retry.
+
+One rule covers every case. A `Run` that failed after doing its work passes on
+the next try, and a step interrupted by a crash passes as recovered when its
+`Check` finds the work done.
+
+## Run and Undo Must Be Idempotent
+
+**Decision:** `Run` may be called again on a system it has already partly
+changed, and `Undo` must cope with a `Run` that stopped part-way.
+
+A process can die after `Run` changed the system and before the journal said so.
+`pipelinetest.CheckIdempotent` checks a step against this by crashing it after
+every event it writes.
+
+## Record Is Durable When It Returns
+
+**Decision:** `StepContext.Record` syncs its value before it returns.
+
+That gives steps the idiom that removes most crash hazards: record the intent or
+the previous state before a change, and the result after it. `Undo` of an
+interrupted step depends on reading what its `Run` recorded.
+
+## A Settled Group Is Skipped Whole
+
+**Decision:** On resume, a group that finished and passed in an earlier attempt
+is skipped as a unit: none of its steps run, nor their `Check`s.
+
+Deciding step by step would re-run steps that a later step in the same group
+reversed. A group with only `Observe` steps beneath it never settles. Steps can
+read where an earlier attempt got to with `StepContext.Prior`, but the plan's
+shape cannot depend on it: reconciling with a finished group is a step at the
+level still in progress, not a reason to re-enter the group.
+
+## Failures Let Running Siblings Finish
+
+**Decision:** When a child fails, its group starts nothing new and lets running
+children finish. Cancelling them is opt-in (`CancelOnError`).
+
+This is the same rule as a graceful stop, applied to one group. A step cancelled
+part-way leaves the system in a state its `Check` has to untangle, so the
+default avoids it.
+
+A parallel limit applies to a group's direct children: a child that is itself a
+group takes one slot.
+
+## Recovery Resets Its Group; Cleanup Never Does
+
+**Decision:** A `RecoverOnFailure` step resets its group when it starts. An
+`OnFailure` step leaves the group's record alone. A handler that fails is not
+run again on resume.
+
+The journal must not describe a state a recovery handler removed, and must not
+forget work a cleanup handler left in place. The reset is recorded when recovery
+starts, not when it passes: once recovery has begun, the group's state is
+unknown, so the only safe resume is from its first step.
+
+## Rollback Is Derived From the Journal
+
+**Decision:** `Rollback` calls `Undo` on every `Effect` and `Ensure` step whose
+`Run` was called, including steps that failed or were interrupted, in reverse
+plan order.
+
+Nobody writes the reverse plan by hand. A step whose `Run` was never called (its
+`Check` found the work done) is not undone, because it changed nothing. Plan
+order is a valid dependency order by construction, and it stays well-defined
+across attempts and in parallel groups, where "when it started" is not. A
+rollback is an attempt of its own, and running
+it again after a failure carries on without undoing anything twice.
+
+## Gates Wait Through the Journal
+
+**Decision:** A gate records that it is waiting, with its deadline, and what
+released it. Its timeout restarts after a crash or a stop.
+
+A run never goes on by itself sooner than its timeout after it starts waiting.
+`Approve` releases a gate from any process, so nothing has to wait on a
+terminal.
+
+## Control Requests Go Through the Journal
+
+**Decision:** `RequestStop` and `Approve` write a request into a directory beside
+the journal that only the run's user can write to, and return once the journal
+shows the run acted on it.
+
+Requests are scoped to the run in progress. The journal is how the requester
+knows it worked, with no socket or server between them.
+
+## Secrets Never Reach the Journal
+
+**Decision:** An input of type `Secret` is never stored, not even as a hash, and
+is supplied again on every attempt. Its value is masked wherever a step writes
+it.
+
+`WithRedactor` masks anything else before it reaches the journal or an observer.
+Names, paths, labels, item IDs and recorded values are not redacted: they must
+simply never be secret.
+
+## Panics Are Recovered Everywhere
+
+**Decision:** A panic in a step's `Check`, `Run` or `Undo`, an approver, or an
+observer is recovered.
+
+A panic in a step fails that step, with its stack in the journal, so one bad step
+can't take down a run that may have been going for hours. A panicking observer
+is dropped and a warning recorded: the journal is the record, so losing a view
+loses nothing the run depends on, and an observer can never fail the run.
