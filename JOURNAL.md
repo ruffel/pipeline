@@ -36,28 +36,28 @@ A field with nothing to say is left out of the line.
 Durable events are synced to disk before the run moves on, and a run stops if
 one can't be written. The rest are best-effort: a crash can lose the last few.
 
-| `kind`           | Durable | About        | Its fields                                                                                                 |
-| ---------------- | ------- | ------------ | ---------------------------------------------------------------------------------------------------------- |
+| `kind`           | Durable | About        | Its fields                                                                                                |
+| ---------------- | ------- | ------------ | --------------------------------------------------------------------------------------------------------- |
 | `run.started`    | yes     | the root     | `attempt`, `plan`, `fingerprint`, `labels`, `inputs`, `inputsDigest`, `forced`, `rollback`, `pid`, `host` |
-| `run.finished`   | yes     | the root     | `outcome`, `error`, `ms`                                                                                   |
-| `group.started`  | yes     | a group      |                                                                                                            |
-| `group.finished` | yes     | a group      | `outcome`, `reason`, `error`, `ms`                                                                         |
-| `group.reset`    | yes     | a group      |                                                                                                            |
-| `step.started`   | yes     | a step, gate |                                                                                                            |
-| `step.running`   | yes     | a step       |                                                                                                            |
-| `step.finished`  | yes     | a step, gate | `outcome`, `reason`, `skip`, `error`, `ms`                                                                 |
-| `step.retry`     | no      | a step       | `try`, `error`                                                                                             |
-| `gate.waiting`   | yes     | a gate       | `prompt`, `deadline`                                                                                       |
-| `gate.released`  | yes     | a gate       | `by`, `who`, `uid`, `policy`                                                                               |
-| `value`          | yes     | a step       | `key`, `value`                                                                                             |
-| `item`           | yes     | a step       | `item`, `status`, `message`                                                                                |
-| `message`        | no      | a step       | `level`, `message`                                                                                         |
-| `progress`       | no      | a step       | `key`, `message`, `current`, `total`                                                                       |
-| `output`         | no      | a step       | `stream`, `line`, `continued`                                                                              |
-| `custom`         | no      | a step       | `type`, `data`                                                                                             |
-| `stop.requested` | yes     | the root     | `mode`, `by`, `who`, `uid`                                                                                 |
-| `undo.started`   | yes     | a step       |                                                                                                            |
-| `undo.finished`  | yes     | a step       | `outcome`, `reason`, `error`, `ms`                                                                         |
+| `run.finished`   | yes     | the root     | `outcome`, `error`, `ms`                                                                                  |
+| `group.started`  | yes     | a group      |                                                                                                           |
+| `group.finished` | yes     | a group      | `outcome`, `reason`, `error`, `ms`                                                                        |
+| `group.reset`    | yes     | a group      |                                                                                                           |
+| `step.started`   | yes     | a step, gate |                                                                                                           |
+| `step.running`   | yes     | a step       |                                                                                                           |
+| `step.finished`  | yes     | a step, gate | `outcome`, `reason`, `skip`, `error`, `ms`                                                                |
+| `step.retry`     | no      | a step       | `try`, `error`                                                                                            |
+| `gate.waiting`   | yes     | a gate       | `prompt`, `deadline`                                                                                      |
+| `gate.released`  | yes     | a gate       | `by`, `who`, `uid`, `policy`                                                                              |
+| `value`          | yes     | a step       | `key`, `value`                                                                                            |
+| `item`           | yes     | a step       | `item`, `itemStatus`, `message`                                                                           |
+| `message`        | no      | a step       | `level`, `message`                                                                                        |
+| `progress`       | no      | a step       | `key`, `message`, `current`, `total`                                                                      |
+| `output`         | no      | a step       | `stream`, `line`, `continued`                                                                             |
+| `custom`         | no      | a step       | `type`, `data`                                                                                            |
+| `stop.requested` | yes     | the root     | `mode`, `by`, `who`, `uid`                                                                                |
+| `undo.started`   | yes     | a step       |                                                                                                           |
+| `undo.finished`  | yes     | a step       | `outcome`, `reason`, `error`, `ms`                                                                        |
 
 What each one means:
 
@@ -91,21 +91,21 @@ ended before reaching.
 
 ## Values
 
-| Field     | On                             | Values                                                                                                             |
-| --------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `outcome` | `run.finished`                 | `passed`, `failed`, `stopped`, `cancelled`                                                                         |
-| `outcome` | `group.finished`               | `passed`, `skipped`, `failed`, `stopped`                                                                           |
-| `outcome` | `step.finished`                | `passed`, `skipped`, `failed`, and `stopped` for a gate a stop interrupted                                         |
-| `outcome` | `undo.finished`                | `undone`, `skipped`, `failed`                                                                                      |
-| `reason`  | a skipped or recovered outcome | `done`, `earlier-attempt`, `recovered`, `settled`, `not-reached`, `group-skipped`, `run-skipped`, `no-undo`       |
-| `skip`    | `step.finished`                | `skip-group`, `skip-run`: what the step's `Run` asked for                                                          |
-| `status`  | `item`                         | `passed`, `failed`, `skipped`                                                                                      |
-| `level`   | `message`                      | `info`, `warn`                                                                                                     |
-| `stream`  | `output`                       | `stdout`, `stderr`                                                                                                 |
-| `mode`    | `stop.requested`               | `graceful`, `cancel`                                                                                               |
-| `by`      | `stop.requested`               | `stopper`, `control` for `RequestStop`, `timeout` for a gate's timeout                                             |
-| `by`      | `gate.released`                | The approver's name, `control` for `Approve`, `timeout` for a gate's timeout                                       |
-| `policy`  | `gate.released`                | `continue`, `decline`: the timeout policy applied, when a timeout released it                                      |
+| Field        | On                             | Values                                                                                                      |
+| ------------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `outcome`    | `run.finished`                 | `passed`, `failed`, `stopped`, `cancelled`                                                                  |
+| `outcome`    | `group.finished`               | `passed`, `skipped`, `failed`, `stopped`                                                                    |
+| `outcome`    | `step.finished`                | `passed`, `skipped`, `failed`, and `stopped` for a gate a stop interrupted                                  |
+| `outcome`    | `undo.finished`                | `undone`, `skipped`, `failed`                                                                               |
+| `reason`     | a skipped or recovered outcome | `done`, `earlier-attempt`, `recovered`, `settled`, `not-reached`, `group-skipped`, `run-skipped`, `no-undo` |
+| `skip`       | `step.finished`                | `skip-group`, `skip-run`: what the step's `Run` asked for                                                   |
+| `itemStatus` | `item`                         | `passed`, `failed`, `skipped`                                                                               |
+| `level`      | `message`                      | `info`, `warn`                                                                                              |
+| `stream`     | `output`                       | `stdout`, `stderr`                                                                                          |
+| `mode`       | `stop.requested`               | `graceful`, `cancel`                                                                                        |
+| `by`         | `stop.requested`               | `stopper`, `control` for `RequestStop`, `timeout` for a gate's timeout                                      |
+| `by`         | `gate.released`                | The approver's name, `control` for `Approve`, `timeout` for a gate's timeout                                |
+| `policy`     | `gate.released`                | `continue`, `decline`: the timeout policy applied, when a timeout released it                               |
 
 `who` is whoever asked or approved, as they named themselves, and `uid` the
 user that owned a request made from another process.

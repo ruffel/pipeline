@@ -120,7 +120,7 @@ func (s *StepContext) Item(id string, status ItemStatus, msg string) error {
 		return fmt.Errorf("pipeline: unknown item status %q", status)
 	}
 
-	return s.emit(Event{Kind: EventItem, Item: id, Status: status, Message: msg})
+	return s.emit(Event{Kind: EventItem, Item: id, ItemStatus: status, Message: msg})
 }
 
 // PreviousItems returns the results this step recorded for each target in

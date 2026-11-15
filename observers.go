@@ -178,7 +178,7 @@ func detailText(e Event) string {
 
 		return e.Message
 	case EventItem:
-		return fmt.Sprintf("%s %s%s", e.Item, e.Status, dash(e.Message))
+		return fmt.Sprintf("%s %s%s", e.Item, e.ItemStatus, dash(e.Message))
 	case EventCustom:
 		return fmt.Sprintf("[%s] %s", e.Type, e.Data)
 	case EventStepRetry:

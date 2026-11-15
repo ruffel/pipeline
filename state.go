@@ -278,7 +278,7 @@ func (s *State) apply(e Event) {
 			s.items[e.Path] = map[string]ItemState{}
 		}
 
-		s.items[e.Path][e.Item] = ItemState{Status: e.Status, Message: e.Message, Run: e.Run}
+		s.items[e.Path][e.Item] = ItemState{Status: e.ItemStatus, Message: e.Message, Run: e.Run}
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
 		// Best-effort chatter: viewers render it, but it changes no state.
 	}

@@ -290,11 +290,11 @@ func (o *Observer) item(e pipeline.Event) {
 		st.items = map[string]pipeline.ItemStatus{}
 	}
 
-	st.items[e.Item] = e.Status
+	st.items[e.Item] = e.ItemStatus
 
 	var icon string
 
-	switch e.Status {
+	switch e.ItemStatus {
 	case pipeline.ItemPassed:
 		icon = o.color(o.p.SuccessIcon, o.p.Success)
 	case pipeline.ItemFailed:
