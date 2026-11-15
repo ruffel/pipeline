@@ -1,10 +1,11 @@
-module github.com/ruffel/pipeline/examples/quickstart
+module github.com/ruffel/pipeline/examples
 
 go 1.26.0
 
 require (
+	github.com/charmbracelet/x/term v0.2.2
 	github.com/ruffel/pipeline v0.3.0
-	github.com/ruffel/pipeline/observers/terminal v0.0.0-00010101000000-000000000000
+	github.com/ruffel/pipeline/observers/terminal v0.0.0
 )
 
 require (
@@ -13,7 +14,6 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0 // indirect
 	github.com/charmbracelet/x/ansi v0.8.0 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.13-0.20250311204145-2c3ea96c31dd // indirect
-	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
@@ -23,6 +23,6 @@ require (
 	golang.org/x/sys v0.36.0 // indirect
 )
 
-replace github.com/ruffel/pipeline => ../..
+replace github.com/ruffel/pipeline => ..
 
-replace github.com/ruffel/pipeline/observers/terminal => ../../observers/terminal
+replace github.com/ruffel/pipeline/observers/terminal => ../observers/terminal

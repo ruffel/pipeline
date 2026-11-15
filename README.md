@@ -9,7 +9,7 @@ failovers, data repairs.
 
 ![A run that fails, is resumed, and is then rolled back](./.vhs/demo.gif)
 
-The recording is [examples/quickstart](./examples/quickstart): a run fails
+The recording is [examples/01-quickstart](./examples/01-quickstart): a run fails
 part-way, the next run carries on from the failure, a rollback undoes all of
 it, and the journal remembers each attempt.
 
@@ -482,12 +482,12 @@ In `status`, a step reads `skipped` when a run found its work already done,
 which is as good as `passed`:
 [Reading the status](#reading-the-status) says how to tell.
 
-[examples/quickstart](./examples/quickstart) is this program, complete, with
+[examples/01-quickstart](./examples/01-quickstart) is this program, complete, with
 two more steps, the styled terminal view and a `-fail` flag. It is what the
 recording at the top shows:
 
 ```bash
-cd examples/quickstart
+cd examples/01-quickstart
 go run . run -fail index.html   # fails part-way
 go run . run                    # resumes: only what is left
 go run . rollback               # undoes it, last step first
@@ -949,20 +949,21 @@ The `pipelinetest` package tests steps and plans without a real system:
 
 ## Examples
 
-Each is a module of its own that runs with `go run .`, and says at the top of
-its `main.go` what to try.
+They are numbered in the order to read them. Each runs with `go run .` from
+its own directory, and says at the top of its `main.go` what to try.
 
-- **[quickstart](./examples/quickstart)**: the program this page builds. Three
-  steps with `Check` and `Undo`, and `run`, `rollback` and `status` commands
-- **[demo](./examples/demo)**: what a run shows. Groups, parallelism, progress,
-  output, retries and a timeout, in each observer's format
-- **[runbook](./examples/runbook)**: a failover runbook with approval gates,
-  descriptions, and resuming from the journal
-- **[detached](./examples/detached)**: a run that other terminals watch,
-  approve and stop
-- **[migrate](./examples/migrate)**: a complete tool. A failure handler, a
-  recorded value used by an `Undo`, inputs read back from the journal, a
-  secret, and tests that crash its steps
+1. **[01-quickstart](./examples/01-quickstart)**: the program this page builds.
+   Three steps with `Check` and `Undo`, and `run`, `rollback` and `status`
+   commands
+2. **[02-demo](./examples/02-demo)**: what a run shows. Groups, parallelism,
+   progress, output, retries and a timeout, in each observer's format
+3. **[03-runbook](./examples/03-runbook)**: a failover runbook with approval
+   gates, descriptions, and resuming from the journal
+4. **[04-detached](./examples/04-detached)**: a run that other terminals watch,
+   approve and stop
+5. **[05-migrate](./examples/05-migrate)**: a complete tool. A failure handler,
+   a recorded value used by an `Undo`, inputs read back from the journal, a
+   secret, and tests that crash its steps
 
 ## Stability
 

@@ -6,7 +6,7 @@ Requires Go 1.26+, [just](https://github.com/casey/just), and
 [golangci-lint](https://golangci-lint.run) (version pinned in CI).
 
 The repo is a Go workspace: the core module at the root, `observers/terminal`
-as a module of its own, and each example as a module of its own.
+as a module of its own, and the examples together as a third.
 
 ## Workflow
 
@@ -14,7 +14,7 @@ as a module of its own, and each example as a module of its own.
 just                 # test and lint the core and observers/terminal
 just build-examples  # build the examples and run their tests
 just check-clean     # fmt + tidy must leave no diff (enforced in CI)
-just demo            # run the demo
+just example 1       # run an example by its number
 ```
 
 ## Pull requests
