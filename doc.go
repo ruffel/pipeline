@@ -5,7 +5,7 @@
 // # Plans
 //
 // A plan is data. It is built once, validated by [NewPlan], and does not change
-// during a run. [Describe] prints it before anything happens:
+// during a run. [Describe] renders it before anything happens:
 //
 //	plan, err := pipeline.NewPlan("upgrade",
 //	    pipeline.Group("prechecks",

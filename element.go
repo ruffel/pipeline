@@ -118,6 +118,11 @@ func (g GroupNode) ContinueOnError() GroupNode {
 // that fails or is interrupted is not run again on resume: the next attempt
 // carries on, and runs it again only if the group fails again.
 //
+// Because the group's record is left alone, a step of the group that the
+// handler reverses is still recorded as passed. If that step is an Effect
+// with no Check, a later attempt skips it: make it an Ensure step, or give it
+// a Check.
+//
 // A group has one failure handler: OnFailure or [GroupNode.RecoverOnFailure].
 func (g GroupNode) OnFailure(step StepNode) GroupNode {
 	g.cleanup = &step
@@ -207,7 +212,9 @@ func (s StepNode) Retry(n int, backoff time.Duration) StepNode {
 	return s
 }
 
-// Timeout bounds each try, and Undo, to d.
+// Timeout bounds each try, and Undo, to d, by cancelling the context they
+// are given. A step has to watch its context to be stopped: one that ignores
+// it runs on, and whatever it then returns stands.
 func (s StepNode) Timeout(d time.Duration) StepNode {
 	s.timeout = d
 

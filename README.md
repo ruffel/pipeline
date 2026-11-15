@@ -86,7 +86,7 @@ func compile(what string) pipeline.StepFunc {
 ## How it fits together
 
 - A **plan** is a tree of groups and steps, built once and validated by
-  `NewPlan`. It is data: `Describe` prints it before anything changes, and it
+  `NewPlan`. It is data: `Describe` renders it before anything changes, and it
   doesn't change during a run.
 - Every element has a **path** built from its parents' names, such as
   `deploy/build/compile-api`. The path is its identity.
@@ -126,8 +126,13 @@ A step can also implement:
   skipped. It must not change the system.
 - **`Undo(ctx, sc) error`**: how to reverse its work, for `Rollback`.
 
-`Run` must be idempotent: a process can die after `Run` changed the system and
-before the journal said so, and the next attempt calls it again.
+`Run` and `Undo` must be idempotent: a process can die after one of them
+changed the system and before the journal said so, and the next attempt calls
+it again.
+
+Both are given a context, and that is the only way a step is stopped. A
+timeout, a cancel and a second Ctrl-C all cancel it. A step that ignores its
+context runs on regardless, and whatever it then returns stands.
 
 ```go
 type pushImage struct{ ref string }
@@ -161,8 +166,12 @@ The `StepContext` is the step's way into the run:
 
 Steps are configured with `Retry`, `Timeout`, `Description` and `Labels`.
 `Retry(3, time.Second)` allows up to three tries within an attempt, a second
-apart. A step's `Run` can return `ErrSkipGroup` or `ErrSkipRun` to end its
-group, or the run, early and as passed.
+apart, and `Timeout` bounds each try. A step's `Run` can return `ErrSkipGroup`
+or `ErrSkipRun` to end its group, or the run, early and as passed.
+
+Labels are for observers and viewers of your own, to group or filter by node,
+region or tenant. They are in the plan that every viewer is given, and a step
+reads its own with `sc.Labels()`. The built-in views don't show them.
 
 ## Groups
 
@@ -180,6 +189,12 @@ A group can name one step to run when it fails:
 - **`RecoverOnFailure(step)`** takes the group back to where it started, such as
   putting a node back on its old version. A later attempt runs the whole group
   again.
+
+Take care when an `OnFailure` step reverses one of the group's own steps, such
+as turning a maintenance mode off again. That step is still recorded as passed,
+and if it is an `Effect` with no `Check`, a resumed attempt skips it. Make it
+an `Ensure` step, which is applied again whenever its group is entered, or give
+it a `Check`.
 
 ## Laying out a plan
 
@@ -283,6 +298,8 @@ The journal belongs to one operation and one plan:
 results. A resume must be given the same inputs, or `Run` returns
 `ErrInputsChanged`. A tool can read them back with `Inspect` and
 `State.DecodeInputs`, and build the same plan without asking again.
+`WithNewInputs` accepts a change, but work already done under the old inputs
+is not done again for it.
 
 Fields of type `Secret` are never stored, so they are supplied on every
 attempt, and their values are masked wherever a step writes them.
@@ -346,13 +363,18 @@ user.
 interrupted, and calls each one's `Undo`, one at a time, in reverse plan order.
 Nobody writes the reverse plan.
 
-- A step that `Check` found already done was never run, so it isn't undone.
+- A step whose `Run` no attempt called isn't undone: one that `Check` found
+  already done when it was first reached, for example. A step that an earlier
+  attempt ran is undone, even if a later attempt skipped it as done.
 - A step with no `Undo` is skipped and reported, and the rollback still passes.
-  `Describe` shows which steps have one, before anything runs.
+  The step stays done, so a later `Run` doesn't do it again. `Describe` shows
+  which steps have an `Undo`, before anything runs.
+- A group's failure handler is undone like any other step, if it ran.
+- What an undone step recorded is forgotten.
 - `Rollback` needs the same plan and the same inputs as the run.
 - It is an attempt of its own. If an `Undo` fails, `Run` is refused with
   `ErrRollbackUnfinished` until `Rollback` is called again and passes; it
-  carries on where it stopped.
+  carries on where it stopped, calling again an `Undo` that was interrupted.
 - After a rollback passes, `Run` runs what was undone again.
 
 An `Undo` often needs something its `Run` knew. Record it before acting, and
@@ -396,20 +418,22 @@ func run(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) error
 	stopper := pipeline.NewStopper()
 	defer pipeline.HandleSignals(stopper, pipeline.SignalOptions{})()
 
-	_, err = pipeline.Run(ctx, plan, j,
+	res, err := pipeline.Run(ctx, plan, j,
 		pipeline.WithObservers(view), pipeline.WithStopper(stopper))
 
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, pipeline.ErrAlreadyComplete):
-		return errors.New("already deployed: remove deploy.jsonl to start again")
+		return errors.New("already deployed: roll it back, or use a new journal for a new deploy")
 	case errors.Is(err, pipeline.ErrRollbackUnfinished):
 		return errors.New("a rollback has not finished: run rollback again")
 	case errors.Is(err, pipeline.ErrStopped):
 		return errors.New("stopped: run again to resume")
-	default:
+	case res != nil:
 		return fmt.Errorf("%w\nfix the cause and run again to resume, or roll back", err)
+	default:
+		return err // refused before anything ran: a changed plan, or a busy journal
 	}
 }
 
@@ -425,6 +449,10 @@ func rollback(ctx context.Context, plan *pipeline.Plan, view pipeline.Observer) 
 	return err // if an Undo failed, rollback again carries on from it
 }
 ```
+
+`res` is nil when `Run` refuses the journal before starting an attempt. The
+journal is the record a rollback works from, so a tool should never tell its
+operator to delete one that isn't finished with.
 
 ## Observers
 

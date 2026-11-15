@@ -31,7 +31,7 @@ func newPlan(state, fail string) (*pipeline.Plan, error) {
 func prechecks() pipeline.GroupNode {
 	return pipeline.Group("prechecks",
 		pipeline.Observe("health", pipeline.StepFunc(health)),
-		pipeline.Ensure("disk-space", pipeline.StepFunc(diskSpace)),
+		pipeline.Observe("disk-space", pipeline.StepFunc(diskSpace)),
 	).Description("Read-only checks before anything changes")
 }
 
