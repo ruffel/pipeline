@@ -123,7 +123,8 @@ $ go run .
 
 ## Make it resumable
 
-Give `Run` a file journal in place of the memory one:
+Give `Run` a file journal in place of the memory one. This replaces the call
+to `Run`, and the error check after it stays:
 
 ```go
 	j, err := pipeline.OpenJournal("site.jsonl")
@@ -131,17 +132,18 @@ Give `Run` a file journal in place of the memory one:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer j.Close()
 
 	_, err = pipeline.Run(context.Background(), plan, j,
 		pipeline.WithObservers(pipeline.NewPlainObserver(os.Stdout)))
+	j.Close()
 ```
 
 Every outcome is now written to `site.jsonl`, and synced, before the run moves
 on. Calling `Run` again with the same plan and the same journal doesn't start
 over. It starts a new **attempt**, which does only what is left.
 
-To see that, make the second step fail on the first attempt:
+To see that, make the second step fail on the first attempt (and import
+`errors`):
 
 ```go
 func index(_ context.Context, sc *pipeline.StepContext) error {
@@ -175,7 +177,8 @@ $ go run .
 
 The second attempt skipped `style.css`, because the journal says it passed, and
 ran `index.html`, which had failed. A third `go run .` is refused with
-`ErrAlreadyComplete`: the operation is finished.
+`ErrAlreadyComplete`, "the journal's latest attempt already passed": the
+operation is finished.
 
 It is the same when the process dies instead of failing. After a crash, a
 `kill -9` or a reboot, the next run carries on from the journal. A step that
@@ -210,7 +213,8 @@ func (f file) Check(context.Context, *pipeline.StepContext) (bool, error) {
 }
 ```
 
-One type now serves both steps, in place of the two functions:
+One type now serves both steps. Delete the two functions, the failure with
+them, and import `io/fs`:
 
 ```go
 	plan, err := pipeline.NewPlan("publish",
@@ -271,7 +275,7 @@ func (f file) Undo(_ context.Context, sc *pipeline.StepContext) error {
 ```
 
 `Rollback` takes what `Run` takes, the same plan and the same journal, so one
-argument can choose between them:
+argument can choose between them. This replaces the call to `Run` again:
 
 ```go
 	do := pipeline.Run
@@ -438,6 +442,45 @@ func status() error {
 
 The journal is the record that a resume and a rollback work from, so a tool
 should never tell its operator to delete one that isn't finished with.
+
+A `main` then only builds the plan and picks a command. `run` and `rollback`
+open the journal themselves, so the earlier `OpenJournal` goes:
+
+```go
+func main() {
+	plan, err := pipeline.NewPlan("publish",
+		pipeline.Effect("style.css", file{"style.css", "h1 { color: teal }\n"}),
+		pipeline.Effect("index.html", file{"index.html", "<h1>hello</h1>\n"}),
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	view := pipeline.NewPlainObserver(os.Stdout)
+
+	switch {
+	case len(os.Args) < 2:
+		err = errors.New("usage: publish run|rollback|status")
+	case os.Args[1] == "rollback":
+		err = rollback(ctx, plan, view)
+	case os.Args[1] == "status":
+		err = status()
+	default:
+		err = run(ctx, plan, view)
+	}
+
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
+
+In `status`, a step reads `skipped` when a run found its work already done,
+which is as good as `passed`:
+[Reading the status](#reading-the-status) says how to tell.
 
 [examples/quickstart](./examples/quickstart) is this program, complete, with
 two more steps, the styled terminal view and a `-fail` flag. It is what the
