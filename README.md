@@ -1047,6 +1047,28 @@ pipeline is pre-1.0, and its API can change between minor versions. The
 journal's format carries a schema version: a release reads journals written by
 every earlier schema version, and refuses a newer one.
 
+## Upgrading from v0.3
+
+v0.4.0 changes what two kinds of step are recorded as. Both used to pass:
+
+- **A step that returns after its timeout fails**, whatever it returns. A step
+  with a `Timeout` that ignores its context and finishes late now fails with an
+  error matching `context.DeadlineExceeded`, and is tried again if it has tries
+  left. The same goes for an `Undo`.
+- **A step that returns after a cancel fails**, whatever it returns. A step
+  that was running when the run was cancelled, or when its group cancelled it
+  under `CancelOnError`, and then returns nil is recorded as failed, so a
+  resume runs it again unless its `Check` finds the work done.
+
+A step that watches its context and returns the context's error is unaffected.
+
+`Describe` now marks an `Ensure` step inside a group, such as
+`(ensure, until node1 passes)`, and the plain observer's lines for parallel
+groups and rollbacks have changed. Update anything that compares that text.
+
+Nothing was removed from the API, and journals written by v0.3 are read as
+before.
+
 ## Upgrading from v0.2
 
 v0.3.0 replaces the v0.2 API: `Pipeline`, `Stage` and `Executor` are now

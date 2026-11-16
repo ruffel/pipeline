@@ -499,3 +499,20 @@ func (b *syncBuffer) String() string {
 
 	return b.buf.String()
 }
+
+func TestObserver_AChangedPlan(t *testing.T) {
+	t.Parallel()
+
+	out := render(t,
+		pipeline.Event{Kind: pipeline.EventRunStarted, Path: "upgrade", Plan: upgrade(), Attempt: 2},
+		pipeline.Event{
+			Kind: pipeline.EventPlanChanged, Path: "upgrade",
+			Added: []string{"upgrade/hotfix"}, Removed: []string{"upgrade/old", "upgrade/older"},
+		},
+		pipeline.Event{Kind: pipeline.EventPlanChanged, Path: "upgrade"},
+		pipeline.Event{Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomePassed},
+	)
+
+	assert.Contains(t, out, "± the plan has changed; added upgrade/hotfix; removed upgrade/old, upgrade/older\n")
+	assert.Contains(t, out, "± the plan has changed\n", "a reordered plan adds and removes nothing")
+}
