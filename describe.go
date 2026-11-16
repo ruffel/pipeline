@@ -12,7 +12,14 @@ import (
 //	upgrade
 //	├── prechecks (parallel, limit 8, continue on error)
 //	│   └── ring (observe)
-//	└── backup (effect, check, undo) — Snapshot the data directory
+//	├── backup (effect, check, undo) — Snapshot the data directory
+//	└── node1
+//	    └── maintenance (ensure, until node1 passes)
+//
+// An Ensure step inside a group is marked with how long it holds: a resume
+// applies it again only until its group has passed, because a group that
+// passed is skipped whole. An Ensure step at the root has no such mark, and
+// is applied on every attempt.
 func Describe(p *Plan) string {
 	var b strings.Builder
 
@@ -42,6 +49,11 @@ func describeChildren(b *strings.Builder, n *node, indent string) {
 			extra = []string{"recovers the group on failure"}
 		case c == n.handler:
 			extra = []string{"cleans up on failure"}
+		case c.kind == KindEnsure && indent != "":
+			// Only the root's own children have no indent. In any other
+			// group, an Ensure step is applied again on resume only until
+			// the group has passed: after that the group is skipped whole.
+			extra = []string{"until " + n.name + " passes"}
 		}
 
 		b.WriteString(indent + branch + describeLine(c, extra...))

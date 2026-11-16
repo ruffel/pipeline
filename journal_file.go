@@ -30,6 +30,12 @@ const (
 // [JournalBusyError], which matches [ErrJournalBusy]. The lock is released by
 // Close, or by the kernel if the process dies.
 //
+// The lock does not pass to another program. The file is opened
+// close-on-exec, so a process that replaces itself with exec loses the lock,
+// and a child process can't open the journal while its parent holds it. A
+// tool that replaces itself closes the journal before the exec and opens it
+// again afterwards.
+//
 // A crash can leave half a line at the end of the file. OpenJournal removes
 // it, so the next event starts on a line of its own. A complete line that is
 // not a valid event is [ErrJournalCorrupt].

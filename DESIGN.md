@@ -17,6 +17,8 @@ It deliberately does not do:
 - **Deterministic replay of code.** Steps are idempotent units, and the journal
   records outcomes, not instructions.
 - **Distributed workers.** Remote work is the step's job (ssh, salt, an API).
+  The journal lives on one host's disk, so a run is resumed where its journal
+  is. To resume it elsewhere, copy the journal there while no runner is live.
 - **Databases.** A journal is a file or memory.
 - **Changing the plan mid-run, or loops.**
 - **Launching processes, serving HTTP, or authentication.** The name on a stop

@@ -30,6 +30,12 @@ const defaultFilePoll = time.Second
 // approves, so one file approves one gate, even if several gates watch it
 // at once. The file's first line, if any, is recorded as who approved.
 //
+// The file is not tied to a gate. When a gate is released some other way, by
+// its timeout or by [Approve], a file created for it afterwards is still
+// there for the next gate that watches the path, and approves that one at
+// once. To make a file approve only the gate that is waiting, put an Ensure
+// step before each gate that removes the file.
+//
 // If the file can't be removed, or read, the approver withdraws and leaves
 // the file where it was. The run logs that as a warning, and the gate goes
 // on waiting for its other approvers.

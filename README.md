@@ -247,13 +247,14 @@ step that has already passed:
 | Kind      | For                                       | Once it has passed, a later attempt…                     |
 | --------- | ----------------------------------------- | -------------------------------------------------------- |
 | `Effect`  | Work that changes the system once         | Checks it again if it has a `Check`, otherwise skips it  |
-| `Ensure`  | A setting that can drift between attempts | Applies it again                                         |
+| `Ensure`  | A setting that can drift between attempts | Applies it again, until its group has passed             |
 | `Observe` | Reading the system, such as health checks | Runs it again                                            |
 
 Make a health check an `Observe` step, so that a resumed run makes it again.
 Make a setting that something else can change back between attempts, such as a
-maintenance mode, an `Ensure` step. [Resume rules](#resume-rules) has every
-case.
+maintenance mode, an `Ensure` step. An `Ensure` step is applied again only
+while its group is unfinished: put one that must hold for the whole run at the
+root of the plan. [Resume rules](#resume-rules) has every case.
 
 ## Make it undoable
 
@@ -862,6 +863,22 @@ attempt that does only what is left:
 An `Ensure` step with a `Check` is checked before each `Run`, like any other.
 `WithResume(ResumeTrust)` skips passed `Effect` steps without calling `Check`.
 
+Rule 1 comes first, so "runs again" in the table holds only while the step's
+group is unfinished. An `Ensure` step in a group that has passed is not applied
+again, however many attempts follow. A prelude group that turns off background
+maintenance for an upgrade passes on the first attempt, and a resume after
+something turns maintenance back on does not turn it off again. Put a setting
+that must hold for the whole run at the root of the plan, which is unfinished
+until the run passes, or in the group whose work needs it. `Describe` marks
+each `Ensure` step inside a group with the group it holds until:
+
+```text
+upgrade
+├── maintenance-off (ensure)
+└── node1
+    └── drained (ensure, until node1 passes)
+```
+
 The journal belongs to one operation and one plan:
 
 - **A changed plan is refused** with `ErrPlanChanged`, if its paths or kinds
@@ -877,6 +894,11 @@ The journal belongs to one operation and one plan:
 - **A finished journal is refused** with `ErrAlreadyComplete`, once its latest
   attempt has passed. Start a new journal for a new operation, or give `Force`
   to run the whole plan again.
+- **`Force` runs every step again**, and `Check` decides each one. An `Effect`
+  step with no `Check` has nothing to stop it, so its `Run` is called again.
+  To re-apply the settings and repeat the checks of a finished operation
+  without redoing its work, don't force it: build a plan of only those
+  `Ensure` and `Observe` steps and run it on a new journal.
 - **If the journal can't be written, the run stops.**
 
 ### Rollback rules

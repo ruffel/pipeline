@@ -236,7 +236,7 @@ func TestDescribe(t *testing.T) {
 │   └── disk (observe)
 ├── backup (effect, check, undo) — Snapshot the data directory
 └── node1 (parallel, cancel on error)
-    ├── maintenance (ensure, check)
+    ├── maintenance (ensure, check, until node1 passes)
     └── packages (effect, 3 tries)
 `, pipeline.Describe(plan))
 }
