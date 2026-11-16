@@ -43,6 +43,8 @@ type node struct {
 	tries    int
 	backoff  time.Duration
 	timeout  time.Duration
+	// irreversible marks a step that Rollback will not go back past.
+	irreversible bool
 
 	// Gate fields.
 	gate *gateSettings
@@ -54,7 +56,8 @@ type node struct {
 //
 // It reports every problem it finds, each prefixed with the path of the
 // element at fault: an invalid or duplicate name, a nil step, a negative
-// limit, retry count or timeout, an Observe step that has Check or Undo, a
+// limit, retry count or timeout, an Observe step that has Check or Undo, an
+// irreversible step that has Undo or is an Observe step, a
 // gate with a nil approver or a timeout and policy that don't go together,
 // or a group's failure handler that is not an Effect step, is named like one
 // of the group's children, or is one of two. Empty groups are allowed.
@@ -143,11 +146,13 @@ type NodeSpec struct {
 
 	// Step fields: whether the step implements [Checker] and [Undoer], and its
 	// settings. Durations are in nanoseconds, as encoding/json writes them.
-	Check   bool          `json:"check,omitempty"`
-	Undo    bool          `json:"undo,omitempty"`
-	Tries   int           `json:"tries,omitempty"`
-	Backoff time.Duration `json:"backoff,omitempty"`
-	Timeout time.Duration `json:"timeout,omitempty"`
+	Check bool `json:"check,omitempty"`
+	Undo  bool `json:"undo,omitempty"`
+	// Irreversible marks a step that [Rollback] will not go back past.
+	Irreversible bool          `json:"irreversible,omitempty"`
+	Tries        int           `json:"tries,omitempty"`
+	Backoff      time.Duration `json:"backoff,omitempty"`
+	Timeout      time.Duration `json:"timeout,omitempty"`
 
 	// Gate fields. Timeout above is the gate's.
 	Prompt    string        `json:"prompt,omitempty"`
@@ -156,18 +161,19 @@ type NodeSpec struct {
 
 func (n *node) spec() NodeSpec {
 	s := NodeSpec{
-		Name:        n.name,
-		Path:        n.path,
-		Kind:        n.kind,
-		Description: n.description,
-		Labels:      maps.Clone(n.labels),
-		Parallel:    n.parallel,
-		Limit:       n.limit,
-		Check:       n.hasCheck,
-		Undo:        n.hasUndo,
-		Tries:       n.tries,
-		Backoff:     n.backoff,
-		Timeout:     n.timeout,
+		Name:         n.name,
+		Path:         n.path,
+		Kind:         n.kind,
+		Description:  n.description,
+		Labels:       maps.Clone(n.labels),
+		Parallel:     n.parallel,
+		Limit:        n.limit,
+		Check:        n.hasCheck,
+		Undo:         n.hasUndo,
+		Irreversible: n.irreversible,
+		Tries:        n.tries,
+		Backoff:      n.backoff,
+		Timeout:      n.timeout,
 	}
 
 	if n.gate != nil {
@@ -188,6 +194,20 @@ func (n *node) spec() NodeSpec {
 	}
 
 	return s
+}
+
+// walk calls visit for n and everything beneath it, in plan order: a group's
+// failure handler after its children.
+func (n *node) walk(visit func(*node)) {
+	visit(n)
+
+	for _, c := range n.children {
+		c.walk(visit)
+	}
+
+	if n.handler != nil {
+		n.handler.walk(visit)
+	}
 }
 
 // canSettle reports whether n has an Effect, Ensure or Gate step beneath it.
@@ -320,6 +340,15 @@ func (b *builder) step(parent *node, s StepNode) *node {
 
 	if s.kind == KindObserve && (n.hasCheck || n.hasUndo) {
 		b.failf(n.path, "an observe step may not have Check or Undo")
+	}
+
+	n.irreversible = s.irreversible
+
+	switch {
+	case s.irreversible && s.kind == KindObserve:
+		b.failf(n.path, "an observe step changes nothing, so it may not be irreversible")
+	case s.irreversible && n.hasUndo:
+		b.failf(n.path, "an irreversible step may not have Undo")
 	}
 
 	if s.tries < 1 {

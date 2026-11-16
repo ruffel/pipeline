@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 var (
@@ -25,6 +26,19 @@ var (
 	// attempt is a [Rollback] that did not pass. Run Rollback again to finish
 	// it first.
 	ErrRollbackUnfinished = errors.New("pipeline: the journal's rollback has not finished")
+
+	// ErrIrreversible is matched by the error [Rollback] returns when an
+	// attempt has called the Run of a step marked [StepNode.Irreversible].
+	// The error is an [*IrreversibleError], which names the step. Nothing
+	// was undone, and nothing was written to the journal, so [Run] still
+	// resumes it.
+	ErrIrreversible = errors.New("pipeline: an irreversible step has run")
+
+	// ErrNoUndo is matched by the error [Rollback] returns under
+	// [WithStrictUndo] when a step it would have to undo has no Undo. The
+	// error is a [*NoUndoError], which names every such step. Nothing was
+	// undone, and nothing was written to the journal.
+	ErrNoUndo = errors.New("pipeline: a step that ran has no Undo")
 
 	// ErrStopped is matched by the error [Run] and [Rollback] return when
 	// the attempt was stopped or cancelled before its work was done: by a
@@ -90,6 +104,43 @@ func (e *StepError) Error() string {
 // Unwrap returns the step's own error.
 func (e *StepError) Unwrap() error {
 	return e.Err
+}
+
+// IrreversibleError is why [Rollback] refused a journal: a step that can't
+// be undone has run. It matches [ErrIrreversible].
+type IrreversibleError struct {
+	// Path is the first irreversible step, in plan order, whose Run was
+	// called, and Attempt the first attempt that called it.
+	Path    string
+	Attempt int
+}
+
+// Error implements error.
+func (e *IrreversibleError) Error() string {
+	return fmt.Sprintf("%v: %s, in attempt %d: rollback is no longer possible", ErrIrreversible, e.Path, e.Attempt)
+}
+
+// Unwrap returns [ErrIrreversible].
+func (e *IrreversibleError) Unwrap() error {
+	return ErrIrreversible
+}
+
+// NoUndoError is why a [Rollback] under [WithStrictUndo] refused a journal.
+// It matches [ErrNoUndo].
+type NoUndoError struct {
+	// Paths are the steps whose Run was called and that have no Undo, in
+	// the order a rollback would have reached them.
+	Paths []string
+}
+
+// Error implements error.
+func (e *NoUndoError) Error() string {
+	return fmt.Sprintf("%v: %s", ErrNoUndo, strings.Join(e.Paths, ", "))
+}
+
+// Unwrap returns [ErrNoUndo].
+func (e *NoUndoError) Unwrap() error {
+	return ErrNoUndo
 }
 
 // errorInfo turns an error into the data recorded in the journal.

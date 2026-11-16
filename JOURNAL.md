@@ -134,6 +134,7 @@ with an error of kind `cancelled`.
 | `failure`                | groups | `stop`, `cancel` or `continue`: what a failing child does          |
 | `onFailure`, `recovers`  | groups | The failure handler's node, and whether it resets the group first  |
 | `check`, `undo`          | steps  | Whether the step has a `Check` and an `Undo`                       |
+| `irreversible`           | steps  | Whether the step is marked `Irreversible`: no rollback once it ran |
 | `tries`, `backoff`       | steps  | How many tries, and the wait between them, in nanoseconds          |
 | `timeout`                | steps  | The limit on each try, or on a gate's wait, in nanoseconds         |
 | `prompt`, `onTimeout`    | gates  | What the gate asks, and its timeout policy                         |
@@ -149,7 +150,8 @@ with an error of kind `cancelled`.
 - **An attempt is the events sharing a `run`,** from its `run.started` to its
   `run.finished`. Later attempts append to the same file.
 - **The latest event about a path wins,** with four exceptions:
-  - a `group.reset` forgets everything beneath the group;
+  - a `group.reset` forgets everything beneath the group, except that an
+    `irreversible` step with a `step.running` has run;
   - an `undo.finished` with outcome `undone` takes its step back to never
     started;
   - a rollback that passes makes every gate wait again;
