@@ -103,7 +103,8 @@ func WithResume(mode ResumeMode) Option {
 // Force runs the whole plan again, whatever the journal says: nothing is
 // skipped because an earlier attempt did it, and a journal whose latest
 // attempt passed is accepted. Check still decides whether each Run is
-// needed, and values recorded by earlier attempts stay readable. The attempt
+// needed, so an Effect step with no Check has its Run called again. Values
+// recorded by earlier attempts stay readable. The attempt
 // is recorded as forced, and later attempts resume from it alone: what was
 // done before a forced attempt no longer counts, even if the forced attempt
 // failed before redoing it.

@@ -591,3 +591,60 @@ func TestResume_ASettledGroupKeepsItsGroupSkipToItself(t *testing.T) {
 	assert.Equal(t, 2, c.get("after"), "after runs: the skip was only for g")
 	assert.Zero(t, c.get("rest"))
 }
+
+// An Ensure step is applied again on every attempt that enters its group. A
+// group that passed is skipped whole, so an Ensure step inside one is not
+// applied again: a setting that must hold for the whole run goes at the
+// root. Describe shows the difference before anything runs.
+func TestResume_AnEnsureStepInASettledGroupIsNotAppliedAgain(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	plan := mustPlan(t,
+		pipeline.Ensure("at-root", counted(&c, "at-root", nil)),
+		pipeline.Group("prelude", pipeline.Ensure("in-group", counted(&c, "in-group", nil))),
+		pipeline.Effect("node1", counted(&c, "node1", &fails)),
+	)
+	j := pipeline.MemoryJournal()
+
+	require.Error(t, resumeOn(t, j, plan).err)
+
+	fails = false
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+
+	assert.Equal(t, 2, c.get("at-root"), "applied on both attempts")
+	assert.Equal(t, 1, c.get("in-group"), "its group had passed, and was skipped whole")
+
+	assert.Equal(t, `p
+├── at-root (ensure)
+├── prelude
+│   └── in-group (ensure, until prelude passes)
+└── node1 (effect)
+`, pipeline.Describe(plan))
+}
+
+// Force runs the whole plan again, and Check decides each step: an Effect
+// step with no Check has nothing to stop its Run.
+func TestForce_RunsAnEffectStepWithNoCheckAgain(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	done := false
+	checked := &checkStep{done: func() bool { return done }, run: func(context.Context, *pipeline.StepContext) error {
+		done = true
+
+		return nil
+	}}
+	plan := mustPlan(t, pipeline.Effect("seed", counted(&c, "seed", nil)), pipeline.Effect("checked", checked))
+	j := pipeline.MemoryJournal()
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+	require.NoError(t, resumeOn(t, j, plan, pipeline.Force()).err)
+
+	assert.Equal(t, 2, c.get("seed"))
+	assert.Equal(t, int32(1), checked.runCalls.Load(), "Check found the work done")
+}

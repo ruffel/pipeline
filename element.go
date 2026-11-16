@@ -189,7 +189,10 @@ func Effect(name string, step Step) StepNode {
 }
 
 // Ensure returns a step that enforces a setting which can drift between
-// attempts. It is applied again on every attempt that enters its group.
+// attempts. It is applied again on every attempt that enters its group. A
+// group that has passed is not entered again, so an Ensure step inside one
+// holds only until that group passes: put a setting that must hold for the
+// whole run at the root of the plan. [Describe] marks the difference.
 func Ensure(name string, step Step) StepNode {
 	return newStepNode(name, KindEnsure, step)
 }
