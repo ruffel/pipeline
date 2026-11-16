@@ -209,8 +209,14 @@ func watch(args []string) error {
 	}
 
 	// The run has ended. A script waiting on watch gets the run's own
-	// result: a non-zero exit unless the latest attempt passed.
-	if n := len(st.Attempts); n > 0 && st.Attempts[n-1].Outcome != pipeline.OutcomePassed {
+	// result: a non-zero exit unless the latest attempt passed. A journal
+	// with no attempts, such as one at a mistyped path, has not passed.
+	n := len(st.Attempts)
+	if n == 0 {
+		return fmt.Errorf("nothing has run on %s yet; start it with: detached run, or wait for it with -keep", *journal)
+	}
+
+	if st.Attempts[n-1].Outcome != pipeline.OutcomePassed {
 		return fmt.Errorf("the run %s", st.Attempts[n-1].Outcome)
 	}
 
