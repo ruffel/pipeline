@@ -154,7 +154,12 @@ func WithInputs(v any) Option {
 //
 // An accepted change is recorded with the new attempt, as the pointers that
 // changed: see [AttemptState.InputsChanged]. A consumer that the plan does
-// not have is an error. [WithNewInputs] accepts any change without asking.
+// not have is an error on every attempt, changed inputs or not.
+// [WithNewInputs] accepts any change without asking.
+//
+// A change to a whole container, such as a list that was removed, is also a
+// change to everything beneath it, so the consumers declared beneath it must
+// not have started either.
 func WithInputConsumers(consumers map[string][]string) Option {
 	return func(c *config) {
 		c.inputConsumers = maps.Clone(consumers)

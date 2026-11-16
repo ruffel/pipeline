@@ -85,21 +85,28 @@ func shownValue(v json.RawMessage) string {
 	return string(v)
 }
 
-// consumersHook is the rule of WithInputConsumers, as a WithInputChange hook.
-func consumersHook(plan *Plan, consumers map[string][]string) func(InputChange) error {
-	return func(c InputChange) error {
-		known := map[string]bool{}
+// checkConsumers reports the first consumer that plan does not have. It is
+// checked on every attempt, whether or not the inputs have changed, so a
+// mistyped path is found before the run that needs it.
+func checkConsumers(plan *Plan, consumers map[string][]string) error {
+	known := map[string]bool{}
 
-		plan.root.walk(func(n *node) { known[n.path] = true })
+	plan.root.walk(func(n *node) { known[n.path] = true })
 
-		for _, pointer := range slices.Sorted(maps.Keys(consumers)) {
-			for _, path := range consumers[pointer] {
-				if !known[path] {
-					return fmt.Errorf("pipeline: input consumer %s, of %s, is not in the plan", path, shownPointer(pointer))
-				}
+	for _, pointer := range slices.Sorted(maps.Keys(consumers)) {
+		for _, path := range consumers[pointer] {
+			if !known[path] {
+				return fmt.Errorf("pipeline: input consumer %s, of %s, is not in the plan", path, shownPointer(pointer))
 			}
 		}
+	}
 
+	return nil
+}
+
+// consumersHook is the rule of WithInputConsumers, as a WithInputChange hook.
+func consumersHook(consumers map[string][]string) func(InputChange) error {
+	return func(c InputChange) error {
 		var refused []InputFieldChange
 
 		for _, pointer := range c.Changed {
@@ -124,36 +131,38 @@ func consumersHook(plan *Plan, consumers map[string][]string) func(InputChange) 
 // usedBy returns the first consumer of the field at pointer that has
 // started, and whether the field has any consumer declared: under its own
 // pointer, or under one that covers it.
+//
+// A change to a whole container, such as a list that was removed, changes
+// every field beneath it too. So the consumers declared beneath pointer are
+// asked as well, though they do not make the field itself declared.
 func usedBy(s *State, consumers map[string][]string, pointer string) (string, bool) {
-	declared := false
+	declared, used := false, ""
 
 	for _, key := range slices.Sorted(maps.Keys(consumers)) {
-		if key != "" && key != pointer && !strings.HasPrefix(pointer, key+"/") {
+		covers := key == "" || key == pointer || strings.HasPrefix(pointer, key+"/")
+		beneath := pointer == "" || strings.HasPrefix(key, pointer+"/")
+
+		if !covers && !beneath {
 			continue
 		}
 
-		declared = true
+		declared = declared || covers
 
-		for _, path := range consumers[key] {
-			if s.started(path) {
-				return path, true
-			}
+		if i := slices.IndexFunc(consumers[key], s.started); i >= 0 && used == "" {
+			used = consumers[key][i]
 		}
 	}
 
-	return "", declared
+	return used, declared
 }
 
-// started reports whether the element at path, or anything beneath it, has
+// started reports whether the step or gate at path, or any beneath it, has
 // been started by an attempt and not taken back since: by an Undo, or by its
-// group's reset.
+// group's reset. One that was only recorded as skipped, because its group or
+// the run ended before reaching it, has not.
 func (s *State) started(path string) bool {
-	for p, el := range s.elements {
-		if p != path && !strings.HasPrefix(p, path+"/") {
-			continue
-		}
-
-		if el.Status != StatusNotReached || el.RunCalled {
+	for p := range s.begun {
+		if p == path || strings.HasPrefix(p, path+"/") {
 			return true
 		}
 	}
@@ -231,17 +240,17 @@ func diffInputs(at string, was, now any, changed *[]string) {
 		}
 
 		for i := range max(len(w), len(n)) {
-			var a, b any
+			index := at + "/" + strconv.Itoa(i)
 
-			if i < len(w) {
-				a = w[i]
+			// An element that one array has and the other lacks differs,
+			// even if it is null: in an array, a null holds a place.
+			if i >= len(w) || i >= len(n) {
+				*changed = append(*changed, index)
+
+				continue
 			}
 
-			if i < len(n) {
-				b = n[i]
-			}
-
-			diffInputs(at+"/"+strconv.Itoa(i), a, b, changed)
+			diffInputs(index, w[i], n[i], changed)
 		}
 
 		return
@@ -261,9 +270,17 @@ func escapePointer(key string) string {
 
 // valueAt returns the value at pointer in encoded, or nil if there is none.
 func valueAt(encoded json.RawMessage, pointer string) json.RawMessage {
+	if len(encoded) == 0 {
+		return nil
+	}
+
+	// Numbers stay as they were written: a float64 would round a large one.
+	dec := json.NewDecoder(bytes.NewReader(encoded))
+	dec.UseNumber()
+
 	var v any
 
-	if len(encoded) == 0 || json.Unmarshal(encoded, &v) != nil {
+	if dec.Decode(&v) != nil {
 		return nil
 	}
 

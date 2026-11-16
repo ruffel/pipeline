@@ -92,6 +92,8 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		return nil, err
 	}
 
+	redact := &redactor{fn: cfg.redact, secrets: in.secrets}
+
 	prev, err := j.State()
 	if err != nil {
 		return nil, err
@@ -102,9 +104,10 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		return nil, err
 	}
 
+	// A refusal can carry a secret, in a hook's error or a value it names.
 	inputsChanged, err := changedInputsAccepted(prev, plan, in, cfg)
 	if err != nil {
-		return nil, err
+		return nil, redact.err(err)
 	}
 
 	prior, err := admit(prev, plan, cfg, rollback)
@@ -145,7 +148,7 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		changed:       changed,
 		inputsChanged: inputsChanged,
 		trust:         cfg.resume == ResumeTrust,
-		redact:        &redactor{fn: cfg.redact, secrets: in.secrets},
+		redact:        redact,
 		inputs:        in,
 		stopper:       cfg.stopper,
 		stop:          newStopSignal(),
@@ -208,13 +211,17 @@ func changedPlan(prev *State, plan *Plan, how PlanChange) (*planDiff, error) {
 // attempt's and the change is accepted, it returns the pointers of the
 // fields that changed, for the attempt to record.
 func changedInputsAccepted(prev *State, plan *Plan, in *inputs, cfg config) ([]string, error) {
+	if err := checkConsumers(plan, cfg.inputConsumers); err != nil {
+		return nil, err
+	}
+
 	if len(prev.Attempts) == 0 || prev.InputsDigest == in.digest {
 		return nil, nil
 	}
 
 	decide := cfg.inputChange
 	if cfg.inputConsumers != nil {
-		decide = append([]func(InputChange) error{consumersHook(plan, cfg.inputConsumers)}, decide...)
+		decide = append([]func(InputChange) error{consumersHook(cfg.inputConsumers)}, decide...)
 	}
 
 	if len(decide) == 0 && !cfg.newInputs {
