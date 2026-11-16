@@ -33,8 +33,11 @@ const defaultFilePoll = time.Second
 // The file is not tied to a gate. When a gate is released some other way, by
 // its timeout or by [Approve], a file created for it afterwards is still
 // there for the next gate that watches the path, and approves that one at
-// once. To make a file approve only the gate that is waiting, put an Ensure
-// step before each gate that removes the file.
+// once. When an approval must be for one particular gate, give each gate a
+// path of its own, named for the operation and the gate, so a late file for
+// one gate is never another's. An Ensure step before a gate that removes the
+// file clears only a file that is already there: one that arrives after it
+// still approves that gate.
 //
 // If the file can't be removed, or read, the approver withdraws and leaves
 // the file where it was. The run logs that as a warning, and the gate goes
