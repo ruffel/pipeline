@@ -171,7 +171,7 @@ func admit(prev *State, plan *Plan, in *inputs, cfg config, rollback bool) (*Sta
 	case rollback:
 		// A rollback undoes what the journal says ran, however the latest
 		// attempt ended.
-		return prev, nil
+		return prev, canUndo(prev, plan, cfg.strictUndo)
 	case last.Rollback && last.Outcome != OutcomePassed:
 		return nil, ErrRollbackUnfinished
 	case cfg.force:

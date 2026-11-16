@@ -60,6 +60,7 @@ type config struct {
 	redact      func(string) string
 	inputs      any
 	newInputs   bool
+	strictUndo  bool
 	stopper     *Stopper
 	controlPoll time.Duration
 
@@ -130,6 +131,17 @@ func WithInputs(v any) Option {
 func WithNewInputs() Option {
 	return func(c *config) {
 		c.newInputs = true
+	}
+}
+
+// WithStrictUndo makes [Rollback] refuse a journal, before it undoes
+// anything, if a step it would reach has no Undo. Without it, such a step is
+// recorded as skipped with [ReasonNoUndo] and the rollback can still pass,
+// leaving that step's work in place. The error matches [ErrNoUndo] and names
+// every such step. [Run] ignores the option.
+func WithStrictUndo() Option {
+	return func(c *config) {
+		c.strictUndo = true
 	}
 }
 

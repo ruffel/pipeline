@@ -54,6 +54,11 @@ type State struct {
 	items  map[string]map[string]ItemState
 	// gates are the paths of the gates that have waited.
 	gates map[string]bool
+	// ran is the first attempt that called the Run of each step, by path.
+	// Unlike RunCalled, a group's reset does not forget it: a recovery step
+	// can't take back what an irreversible step did. Only an Undo that
+	// passes does.
+	ran map[string]int
 }
 
 // AttemptState is one run of the plan.
@@ -135,6 +140,7 @@ func newState() *State {
 		values:   map[string]map[string]json.RawMessage{},
 		items:    map[string]map[string]ItemState{},
 		gates:    map[string]bool{},
+		ran:      map[string]int{},
 	}
 }
 
@@ -190,6 +196,40 @@ func (s *State) Unfinished() bool {
 	}
 
 	return s.Attempts[len(s.Attempts)-1].Outcome != OutcomePassed
+}
+
+// PointOfNoReturn returns the path of the first step, in plan order, that is
+// marked [StepNode.Irreversible] and whose Run an attempt has called, or ""
+// if there is none. Once there is one, [Rollback] refuses the journal with
+// [ErrIrreversible], so a status command can say that rolling back is no
+// longer possible without trying it.
+//
+// It goes by the plan of the latest attempt. A group's reset by its recovery
+// step does not move it back: what an irreversible step did is still done.
+func (s *State) PointOfNoReturn() string {
+	if s.Plan == nil {
+		return ""
+	}
+
+	return s.pointOfNoReturn(*s.Plan)
+}
+
+func (s *State) pointOfNoReturn(n NodeSpec) string {
+	if _, ran := s.ran[n.Path]; ran && n.Irreversible {
+		return n.Path
+	}
+
+	for _, c := range n.Children {
+		if path := s.pointOfNoReturn(c); path != "" {
+			return path
+		}
+	}
+
+	if n.OnFailure != nil {
+		return s.pointOfNoReturn(*n.OnFailure)
+	}
+
+	return ""
 }
 
 // add replays one more event, which must follow the last one.
@@ -254,6 +294,10 @@ func (s *State) apply(e Event) {
 		el := s.elements[e.Path]
 		el.RunCalled = true
 		s.elements[e.Path] = el
+
+		if _, ran := s.ran[e.Path]; !ran {
+			s.ran[e.Path] = len(s.Attempts)
+		}
 	case EventGroupFinished, EventStepFinished:
 		s.finish(e)
 	case EventGroupReset:
@@ -404,6 +448,7 @@ func (s *State) undone(e Event) {
 	delete(s.elements, path)
 	delete(s.values, path)
 	delete(s.items, path)
+	delete(s.ran, path)
 	s.unwind(path)
 }
 

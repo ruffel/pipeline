@@ -174,6 +174,15 @@ across attempts and in parallel groups, where "when it started" is not. A
 rollback is an attempt of its own, and running
 it again after a failure carries on without undoing anything twice.
 
+A step marked `Irreversible` is a point of no return: once its `Run` has been
+called, `Rollback` refuses. A rollback that undid the steps around it and then
+passed would tell the operator the system was back where it started when it was
+not. The refusal is made before the attempt is recorded, so the journal never
+holds a rollback that could not finish, and `Run` still resumes it. A recovery
+handler's reset does not forget that the step ran, because the handler can't
+take back what the step did. The marker is a setting, not part of the plan's
+shape: marking a step in a later build does not change the fingerprint.
+
 ## Gates Wait Through the Journal
 
 **Decision:** A gate records that it is waiting, with its deadline, and what

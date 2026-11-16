@@ -177,6 +177,8 @@ type StepNode struct {
 	tries       int
 	backoff     time.Duration
 	timeout     time.Duration
+	// irreversible marks a step whose effect can't be undone.
+	irreversible bool
 }
 
 // Effect returns a step that changes the system once. Once it has passed,
@@ -220,6 +222,21 @@ func (s StepNode) Retry(n int, backoff time.Duration) StepNode {
 // same way.
 func (s StepNode) Timeout(d time.Duration) StepNode {
 	s.timeout = d
+
+	return s
+}
+
+// Irreversible marks a step whose effect can't be undone, such as a schema
+// change or a format: the point of no return. Once any attempt has called
+// its Run, whether that Run passed, failed or was interrupted, [Rollback]
+// refuses the journal with [ErrIrreversible], and undoes nothing, because
+// undoing the steps around it would not put the system back where it
+// started. [State.PointOfNoReturn] says whether that point has been passed.
+//
+// Until the step runs, a rollback goes ahead as usual. An irreversible step
+// may not have an Undo, and may not be an Observe step.
+func (s StepNode) Irreversible() StepNode {
+	s.irreversible = true
 
 	return s
 }

@@ -30,6 +30,13 @@ import (
 // [ErrRollbackUnfinished]; calling Rollback again carries on where the last
 // one stopped, without undoing anything twice.
 //
+// Rollback goes back past no step marked [StepNode.Irreversible]. Once an
+// attempt has called the Run of one, Rollback refuses the journal with an
+// [*IrreversibleError], which matches [ErrIrreversible]. With
+// [WithStrictUndo] it also refuses, with [ErrNoUndo], when a step it would
+// reach has no Undo. Either way it refuses before it undoes anything, and
+// records nothing, so Run still resumes the journal.
+//
 // Rollback takes the options Run does, and refuses a journal whose attempts
 // used a plan of a different shape ([ErrPlanChanged]) or other inputs
 // ([ErrInputsChanged]), as Run does.
@@ -65,28 +72,54 @@ func (r *runner) undoAll(ctx context.Context) error {
 // and no rollback has undone since, in reverse plan order: a group's
 // failure handler after its children.
 func (r *runner) toUndo() []*node {
+	return toUndo(r.prior, r.plan)
+}
+
+func toUndo(prior *State, plan *Plan) []*node {
 	var steps []*node
 
-	var walk func(n *node)
-
-	walk = func(n *node) {
-		for _, c := range n.children {
-			walk(c)
-		}
-
-		if n.handler != nil {
-			walk(n.handler)
-		}
-
-		if (n.kind == KindEffect || n.kind == KindEnsure) && r.prior.Element(n.path).RunCalled {
+	plan.root.walk(func(n *node) {
+		if (n.kind == KindEffect || n.kind == KindEnsure) && prior.Element(n.path).RunCalled {
 			steps = append(steps, n)
 		}
-	}
+	})
 
-	walk(r.plan.root)
 	slices.Reverse(steps)
 
 	return steps
+}
+
+// canUndo reports why a rollback of plan may not start against a journal
+// that stands at prev: an irreversible step has run, or, if strict, a step
+// the rollback would reach has no Undo. It is decided before the attempt is
+// recorded, because a rollback that was recorded and then refused would
+// leave the journal with an unfinished rollback, which Run refuses.
+func canUndo(prev *State, plan *Plan, strict bool) error {
+	var refused error
+
+	plan.root.walk(func(n *node) {
+		if attempt, ran := prev.ran[n.path]; ran && n.irreversible && refused == nil {
+			refused = &IrreversibleError{Path: n.path, Attempt: attempt}
+		}
+	})
+
+	if refused != nil || !strict {
+		return refused
+	}
+
+	var paths []string
+
+	for _, n := range toUndo(prev, plan) {
+		if !n.hasUndo {
+			paths = append(paths, n.path)
+		}
+	}
+
+	if len(paths) > 0 {
+		return &NoUndoError{Paths: paths}
+	}
+
+	return nil
 }
 
 // undo calls a step's Undo, if it has one, and records how it went.

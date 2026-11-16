@@ -308,7 +308,8 @@ Nobody wrote a reverse plan. `Rollback` reads the journal, and:
   is why this one started from nothing. Rolling back the operation before it,
   which wrote no files, removes none.
 - **A step with no `Undo` is reported and stays done.** The rollback carries
-  on, and still passes.
+  on, and still passes. Mark a step `Irreversible()` if a rollback must not
+  go back past it.
 - **It is an attempt like any other.** If an `Undo` fails, call `Rollback`
   again and it carries on from that step. Like `Run`, an `Undo` must be safe
   to call again.
@@ -723,6 +724,9 @@ if approved. A gate released in an earlier attempt doesn't wait again.
   ten seconds apart.
 - **`Timeout(d)`** bounds each try, by cancelling the step's context. A try that
   returns after it has failed, whatever it returns.
+- **`Irreversible()`** marks a step that can't be undone, such as a schema
+  change. Once it has run, `Rollback` refuses: see
+  [Rollback rules](#rollback-rules).
 - **`Description(text)`** is a line for the views to show beside the name.
 - **`Labels(l)`** are for observers and viewers of your own, to group or filter
   by node, region or tenant. A group's labels pass down to everything in it.
@@ -880,7 +884,19 @@ interrupted, and calls each one's `Undo`, one at a time, in reverse plan order.
 - A step with no `Undo` is skipped and reported, and the rollback still passes.
   The step stays done, so a later `Run` doesn't do it again. `Describe` shows
   which steps have an `Undo`, before anything runs.
-- A group's failure handler is undone like any other step, if it ran.
+- With `WithStrictUndo()`, `Rollback` refuses instead, before it undoes
+  anything, if a step it would reach has no `Undo`. The error matches
+  `ErrNoUndo` and names every such step.
+- A step marked `Irreversible()` is a point of no return. Once any attempt has
+  called its `Run`, whether it passed, failed or was interrupted, `Rollback`
+  refuses with `ErrIrreversible`, naming the step, and undoes nothing: undoing
+  the steps around it would not put the system back where it started. Until
+  then a rollback goes ahead as usual. `State.PointOfNoReturn()` returns the
+  step's path, so a status command can say that rolling back is no longer
+  possible. `Run` still resumes the journal.
+- A group's failure handler is undone like any other step, if it ran. A
+  recovery handler's reset of its group doesn't take back an irreversible step
+  that ran in it.
 - What an undone step recorded is forgotten.
 - `Rollback` needs the same plan and the same inputs as the run.
 - It is an attempt of its own. If an `Undo` fails, `Run` is refused with
