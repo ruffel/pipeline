@@ -14,6 +14,8 @@ import (
 // Size limits on what a step writes, so the journal stays quick to replay.
 const (
 	// MaxRecordBytes caps the encoded values one step records in one attempt.
+	// It is the step's allowance, not each key's: every Record counts, on
+	// every try of the step, and a key recorded again is counted again.
 	MaxRecordBytes = 64 << 10
 	// MaxCustomBytes caps the encoded data of one custom event.
 	MaxCustomBytes = 64 << 10
@@ -109,6 +111,13 @@ func (s *StepContext) Progress(key, msg string, current, total int) {
 // Item records the step's result for one target, such as one host of a call
 // that fans out over many. It is durable: a later attempt reads it back with
 // PreviousItems.
+//
+// It is a record, and nothing acts on it. The run does not know which
+// targets a step has, so one that is never reported is not missed. A failed
+// item does not fail the step, which passes or fails by what its Run
+// returns. And what a later attempt does about each target is the step's to
+// decide, from PreviousItems. The latest result for a target replaces the
+// one before.
 func (s *StepContext) Item(id string, status ItemStatus, msg string) error {
 	if id == "" {
 		return errors.New("pipeline: item id is empty")
@@ -163,7 +172,8 @@ func (s *StepContext) Prior(path string) ElementState {
 // never finishes. The value is encoded as JSON, and must not be secret.
 //
 // It returns an error, and records nothing, if the value can't be encoded or
-// would take the step past [MaxRecordBytes] in this attempt.
+// would take the step past [MaxRecordBytes] in this attempt. Nothing is cut
+// short to fit: record where a large result is kept, not the result.
 func (s *StepContext) Record(key string, value any) error {
 	if key == "" {
 		return errors.New("pipeline: record key is empty")

@@ -119,6 +119,9 @@ One rule covers every case. A `Run` that failed after doing its work passes on
 the next try, and a step interrupted by a crash passes as recovered when its
 `Check` finds the work done.
 
+It does not run after a `Run` that returned nil: that step has passed. A step
+that must be verified once its work is done does so itself.
+
 ## Run and Undo Must Be Idempotent
 
 **Decision:** `Run` may be called again on a system it has already partly

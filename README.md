@@ -239,6 +239,20 @@ Nothing was written, because each step asked the disk first. `Check` runs
 before every `Run`, on a first attempt too, and it must not change anything. A
 step whose file had gone would be run again, whatever a journal said.
 
+Two things `Check` is not:
+
+- **It is not a check of `Run`'s work.** Nothing calls it after a `Run` that
+  returned nil: the step has passed. A step that must be verified once it is
+  done verifies it at the end of its own `Run`, or is followed by an `Observe`
+  step. And a passed `Effect` step with no `Check` is taken at the journal's
+  word when a later attempt resumes.
+- **`false` is not "don't know".** It sends the step on to `Run`. When `Check`
+  can't reach the system, or finds something `Run` should not be let loose on,
+  such as work half done by hand, it returns an error, and the step fails with
+  nothing changed. The `Check` above returns the error from a file it could
+  not read, and `false` only for one that is missing or stale, which writing
+  it again puts right.
+
 ### Three kinds of step
 
 `Effect` is one of three kinds. The kind says what a later attempt does with a
@@ -699,6 +713,12 @@ The value is stored before `Record` returns, so it is there even if the step
 that recorded it is killed a moment later. Record what an `Undo` will need
 before acting, not after.
 
+`Record` is for small values. Everything one step records in one attempt may
+come to `MaxRecordBytes`, 64 KiB: counted together and not for each key, over
+every try of the step, and a key recorded again is counted again. A `Record`
+that would go past it returns an error and stores nothing. Record where a
+large result is kept, not the result.
+
 ### Gates
 
 A `Gate` waits for an approval before the run goes on, as `continue` does
@@ -790,6 +810,14 @@ The journal and that directory belong to the user who started the run, and
 only that user can read or write them. Viewers and approvers run as the same
 user. A journal has one writer at a time: a second `OpenJournal` fails with
 `ErrJournalBusy`, and the error names the process that last wrote to it.
+
+That lock is the journal's and no more. It is held while the journal is open,
+not between attempts, so it reserves nothing for whoever ran the operation
+last. It knows nothing of the system being worked on: two journals are two
+operations, and nothing here keeps them off the same nodes. And it is a lock
+on a file, between processes on one machine: whether it holds between machines
+that share the file depends on the filesystem, and is not to be relied on. A
+tool that needs any of these takes a lock of its own.
 
 ### Reading the status
 
@@ -976,6 +1004,11 @@ timeout, a cancel and a second Ctrl-C all cancel it. A step that ignores its
 context runs on regardless. When it does return, after its timeout or after a
 cancel, it has failed, even if it returns nil.
 
+Returning is all a cancel asks of a step. Work it started somewhere else, such
+as a job on another machine, carries on unless the step stops it, and the
+journal then says only that the step failed. Record how to find such work
+before starting it, so that the next attempt's `Check` can ask after it.
+
 `StepFunc` turns a plain function into a step with neither `Check` nor `Undo`.
 `Check` and `Undo` are found on the value you give the plan, so a wrapper
 around a step must forward them. `Describe` shows what each step has.
@@ -983,14 +1016,28 @@ around a step must forward them. `Describe` shows what each step has.
 The `StepContext` is the step's way into the run:
 
 - `Info`, `Warn`, `Progress`, `Stdout` and `Stderr` report what it is doing.
+  They are best-effort: a crash can lose the last of them, and output past a
+  step's allowance is dropped. Nothing a later attempt or an `Undo` needs
+  goes here.
 - `Record` stores a small value durably, and `Recorded` reads it from a later
   step, a later attempt or an `Undo`.
 - `Item` records a result for one target of a step that fans out, such as one
-  host, and `PreviousItems` reads them back on a later attempt.
+  host, and `PreviousItems` reads them back on a later attempt. It is a record
+  and no more: the run doesn't know which targets a step has, a failed item
+  doesn't fail the step, and what to do about each target next time is the
+  step's to decide.
 - `Inputs` returns what the run was given with `WithInputs`.
 - `Attempt`, `Path` and `Labels` say which attempt this is, and the step's own
   path and labels.
-- `Custom` sends an event of your own to observers.
+- `Custom` sends an event of your own to observers, best-effort like a
+  message.
+
+Only the secrets among the inputs are known to the run. One that a step makes
+or reads while it runs, such as a generated password or a token in a command's
+output, is masked only where the `WithRedactor` function catches it: in
+messages, output, errors and custom events. A value given to `Record`, an
+item's ID, a label and a path are stored as they are, so none of them may be
+secret.
 
 ### Observers
 
@@ -1019,6 +1066,23 @@ The `pipelinetest` package tests steps and plans without a real system:
 - **`CrashAfter`** simulates a crash at any point of a run.
 - **`FakeClock`** moves time on by hand, so retry backoffs and gate timeouts
   don't sleep.
+
+`CheckIdempotent` and `CrashAfter` crash a run by making its journal refuse
+every write after a chosen event. That finds the hazard that matters most, a
+step that changed the system with nothing recorded. It is not a process dying:
+
+- **The crash points are the run's writes to the journal.** A step that
+  changes the system in several stages, with nothing written between them, is
+  crashed before the first and after the last, never between two. Have it
+  `Record` what it is about to do, or make the fake system fail at that stage.
+- **A resumed run that passes has only passed.** A step that does its work
+  twice without an error passes too. Check the fake system's final state: how
+  many times, and what is there.
+- **Nothing is killed, and no disk is involved.** The step's code runs on to
+  its next write, which fails, and the journal is in memory. A test that kills
+  a child process working on a file journal covers what these can't: this
+  module's `TestResume_AProcessKilledAroundItsEffect` is one to copy. Even
+  that is not a power cut, which leaves only what was synced.
 
 ## Examples
 
