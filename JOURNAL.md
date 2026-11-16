@@ -36,36 +36,38 @@ A field with nothing to say is left out of the line.
 Durable events are synced to disk before the run moves on, and a run stops if
 one can't be written. The rest are best-effort: a crash can lose the last few.
 
-| `kind`           | Durable | About        | Its fields                                                                                                |
-| ---------------- | ------- | ------------ | --------------------------------------------------------------------------------------------------------- |
-| `run.started`    | yes     | the root     | `attempt`, `plan`, `fingerprint`, `labels`, `inputs`, `inputsDigest`, `forced`, `rollback`, `pid`, `host` |
-| `run.finished`   | yes     | the root     | `outcome`, `error`, `ms`                                                                                  |
-| `group.started`  | yes     | a group      |                                                                                                           |
-| `group.finished` | yes     | a group      | `outcome`, `reason`, `error`, `ms`                                                                        |
-| `group.reset`    | yes     | a group      |                                                                                                           |
-| `step.started`   | yes     | a step, gate |                                                                                                           |
-| `step.running`   | yes     | a step       |                                                                                                           |
-| `step.finished`  | yes     | a step, gate | `outcome`, `reason`, `skip`, `error`, `ms`                                                                |
-| `step.retry`     | no      | a step       | `try`, `error`                                                                                            |
-| `gate.waiting`   | yes     | a gate       | `prompt`, `deadline`                                                                                      |
-| `gate.released`  | yes     | a gate       | `by`, `who`, `uid`, `policy`                                                                              |
-| `value`          | yes     | a step       | `key`, `value`                                                                                            |
-| `item`           | yes     | a step       | `item`, `itemStatus`, `message`                                                                           |
-| `message`        | no      | a step       | `level`, `message`                                                                                        |
-| `progress`       | no      | a step       | `key`, `message`, `current`, `total`                                                                      |
-| `output`         | no      | a step       | `stream`, `line`, `continued`                                                                             |
-| `custom`         | no      | a step       | `type`, `data`                                                                                            |
-| `stop.requested` | yes     | the root     | `mode`, `by`, `who`, `uid`                                                                                |
-| `plan.changed`   | yes     | the root     | `added`, `removed`                                                                                        |
-| `undo.started`   | yes     | a step       |                                                                                                           |
-| `undo.finished`  | yes     | a step       | `outcome`, `reason`, `error`, `ms`                                                                        |
+| `kind`           | Durable | About        | Its fields                                                                                                                 |
+| ---------------- | ------- | ------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `run.started`    | yes     | the root     | `attempt`, `plan`, `fingerprint`, `labels`, `inputs`, `inputsDigest`, `inputsChanged`, `forced`, `rollback`, `pid`, `host` |
+| `run.finished`   | yes     | the root     | `outcome`, `error`, `ms`                                                                                                   |
+| `group.started`  | yes     | a group      |                                                                                                                            |
+| `group.finished` | yes     | a group      | `outcome`, `reason`, `error`, `ms`                                                                                         |
+| `group.reset`    | yes     | a group      |                                                                                                                            |
+| `step.started`   | yes     | a step, gate |                                                                                                                            |
+| `step.running`   | yes     | a step       |                                                                                                                            |
+| `step.finished`  | yes     | a step, gate | `outcome`, `reason`, `skip`, `error`, `ms`                                                                                 |
+| `step.retry`     | no      | a step       | `try`, `error`                                                                                                             |
+| `gate.waiting`   | yes     | a gate       | `prompt`, `deadline`                                                                                                       |
+| `gate.released`  | yes     | a gate       | `by`, `who`, `uid`, `policy`                                                                                               |
+| `value`          | yes     | a step       | `key`, `value`                                                                                                             |
+| `item`           | yes     | a step       | `item`, `itemStatus`, `message`                                                                                            |
+| `message`        | no      | a step       | `level`, `message`                                                                                                         |
+| `progress`       | no      | a step       | `key`, `message`, `current`, `total`                                                                                       |
+| `output`         | no      | a step       | `stream`, `line`, `continued`                                                                                              |
+| `custom`         | no      | a step       | `type`, `data`                                                                                                             |
+| `stop.requested` | yes     | the root     | `mode`, `by`, `who`, `uid`                                                                                                 |
+| `plan.changed`   | yes     | the root     | `added`, `removed`                                                                                                         |
+| `undo.started`   | yes     | a step       |                                                                                                                            |
+| `undo.finished`  | yes     | a step       | `outcome`, `reason`, `error`, `ms`                                                                                         |
 
 What each one means:
 
 - **`run.started`** opens an attempt. `plan` is the whole tree, so a viewer can
   draw every element before any of them starts. `rollback` marks an attempt
   made by `Rollback`, and `forced` one made with `Force`. `inputs` is what
-  `WithInputs` was given, without its secrets.
+  `WithInputs` was given, without its secrets. `inputsChanged` lists the
+  fields of `inputs` that differ from the attempt before, as JSON pointers,
+  when a resume accepted a change.
 - **`run.finished`** closes it. An attempt with no `run.finished` is still
   running, or its process died.
 - **`group.reset`** is a recovery handler starting: everything in the group goes

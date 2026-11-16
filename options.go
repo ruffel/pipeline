@@ -52,18 +52,22 @@ const (
 )
 
 type config struct {
-	observers   []Observer
-	labels      L
-	clock       Clock
-	resume      ResumeMode
-	force       bool
-	redact      func(string) string
-	inputs      any
-	newInputs   bool
-	strictUndo  bool
-	planChange  PlanChange
-	stopper     *Stopper
-	controlPoll time.Duration
+	observers []Observer
+	labels    L
+	clock     Clock
+	resume    ResumeMode
+	force     bool
+	redact    func(string) string
+	inputs    any
+	newInputs bool
+	// inputChange are the hooks that decide whether changed inputs are
+	// accepted, and inputConsumers what WithInputConsumers was given.
+	inputChange    []func(InputChange) error
+	inputConsumers map[string][]string
+	strictUndo     bool
+	planChange     PlanChange
+	stopper        *Stopper
+	controlPoll    time.Duration
 
 	// outputBudget is MaxStepOutput, except in tests.
 	outputBudget int
@@ -127,8 +131,61 @@ func WithInputs(v any) Option {
 	}
 }
 
+// WithInputConsumers says which steps use which inputs, so that a resume can
+// accept a change to an input that nothing has used yet: the usual fix
+// after a failed run is to correct an address or a flag and run again.
+//
+// It maps a field of the inputs to the paths of the steps and groups that
+// use it. A field is named by its JSON pointer into the encoded inputs, such
+// as "/hosts/2/address". A pointer covers everything beneath it, and ""
+// covers all the inputs.
+//
+// On a resume whose inputs differ from the latest attempt's, each changed
+// field is checked:
+//
+//   - If every consumer that covers it has never started, the change is
+//     accepted. A group has started once anything beneath it has. A step
+//     that a rollback undid, or its group's recovery reset, has not.
+//   - If a consumer has started, whatever its outcome, the attempt is
+//     refused with an [*InputChangeError], which matches [ErrInputsChanged]
+//     and lists each such field, its old and new value, and the consumer.
+//   - If no consumer covers it, it counts as used by every step, and the
+//     change is refused in the same way.
+//
+// An accepted change is recorded with the new attempt, as the pointers that
+// changed: see [AttemptState.InputsChanged]. A consumer that the plan does
+// not have is an error on every attempt, changed inputs or not.
+// [WithNewInputs] accepts any change without asking.
+//
+// A change to a whole container, such as a list that was removed, is also a
+// change to everything beneath it, so the consumers declared beneath it must
+// not have started either.
+func WithInputConsumers(consumers map[string][]string) Option {
+	return func(c *config) {
+		c.inputConsumers = maps.Clone(consumers)
+	}
+}
+
+// WithInputChange sets a function that decides whether a resume may go
+// ahead with inputs that differ from the latest attempt's, for a rule that
+// [WithInputConsumers] can't express. It is called once, before the attempt
+// starts, with what changed and the journal's state. If it returns nil, the
+// change is accepted and recorded with the attempt. If it returns an error,
+// the attempt is refused with an error that matches both it and
+// [ErrInputsChanged].
+//
+// Given more than once, or with WithInputConsumers, every one must accept.
+func WithInputChange(decide func(InputChange) error) Option {
+	return func(c *config) {
+		if decide != nil {
+			c.inputChange = append(c.inputChange, decide)
+		}
+	}
+}
+
 // WithNewInputs lets a resume go ahead with inputs that differ from the
-// latest attempt's. The new inputs are recorded with the new attempt.
+// latest attempt's, whatever has used them. The new inputs are recorded
+// with the new attempt.
 func WithNewInputs() Option {
 	return func(c *config) {
 		c.newInputs = true

@@ -17,7 +17,8 @@ var (
 
 	// ErrInputsChanged is returned by [Run] when the inputs differ from those
 	// the journal's latest attempt recorded. [WithNewInputs] accepts the
-	// change. Secrets are not compared: they are never recorded.
+	// change, and [WithInputConsumers] one that nothing has used yet.
+	// Secrets are not compared: they are never recorded.
 	ErrInputsChanged = errors.New("pipeline: the inputs have changed since the journal's last attempt")
 
 	// ErrAlreadyComplete is returned by [Run] when the journal's latest

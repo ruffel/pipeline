@@ -203,6 +203,10 @@ type Event struct {
 	// its null and empty members.
 	Inputs       json.RawMessage `json:"inputs,omitempty"`
 	InputsDigest string          `json:"inputsDigest,omitempty"`
+	// InputsChanged are the JSON pointers of the inputs that differ from the
+	// attempt before, when a resume accepted a change. The values are in
+	// Inputs, here and on that attempt's run.started.
+	InputsChanged []string `json:"inputsChanged,omitempty"`
 	// Forced marks an attempt made with Force.
 	Forced bool `json:"forced,omitempty"`
 	// Rollback marks an attempt made by [Rollback].

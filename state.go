@@ -65,6 +65,11 @@ type State struct {
 	// can't take back what an irreversible step did. Only an Undo that
 	// passes does.
 	ran map[string]int
+	// begun are the steps and gates that an attempt has started, by path,
+	// whatever became of them, and that nothing has taken back since. A
+	// step recorded as skipped because its group or the run ended before
+	// reaching it has not begun.
+	begun map[string]bool
 }
 
 // AttemptState is one run of the plan.
@@ -81,6 +86,10 @@ type AttemptState struct {
 	// Rollback marks an attempt made by [Rollback], which undid steps
 	// instead of running them.
 	Rollback bool
+	// InputsChanged are the fields of the inputs that differ from the
+	// attempt before, as JSON pointers, when the attempt accepted a change:
+	// under [WithInputConsumers], [WithInputChange] or [WithNewInputs].
+	InputsChanged []string
 }
 
 // ElementState is where one group or step stands. The plan's root is a group
@@ -147,6 +156,7 @@ func newState() *State {
 		items:    map[string]map[string]ItemState{},
 		gates:    map[string]bool{},
 		ran:      map[string]int{},
+		begun:    map[string]bool{},
 	}
 }
 
@@ -303,9 +313,7 @@ func (s *State) apply(e Event) {
 	case EventRunStarted, EventRunFinished, EventStopRequested:
 		s.applyAttempt(e)
 	case EventGroupStarted, EventStepStarted:
-		el := s.elements[e.Path]
-		el.Status, el.Reason, el.Error, el.Run, el.Waiting = StatusStarted, "", nil, e.Run, false
-		s.elements[e.Path] = el
+		s.start(e)
 	case EventGateWaiting, EventGateReleased:
 		s.gate(e)
 	case EventStepRunning:
@@ -347,6 +355,17 @@ func (s *State) apply(e Event) {
 	}
 }
 
+// start applies a group, step or gate starting.
+func (s *State) start(e Event) {
+	el := s.elements[e.Path]
+	el.Status, el.Reason, el.Error, el.Run, el.Waiting = StatusStarted, "", nil, e.Run, false
+	s.elements[e.Path] = el
+
+	if e.Kind == EventStepStarted {
+		s.begun[e.Path] = true
+	}
+}
+
 // applyAttempt applies an event about the attempt as a whole.
 func (s *State) applyAttempt(e Event) {
 	if e.Kind == EventRunStarted {
@@ -358,7 +377,7 @@ func (s *State) applyAttempt(e Event) {
 		s.Labels = e.Labels
 		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
 		s.Attempts = append(s.Attempts, AttemptState{
-			Run: e.Run, Attempt: e.Attempt, Started: e.TS, Rollback: e.Rollback,
+			Run: e.Run, Attempt: e.Attempt, Started: e.TS, Rollback: e.Rollback, InputsChanged: e.InputsChanged,
 		})
 
 		clear(s.kinds)
@@ -542,6 +561,7 @@ func (s *State) reset(path string) {
 	maps.DeleteFunc(s.elements, func(p string, _ ElementState) bool { return beneath(p) })
 	maps.DeleteFunc(s.values, func(p string, _ map[string]json.RawMessage) bool { return beneath(p) })
 	maps.DeleteFunc(s.items, func(p string, _ map[string]ItemState) bool { return beneath(p) })
+	maps.DeleteFunc(s.begun, func(p string, _ bool) bool { return beneath(p) })
 }
 
 // gate applies a gate waiting or being released.
@@ -582,6 +602,7 @@ func (s *State) undone(e Event) {
 	delete(s.values, path)
 	delete(s.items, path)
 	delete(s.ran, path)
+	delete(s.begun, path)
 	s.unwind(path)
 }
 
@@ -589,6 +610,7 @@ func (s *State) undone(e Event) {
 func (s *State) unreleaseGates() {
 	for path := range s.gates {
 		delete(s.elements, path)
+		delete(s.begun, path)
 		s.unwind(path)
 	}
 }
