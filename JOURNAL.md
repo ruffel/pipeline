@@ -56,6 +56,7 @@ one can't be written. The rest are best-effort: a crash can lose the last few.
 | `output`         | no      | a step       | `stream`, `line`, `continued`                                                                             |
 | `custom`         | no      | a step       | `type`, `data`                                                                                            |
 | `stop.requested` | yes     | the root     | `mode`, `by`, `who`, `uid`                                                                                |
+| `plan.changed`   | yes     | the root     | `added`, `removed`                                                                                        |
 | `undo.started`   | yes     | a step       |                                                                                                           |
 | `undo.finished`  | yes     | a step       | `outcome`, `reason`, `error`, `ms`                                                                        |
 
@@ -83,6 +84,10 @@ What each one means:
   and every piece but the first has `continued`.
 - **`custom`** carries a step's own event: `type` names it, and `data` is JSON.
 - **`stop.requested`** records who asked a run to stop, and how.
+- **`plan.changed`** follows the `run.started` of an attempt made with
+  `WithPlanChange` and a plan of a different shape. `added` and `removed` are
+  the paths the new plan has and the old one had, in plan order. It is there to
+  be shown: the two plans in the `run.started` events say the same.
 - **`undo.finished`** is a rollback's result for one step.
 
 A step that is skipped without being started has a `step.finished` and no
@@ -149,10 +154,13 @@ with an error of kind `cancelled`.
   raises `v`, and a reader should refuse a `v` newer than it knows.
 - **An attempt is the events sharing a `run`,** from its `run.started` to its
   `run.finished`. Later attempts append to the same file.
-- **The latest event about a path wins,** with four exceptions:
+- **The latest event about a path wins,** with five exceptions:
   - a `group.reset` forgets everything beneath the group, except that an
     `irreversible` step with a `step.running` has run;
   - an `undo.finished` with outcome `undone` takes its step back to never
     started;
   - a rollback that passes makes every gate wait again;
-  - a `run.started` with `forced` means nothing done before it counts as done.
+  - a `run.started` with `forced` means nothing done before it counts as done;
+  - a `run.started` whose `plan` has paths the one before it lacked means the
+    groups around each new path are no longer finished. Paths it no longer
+    has keep what they had.

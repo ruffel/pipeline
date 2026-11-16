@@ -867,6 +867,13 @@ The journal belongs to one operation and one plan:
 - **A changed plan is refused** with `ErrPlanChanged`, if its paths or kinds
   differ. Descriptions, labels, limits, timeouts and retries can change, so a
   rebuilt tool can resume.
+- **`WithPlanChange(MatchByPath)` accepts one**, for a fixed build that adds or
+  removes steps. Elements are matched by path. One in both plans keeps its
+  record, and a changed kind is still refused. A new one has never started, and
+  a group that had settled is entered again for it. A removed one keeps its
+  record and is listed in `State.Removed`; if it ran and had an `Undo`,
+  `Rollback` refuses, because the code to undo it has gone. The journal then
+  belongs to the new plan, so later attempts need no option.
 - **A finished journal is refused** with `ErrAlreadyComplete`, once its latest
   attempt has passed. Start a new journal for a new operation, or give `Force`
   to run the whole plan again.

@@ -61,6 +61,7 @@ type config struct {
 	inputs      any
 	newInputs   bool
 	strictUndo  bool
+	planChange  PlanChange
 	stopper     *Stopper
 	controlPoll time.Duration
 
@@ -131,6 +132,49 @@ func WithInputs(v any) Option {
 func WithNewInputs() Option {
 	return func(c *config) {
 		c.newInputs = true
+	}
+}
+
+// PlanChange says how an attempt treats a journal whose latest attempt used
+// a plan of a different shape.
+type PlanChange int
+
+// MatchByPath carries each element's record over to the element of the new
+// plan with the same path. See [WithPlanChange].
+const MatchByPath PlanChange = 1
+
+// WithPlanChange lets [Run] and [Rollback] go ahead with a plan whose shape
+// differs from the one the journal's latest attempt used, instead of
+// refusing it with [ErrPlanChanged]. It is for a fixed build of a tool
+// resuming the operation the broken build left unfinished.
+//
+// With [MatchByPath], elements are matched by path, which is their identity:
+//
+//   - An element in both plans keeps its record. If its kind differs, the
+//     attempt is refused with an error that matches ErrPlanChanged and names
+//     it: what a passed outcome means depends on the kind.
+//   - An element only in the new plan has never started. If it is inside a
+//     group that had settled, the group is no longer settled, so a resume
+//     enters it and runs the new element. The group's other steps are
+//     treated as on any resume.
+//   - An element only in the old plan keeps its record, and the values it
+//     recorded stay readable. It is listed in [State.Removed]. A later plan
+//     that puts it back carries on from that record, so it must have the
+//     kind it had.
+//
+// A step that moved to another path is one removed and one added.
+//
+// A rollback can't undo a removed step, because its Undo went with it. If
+// such a step ran and had an Undo, Rollback refuses with an error that
+// matches ErrPlanChanged and names it.
+//
+// The attempt records the new plan, and a [EventPlanChanged] event listing
+// what was added and removed. Later attempts compare with the new plan, so
+// they need no option unless the plan changes again. A journal whose latest
+// attempt passed is still complete: adding a step does not reopen it.
+func WithPlanChange(how PlanChange) Option {
+	return func(c *config) {
+		c.planChange = how
 	}
 }
 

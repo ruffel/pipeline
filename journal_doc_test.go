@@ -50,6 +50,7 @@ func TestJournalDoc_MatchesTheEventModel(t *testing.T) {
 		pipeline.EventValue, pipeline.EventItem,
 		pipeline.EventMessage, pipeline.EventProgress, pipeline.EventOutput, pipeline.EventCustom,
 		pipeline.EventStopRequested, pipeline.EventUndoStarted, pipeline.EventUndoFinished,
+		pipeline.EventPlanChanged,
 	}
 
 	fields := jsonFields(reflect.TypeFor[pipeline.Event]())

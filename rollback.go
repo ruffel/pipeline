@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 )
 
 // Rollback undoes what the journal's attempts did, as derived from the
@@ -39,7 +41,9 @@ import (
 //
 // Rollback takes the options Run does, and refuses a journal whose attempts
 // used a plan of a different shape ([ErrPlanChanged]) or other inputs
-// ([ErrInputsChanged]), as Run does.
+// ([ErrInputsChanged]), as Run does. Under [WithPlanChange] it undoes what
+// the new plan still has, and refuses if a step that ran and had an Undo is
+// no longer in the plan.
 func Rollback(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Result, error) {
 	return attempt(ctx, plan, j, opts, true)
 }
@@ -90,36 +94,80 @@ func toUndo(prior *State, plan *Plan) []*node {
 }
 
 // canUndo reports why a rollback of plan may not start against a journal
-// that stands at prev: an irreversible step has run, or, if strict, a step
-// the rollback would reach has no Undo. It is decided before the attempt is
-// recorded, because a rollback that was recorded and then refused would
-// leave the journal with an unfinished rollback, which Run refuses.
+// that stands at prev: an irreversible step has run, a step that ran was
+// removed from the plan with its Undo, or, if strict, a step the rollback
+// would reach has no Undo. It is decided before the attempt is recorded,
+// because a rollback that was recorded and then refused would leave the
+// journal with an unfinished rollback, which Run refuses.
 func canUndo(prev *State, plan *Plan, strict bool) error {
-	var refused error
-
-	plan.root.walk(func(n *node) {
-		if attempt, ran := prev.ran[n.path]; ran && n.irreversible && refused == nil {
-			refused = &IrreversibleError{Path: n.path, Attempt: attempt}
-		}
-	})
-
-	if refused != nil || !strict {
-		return refused
+	if err := irreversibleRan(prev, plan); err != nil {
+		return err
 	}
 
-	var paths []string
+	gone, noUndo := removedRan(prev)
+
+	if len(gone) > 0 {
+		return fmt.Errorf("%w: %s ran and was then removed from the plan, and its Undo with it",
+			ErrPlanChanged, strings.Join(gone, ", "))
+	}
+
+	if !strict {
+		return nil
+	}
+
+	slices.Reverse(noUndo)
 
 	for _, n := range toUndo(prev, plan) {
 		if !n.hasUndo {
-			paths = append(paths, n.path)
+			noUndo = append(noUndo, n.path)
 		}
 	}
 
-	if len(paths) > 0 {
-		return &NoUndoError{Paths: paths}
+	if len(noUndo) > 0 {
+		return &NoUndoError{Paths: noUndo}
 	}
 
 	return nil
+}
+
+// irreversibleRan returns an [*IrreversibleError] for the first irreversible
+// step whose Run an attempt called, or nil. A step that a change of plan
+// removed counts: it is no easier to undo.
+func irreversibleRan(prev *State, plan *Plan) error {
+	var refused error
+
+	check := func(path string, irreversible bool) {
+		if attempt, ran := prev.ran[path]; ran && irreversible && refused == nil {
+			refused = &IrreversibleError{Path: path, Attempt: attempt}
+		}
+	}
+
+	plan.root.walk(func(n *node) { check(n.path, n.irreversible) })
+
+	for _, n := range prev.Removed {
+		check(n.Path, n.Irreversible)
+	}
+
+	return refused
+}
+
+// removedRan returns the Effect and Ensure steps that a change of plan
+// removed after their Run was called: gone are those that had an Undo, which
+// went with them, come first, and those that had none second.
+func removedRan(prev *State) ([]string, []string) {
+	var gone, noUndo []string
+
+	for _, n := range prev.Removed {
+		switch {
+		case !prev.Element(n.Path).RunCalled || (n.Kind != KindEffect && n.Kind != KindEnsure):
+		case n.Undo:
+			gone = append(gone, n.Path)
+		default:
+			noUndo = append(noUndo, n.Path)
+		}
+	}
+
+	return gone, noUndo
 }
 
 // undo calls a step's Undo, if it has one, and records how it went.
