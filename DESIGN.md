@@ -193,6 +193,14 @@ handler's reset does not forget that the step ran, because the handler can't
 take back what the step did. The marker is a setting, not part of the plan's
 shape: marking a step in a later build does not change the fingerprint.
 
+So the latest plan can't be what says whether a step was irreversible: a later
+build of the same shape could drop the marker, give the step an `Undo`, and
+nothing would notice. Replay settles it when it reads a `step.running`, from
+the plan in that attempt's `run.started`, and nothing forgets it afterwards.
+Every `run.started` already carried its plan, so this needed no new field and
+no new schema version, and journals written before it are read the same way.
+A step the latest plan marks, that ran before it was marked, still counts.
+
 ## Gates Wait Through the Journal
 
 **Decision:** A gate records that it is waiting, with its deadline, and what

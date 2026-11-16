@@ -166,3 +166,9 @@ with an error of kind `cancelled`.
   - a `run.started` whose `plan` has paths the one before it lacked means the
     groups around each new path are no longer finished. Paths it no longer
     has keep what they had.
+- **What a step was when it ran is in the attempt that ran it.** A
+  `step.running` for a step that its own attempt's `plan` marks `irreversible`
+  is a point of no return, and nothing after it takes that back: not an
+  `undo.finished`, a `forced` attempt, or a later `plan` that drops the marker
+  or the path. Read the marker from the `run.started` before the
+  `step.running`, not from the latest one.

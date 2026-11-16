@@ -31,8 +31,9 @@ var (
 	ErrRollbackUnfinished = errors.New("pipeline: the journal's rollback has not finished")
 
 	// ErrIrreversible is matched by the error [Rollback] returns when an
-	// attempt has called the Run of a step marked [StepNode.Irreversible].
-	// The error is an [*IrreversibleError], which names the step. Nothing
+	// attempt has called the Run of a step marked [StepNode.Irreversible],
+	// whether or not the plan still marks it. The error is an
+	// [*IrreversibleError], which names the step. Nothing
 	// was undone, and nothing was written to the journal, so [Run] still
 	// resumes it.
 	ErrIrreversible = errors.New("pipeline: an irreversible step has run")
@@ -112,14 +113,25 @@ func (e *StepError) Unwrap() error {
 // IrreversibleError is why [Rollback] refused a journal: a step that can't
 // be undone has run. It matches [ErrIrreversible].
 type IrreversibleError struct {
-	// Path is the first irreversible step, in plan order, whose Run was
-	// called, and Attempt the first attempt that called it.
+	// Path is the first step, in plan order, whose Run was called while it
+	// was irreversible, and Attempt the first attempt that called it. The
+	// plan given to Rollback may no longer mark the step, or have it at all:
+	// what counts is what it was when it ran.
 	Path    string
 	Attempt int
+
+	// unplanned means the journal does not say what the step was when it
+	// ran, so Rollback takes it to have been irreversible.
+	unplanned bool
 }
 
 // Error implements error.
 func (e *IrreversibleError) Error() string {
+	if e.unplanned {
+		return fmt.Sprintf("%v, or may have: attempt %d ran %s, and the journal has no plan for that attempt "+
+			"that names it: rollback is refused", ErrIrreversible, e.Attempt, e.Path)
+	}
+
 	return fmt.Sprintf("%v: %s, in attempt %d: rollback is no longer possible", ErrIrreversible, e.Path, e.Attempt)
 }
 

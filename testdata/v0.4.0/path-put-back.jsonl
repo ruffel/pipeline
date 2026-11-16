@@ -1,0 +1,30 @@
+{"v":1,"seq":1,"ts":"2026-11-16T12:32:07.067369Z","kind":"run.started","run":"61bf33f012c55fc9","path":"p","attempt":1,"plan":{"name":"p","path":"p","kind":"group","failure":"stop","children":[{"name":"backup","path":"p/backup","kind":"effect","undo":true,"tries":1},{"name":"alter-table","path":"p/alter-table","kind":"effect","irreversible":true,"tries":1},{"name":"node1","path":"p/node1","kind":"effect","undo":true,"tries":1}]},"fingerprint":"sha256:79da6ea3dd702a5de61461cfbbb18608f3596022be60424cdd345c11d1983c2e","pid":4242,"host":"builder"}
+{"v":1,"seq":2,"ts":"2026-11-16T12:32:07.071134Z","kind":"step.started","run":"61bf33f012c55fc9","path":"p/backup"}
+{"v":1,"seq":3,"ts":"2026-11-16T12:32:07.072477Z","kind":"step.running","run":"61bf33f012c55fc9","path":"p/backup"}
+{"v":1,"seq":4,"ts":"2026-11-16T12:32:07.075251Z","kind":"value","run":"61bf33f012c55fc9","path":"p/backup","key":"previous","value":"backup-old"}
+{"v":1,"seq":5,"ts":"2026-11-16T12:32:07.077105Z","kind":"step.finished","run":"61bf33f012c55fc9","path":"p/backup","outcome":"passed","ms":5}
+{"v":1,"seq":6,"ts":"2026-11-16T12:32:07.078324Z","kind":"step.started","run":"61bf33f012c55fc9","path":"p/alter-table"}
+{"v":1,"seq":7,"ts":"2026-11-16T12:32:07.079643Z","kind":"step.running","run":"61bf33f012c55fc9","path":"p/alter-table"}
+{"v":1,"seq":8,"ts":"2026-11-16T12:32:07.081446Z","kind":"step.finished","run":"61bf33f012c55fc9","path":"p/alter-table","outcome":"passed","ms":3}
+{"v":1,"seq":9,"ts":"2026-11-16T12:32:07.083076Z","kind":"step.started","run":"61bf33f012c55fc9","path":"p/node1"}
+{"v":1,"seq":10,"ts":"2026-11-16T12:32:07.084356Z","kind":"step.running","run":"61bf33f012c55fc9","path":"p/node1"}
+{"v":1,"seq":11,"ts":"2026-11-16T12:32:07.085693Z","kind":"value","run":"61bf33f012c55fc9","path":"p/node1","key":"previous","value":"node1-old"}
+{"v":1,"seq":12,"ts":"2026-11-16T12:32:07.087013Z","kind":"step.finished","run":"61bf33f012c55fc9","path":"p/node1","outcome":"failed","error":{"kind":"error","message":"node1 failed"},"ms":3}
+{"v":1,"seq":13,"ts":"2026-11-16T12:32:07.088521Z","kind":"run.finished","run":"61bf33f012c55fc9","path":"p","outcome":"failed","error":{"kind":"error","message":"p/node1: node1 failed"},"ms":21}
+{"v":1,"seq":14,"ts":"2026-11-16T12:32:07.090431Z","kind":"run.started","run":"b362b7815b8446a2","path":"p","attempt":2,"plan":{"name":"p","path":"p","kind":"group","failure":"stop","children":[{"name":"backup","path":"p/backup","kind":"effect","undo":true,"tries":1},{"name":"node1","path":"p/node1","kind":"effect","undo":true,"tries":1}]},"fingerprint":"sha256:02d60ed4eabd882b9b32861455703b5811789448b718c4c9d9d4c8cdd45bc71c","pid":4242,"host":"builder"}
+{"v":1,"seq":15,"ts":"2026-11-16T12:32:07.091837Z","kind":"plan.changed","run":"b362b7815b8446a2","path":"p","removed":["p/alter-table"]}
+{"v":1,"seq":16,"ts":"2026-11-16T12:32:07.093185Z","kind":"step.finished","run":"b362b7815b8446a2","path":"p/backup","outcome":"skipped","reason":"earlier-attempt"}
+{"v":1,"seq":17,"ts":"2026-11-16T12:32:07.094582Z","kind":"step.started","run":"b362b7815b8446a2","path":"p/node1"}
+{"v":1,"seq":18,"ts":"2026-11-16T12:32:07.09631Z","kind":"step.running","run":"b362b7815b8446a2","path":"p/node1"}
+{"v":1,"seq":19,"ts":"2026-11-16T12:32:07.097693Z","kind":"value","run":"b362b7815b8446a2","path":"p/node1","key":"previous","value":"node1-old"}
+{"v":1,"seq":20,"ts":"2026-11-16T12:32:07.099068Z","kind":"step.finished","run":"b362b7815b8446a2","path":"p/node1","outcome":"failed","error":{"kind":"error","message":"node1 failed"},"ms":4}
+{"v":1,"seq":21,"ts":"2026-11-16T12:32:07.10037Z","kind":"run.finished","run":"b362b7815b8446a2","path":"p","outcome":"failed","error":{"kind":"error","message":"p/node1: node1 failed"},"ms":9}
+{"v":1,"seq":22,"ts":"2026-11-16T12:32:07.10187Z","kind":"run.started","run":"574e29c1e620b49d","path":"p","attempt":3,"plan":{"name":"p","path":"p","kind":"group","failure":"stop","children":[{"name":"backup","path":"p/backup","kind":"effect","undo":true,"tries":1},{"name":"alter-table","path":"p/alter-table","kind":"effect","undo":true,"tries":1},{"name":"node1","path":"p/node1","kind":"effect","undo":true,"tries":1}]},"fingerprint":"sha256:79da6ea3dd702a5de61461cfbbb18608f3596022be60424cdd345c11d1983c2e","pid":4242,"host":"builder"}
+{"v":1,"seq":23,"ts":"2026-11-16T12:32:07.105203Z","kind":"plan.changed","run":"574e29c1e620b49d","path":"p","added":["p/alter-table"]}
+{"v":1,"seq":24,"ts":"2026-11-16T12:32:07.108229Z","kind":"step.finished","run":"574e29c1e620b49d","path":"p/backup","outcome":"skipped","reason":"earlier-attempt"}
+{"v":1,"seq":25,"ts":"2026-11-16T12:32:07.111206Z","kind":"step.finished","run":"574e29c1e620b49d","path":"p/alter-table","outcome":"skipped","reason":"earlier-attempt"}
+{"v":1,"seq":26,"ts":"2026-11-16T12:32:07.114218Z","kind":"step.started","run":"574e29c1e620b49d","path":"p/node1"}
+{"v":1,"seq":27,"ts":"2026-11-16T12:32:07.117282Z","kind":"step.running","run":"574e29c1e620b49d","path":"p/node1"}
+{"v":1,"seq":28,"ts":"2026-11-16T12:32:07.1202Z","kind":"value","run":"574e29c1e620b49d","path":"p/node1","key":"previous","value":"node1-old"}
+{"v":1,"seq":29,"ts":"2026-11-16T12:32:07.123234Z","kind":"step.finished","run":"574e29c1e620b49d","path":"p/node1","outcome":"failed","error":{"kind":"error","message":"node1 failed"},"ms":9}
+{"v":1,"seq":30,"ts":"2026-11-16T12:32:07.126224Z","kind":"run.finished","run":"574e29c1e620b49d","path":"p","outcome":"failed","error":{"kind":"error","message":"p/node1: node1 failed"},"ms":24}

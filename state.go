@@ -54,8 +54,10 @@ type State struct {
 	Live bool
 
 	elements map[string]ElementState
-	// kinds is the kind of every element of the latest attempt's plan.
+	// kinds is the kind of every element of the latest attempt's plan, and
+	// marked are the steps that plan marks irreversible.
 	kinds  map[string]Kind
+	marked map[string]bool
 	values map[string]map[string]json.RawMessage
 	items  map[string]map[string]ItemState
 	// gates are the paths of the gates that have waited.
@@ -65,11 +67,26 @@ type State struct {
 	// can't take back what an irreversible step did. Only an Undo that
 	// passes does.
 	ran map[string]int
+	// noReturn are the steps whose Run an attempt called while that attempt's
+	// own plan marked them irreversible, by path. It is what the step was
+	// when it ran, so nothing forgets it: not a later plan that drops the
+	// marker or the path, a group's reset, a forced attempt or an undo.
+	noReturn map[string]noReturn
 	// begun are the steps and gates that an attempt has started, by path,
 	// whatever became of them, and that nothing has taken back since. A
 	// step recorded as skipped because its group or the run ended before
 	// reaching it has not begun.
 	begun map[string]bool
+}
+
+// noReturn is a step's Run called while the step was irreversible.
+type noReturn struct {
+	// attempt is the first attempt that called it.
+	attempt int
+	// unplanned means the journal has no plan for that attempt, or one that
+	// does not name the step: whether it was irreversible can't be told, so
+	// it is taken to have been.
+	unplanned bool
 }
 
 // AttemptState is one run of the plan.
@@ -152,10 +169,12 @@ func newState() *State {
 	return &State{
 		elements: map[string]ElementState{},
 		kinds:    map[string]Kind{},
+		marked:   map[string]bool{},
 		values:   map[string]map[string]json.RawMessage{},
 		items:    map[string]map[string]ItemState{},
 		gates:    map[string]bool{},
 		ran:      map[string]int{},
+		noReturn: map[string]noReturn{},
 		begun:    map[string]bool{},
 	}
 }
@@ -214,50 +233,55 @@ func (s *State) Unfinished() bool {
 	return s.Attempts[len(s.Attempts)-1].Outcome != OutcomePassed
 }
 
-// PointOfNoReturn returns the path of the first step, in plan order, that is
-// marked [StepNode.Irreversible] and whose Run an attempt has called, or ""
-// if there is none. Once there is one, [Rollback] refuses the journal with
-// [ErrIrreversible], so a status command can say that rolling back is no
-// longer possible without trying it.
+// PointOfNoReturn returns the path of the first step that keeps [Rollback]
+// from going back, or "" if there is none. Once there is one, Rollback
+// refuses the journal with [ErrIrreversible], so a status command can say
+// that rolling back is no longer possible without trying it.
 //
-// It goes by the plan of the latest attempt, and by the steps that a change
-// of plan removed. A group's reset by its recovery
-// step does not move it back: what an irreversible step did is still done.
+// A step is one if an attempt called its Run while that attempt's plan
+// marked it [StepNode.Irreversible]. The journal remembers that whatever
+// comes after: a later plan that drops the marker, or the step, does not
+// move the point back, and neither does a group's reset by its recovery
+// step. What an irreversible step did is still done. A step that ran before
+// the latest plan marked it counts too.
+//
+// The first is the first in the order of the latest attempt's plan, and
+// then of the steps that a change of plan removed.
 func (s *State) PointOfNoReturn() string {
-	if s.Plan == nil {
-		return ""
-	}
+	path, _, _ := s.pointOfNoReturn(s.Plan)
 
-	if path := s.pointOfNoReturn(*s.Plan); path != "" {
-		return path
+	return path
+}
+
+// pointOfNoReturn returns the first step that keeps a rollback of plan from
+// starting, and the attempt that made it one: the first in plan order, then
+// among the steps a change of plan removed.
+func (s *State) pointOfNoReturn(plan *NodeSpec) (string, noReturn, bool) {
+	var specs []NodeSpec
+
+	if plan != nil {
+		specs = flatten(*plan)
 	}
 
 	// A step that a change of plan removed is no easier to undo.
-	for _, n := range s.Removed {
-		if path := s.pointOfNoReturn(n); path != "" {
-			return path
+	for _, n := range append(specs, s.Removed...) {
+		// A step the plan marks now, that ran before it did: nothing says
+		// its Run was any easier to undo then.
+		if attempt, ran := s.ran[n.Path]; ran && n.Irreversible {
+			return n.Path, noReturn{attempt: attempt}, true
+		}
+
+		if at, held := s.noReturn[n.Path]; held {
+			return n.Path, at, true
 		}
 	}
 
-	return ""
-}
-
-func (s *State) pointOfNoReturn(n NodeSpec) string {
-	if _, ran := s.ran[n.Path]; ran && n.Irreversible {
-		return n.Path
+	// Only a journal without its plans has a step that neither names.
+	if rest := slices.Sorted(maps.Keys(s.noReturn)); len(rest) > 0 {
+		return rest[0], s.noReturn[rest[0]], true
 	}
 
-	for _, c := range n.Children {
-		if path := s.pointOfNoReturn(c); path != "" {
-			return path
-		}
-	}
-
-	if n.OnFailure != nil {
-		return s.pointOfNoReturn(*n.OnFailure)
-	}
-
-	return ""
+	return "", noReturn{}, false
 }
 
 // add replays one more event, which must follow the last one.
@@ -317,13 +341,7 @@ func (s *State) apply(e Event) {
 	case EventGateWaiting, EventGateReleased:
 		s.gate(e)
 	case EventStepRunning:
-		el := s.elements[e.Path]
-		el.RunCalled = true
-		s.elements[e.Path] = el
-
-		if _, ran := s.ran[e.Path]; !ran {
-			s.ran[e.Path] = len(s.Attempts)
-		}
+		s.running(e.Path)
 	case EventGroupFinished, EventStepFinished:
 		s.finish(e)
 	case EventGroupReset:
@@ -366,6 +384,27 @@ func (s *State) start(e Event) {
 	}
 }
 
+// running applies a step's Run being called. What the step was when it ran
+// is settled here, from the plan of the attempt that ran it, and not from
+// whatever plan a later attempt brings.
+func (s *State) running(path string) {
+	el := s.elements[path]
+	el.RunCalled = true
+	s.elements[path] = el
+
+	attempt := len(s.Attempts)
+
+	if _, ran := s.ran[path]; !ran {
+		s.ran[path] = attempt
+	}
+
+	_, planned := s.kinds[path]
+
+	if _, held := s.noReturn[path]; !held && (s.marked[path] || !planned) {
+		s.noReturn[path] = noReturn{attempt: attempt, unplanned: !planned}
+	}
+}
+
 // applyAttempt applies an event about the attempt as a whole.
 func (s *State) applyAttempt(e Event) {
 	if e.Kind == EventRunStarted {
@@ -381,6 +420,7 @@ func (s *State) applyAttempt(e Event) {
 		})
 
 		clear(s.kinds)
+		clear(s.marked)
 
 		if e.Plan != nil {
 			s.index(*e.Plan)
@@ -666,9 +706,14 @@ func (s *State) workBeneath(path string) bool {
 	return false
 }
 
-// index notes the kind of n and of everything beneath it.
+// index notes the kind of n and of everything beneath it, and which of them
+// are marked irreversible.
 func (s *State) index(n NodeSpec) {
 	s.kinds[n.Path] = n.Kind
+
+	if n.Irreversible {
+		s.marked[n.Path] = true
+	}
 
 	for _, c := range n.Children {
 		s.index(c)

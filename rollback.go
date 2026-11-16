@@ -34,7 +34,9 @@ import (
 //
 // Rollback goes back past no step marked [StepNode.Irreversible]. Once an
 // attempt has called the Run of one, Rollback refuses the journal with an
-// [*IrreversibleError], which matches [ErrIrreversible]. With
+// [*IrreversibleError], which matches [ErrIrreversible]. What counts is what
+// the step was when it ran, which the journal has: a plan that no longer
+// marks the step, or no longer has it, is refused all the same. With
 // [WithStrictUndo] it also refuses, with [ErrNoUndo], when a step it would
 // reach has no Undo. Either way it refuses before it undoes anything, and
 // records nothing, so Run still resumes the journal.
@@ -130,25 +132,20 @@ func canUndo(prev *State, plan *Plan, strict bool) error {
 	return nil
 }
 
-// irreversibleRan returns an [*IrreversibleError] for the first irreversible
-// step whose Run an attempt called, or nil. A step that a change of plan
-// removed counts: it is no easier to undo.
+// irreversibleRan returns an [*IrreversibleError] for the first step that
+// keeps a rollback of plan from starting, or nil: one whose Run an attempt
+// called while it was irreversible, whatever plan says of it now, or one
+// that ran and that plan marks. A step that a change of plan removed counts:
+// it is no easier to undo.
 func irreversibleRan(prev *State, plan *Plan) error {
-	var refused error
+	spec := plan.Spec()
 
-	check := func(path string, irreversible bool) {
-		if attempt, ran := prev.ran[path]; ran && irreversible && refused == nil {
-			refused = &IrreversibleError{Path: path, Attempt: attempt}
-		}
+	path, at, ok := prev.pointOfNoReturn(&spec)
+	if !ok {
+		return nil
 	}
 
-	plan.root.walk(func(n *node) { check(n.path, n.irreversible) })
-
-	for _, n := range prev.Removed {
-		check(n.Path, n.Irreversible)
-	}
-
-	return refused
+	return &IrreversibleError{Path: path, Attempt: at.attempt, unplanned: at.unplanned}
 }
 
 // removedRan returns the Effect and Ensure steps that a change of plan
