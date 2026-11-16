@@ -1205,6 +1205,26 @@ every earlier schema version, and refuses a newer one. An attempt is written
 as the oldest version that can say everything about it, so a journal that uses
 nothing new stays readable by older releases.
 
+## Upgrading from v0.4
+
+v0.5.0 changes two things for a tool that already works:
+
+- **A rollback can be refused where v0.4 went ahead.** A point of no return
+  is now kept for good. v0.4 asked the latest plan, so a later build that took
+  the `Irreversible()` marker off a step that had run could roll back past it,
+  and so could one that removed the step and put it back. Both are now refused
+  with `ErrIrreversible`. That goes for journals v0.4 wrote too: what a step
+  was when it ran is read from the plans they already hold. `Run` resumes them
+  as before.
+- **A journal can be schema version 2.** A run whose plan has a `DrainOnStop`
+  group is written as version 2, which v0.4 and earlier refuse to read. Every
+  other journal is still version 1, and v0.4 reads it. So before a tool starts
+  using `DrainOnStop`, upgrade everything else that reads its journal, such as
+  a status command or a viewer.
+
+Nothing was removed from the API, and journals written by v0.4 are read as
+before.
+
 ## Upgrading from v0.3
 
 v0.4.0 changes what two kinds of step are recorded as. Both used to pass:
