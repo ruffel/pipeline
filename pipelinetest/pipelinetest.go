@@ -43,6 +43,22 @@
 // runs: a crash at [Running] lets Run do its work, but nothing after it is
 // recorded. That is the moment between a step changing the system and the
 // journal saying so, which is the hazard resume has to handle.
+//
+// It is a journal that stops, not a process that dies, and that sets what
+// these crashes can show:
+//
+//   - The crash points are the run's writes to the journal. A step that
+//     changes the system in several stages, with nothing written between
+//     them, is crashed before the first and after the last, never between
+//     two. To test those, have the step Record what it is about to do, or
+//     make the fake system fail at that stage.
+//   - The step's code is not cut off: it runs on to its next write, which
+//     fails. Its deferred functions run, and so does whatever it started.
+//   - The journal is in memory. Nothing here is about a file, a sync or a
+//     disk: a test of those kills a child process working on a file journal.
+//
+// And a resumed run that passes has only passed. Whether it did its work
+// once or twice is for the test to check, on the system's final state.
 package pipelinetest
 
 import (

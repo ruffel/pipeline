@@ -48,6 +48,12 @@ const minMaskedSecret = 4
 // event data. Output is recorded a line at a time, so each line of a secret
 // that spans several, such as a private key, is masked as well.
 //
+// Only the secrets among the inputs are known to the run. One that a step
+// makes or reads while it runs, such as a generated password or a token in
+// a command's output, is masked only where a [WithRedactor] function
+// catches it. And nothing masks a value given to [StepContext.Record], an
+// item's ID, a label or a path: none of them may be secret.
+//
 // Two Secrets made separately are not equal under ==, whatever they hold.
 // Compare what Reveal returns.
 type Secret struct {

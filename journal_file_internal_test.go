@@ -3,6 +3,8 @@
 package pipeline
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -175,4 +177,86 @@ func TestOpenJournal_ExistingFile(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, filepath.IsAbs(fs.path))
 	require.NoError(t, j.Close())
+}
+
+// applies is a step that counts how often its work is applied, and checks
+// first whether it has been.
+type applies struct{ applied *int }
+
+func (a applies) Check(context.Context, *StepContext) (bool, error) { return *a.applied > 0, nil }
+
+func (a applies) Run(context.Context, *StepContext) error {
+	*a.applied++
+
+	return nil
+}
+
+// The journal fails just as a step's outcome is stored: the work is done,
+// and the journal can't be relied on to say so. The run ends there, and
+// nothing after it is called. A new process opens the journal again and
+// resumes: the work is not done a second time, and the rest runs once.
+func TestRun_AJournalFailureAtAStepsOutcomeIsResumedAfterAReopen(t *testing.T) {
+	t.Parallel()
+
+	errDisk := errors.New("input/output error")
+
+	for name, syncFails := range map[string]bool{
+		// The line reaches the file and the sync fails: it may or may not
+		// be on disk.
+		"the sync fails": true,
+		// The line never reaches the file.
+		"the write fails": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			applied, after := 0, 0
+			plan, err := NewPlan("p",
+				Effect("apply", applies{&applied}),
+				Effect("after", StepFunc(func(context.Context, *StepContext) error {
+					after++
+
+					return nil
+				})),
+			)
+			require.NoError(t, err)
+
+			j, fs, path := openTemp(t)
+
+			j.hook = func(e Event) error {
+				switch {
+				case e.Kind != EventStepFinished || e.Path != "p/apply":
+					return nil
+				case syncFails:
+					fs.sync = func() error { return errDisk }
+
+					return nil
+				default:
+					return errDisk
+				}
+			}
+
+			res, err := Run(t.Context(), plan, j)
+			require.ErrorIs(t, err, errDisk)
+			assert.Equal(t, OutcomeFailed, res.Outcome)
+			assert.Equal(t, 1, applied)
+			assert.Zero(t, after, "nothing is called that the journal could not record")
+			require.NoError(t, j.Close())
+
+			j, err = OpenJournal(path)
+			require.NoError(t, err)
+
+			t.Cleanup(func() { _ = j.Close() })
+
+			state, err := j.State()
+			require.NoError(t, err)
+			assert.True(t, state.Element("p/apply").RunCalled)
+			assert.Equal(t, StatusNotReached, state.Element("p/after").Status)
+
+			_, err = Run(t.Context(), plan, j)
+			require.NoError(t, err)
+			assert.Equal(t, 1, applied, "applied once")
+			assert.Equal(t, 1, after)
+		})
+	}
 }

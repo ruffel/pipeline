@@ -24,7 +24,8 @@ import (
 // so the crash after the last event is Run finishing with nothing recorded,
 // and the resume runs it a second time if its Check doesn't find the work
 // done. A step that writes many events, such as many output lines, gets as
-// many subtests.
+// many subtests. A step that writes none between two changes to the system
+// is never crashed between them: only its writes are places to crash.
 //
 // The system the step works on outlives a crash, and the step does not:
 // newSystem is called once for each run, with that run's test, and returns

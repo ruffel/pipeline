@@ -36,6 +36,15 @@ const (
 // tool that replaces itself closes the journal before the exec and opens it
 // again afterwards.
 //
+// The lock is the journal's, and no more than that. It is held while the
+// journal is open, not between attempts, so it reserves nothing for whoever
+// ran the operation last. It knows nothing of the system being worked on:
+// two journals are two operations, and nothing here keeps them off the same
+// machines. And it is a lock on a file, between processes on one machine:
+// whether it holds between machines that share the file depends on the
+// filesystem, and is not to be relied on. A tool that needs any of these
+// takes a lock of its own.
+//
 // A crash can leave half a line at the end of the file. OpenJournal removes
 // it, so the next event starts on a line of its own. A complete line that is
 // not a valid event is [ErrJournalCorrupt].
