@@ -45,6 +45,13 @@ type FollowOptions struct {
 	// Poll is how often to look for new events. Zero means
 	// [DefaultFollowPoll].
 	Poll time.Duration
+	// Result, if set, is filled in when Follow returns with the journal
+	// replayed as far as Follow read it: what [Inspect] would have returned
+	// at that moment. A viewer that exits with the run's status reads the
+	// latest attempt's outcome from it, without reading the journal again.
+	// Every event counts towards it, whatever After and History leave out
+	// of what the observers are given.
+	Result *State
 }
 
 // Follow delivers the events in the journal file named by journal to the
@@ -73,7 +80,18 @@ func Follow(ctx context.Context, journal string, opts FollowOptions, observers .
 		locked:    journalLocked,
 	}
 
-	return f.run(ctx)
+	if opts.Result == nil {
+		return f.run(ctx)
+	}
+
+	f.state = newState()
+	err := f.run(ctx)
+
+	f.state.LastSeq = f.seq
+	f.state.Live = f.locked(journal)
+	*opts.Result = *f.state
+
+	return err
 }
 
 // follower is one Follow call's progress through the journal.
@@ -91,6 +109,9 @@ type follower struct {
 	// attempt has started and not finished.
 	seq  int64
 	open bool
+	// state is the journal replayed so far, kept only if the caller asked
+	// for it.
+	state *State
 }
 
 func (f *follower) run(ctx context.Context) error {
@@ -186,6 +207,10 @@ func (f *follower) read(ctx context.Context) error {
 		}
 
 		f.seq = e.Seq
+
+		if f.state != nil {
+			f.state.apply(e)
+		}
 
 		switch e.Kind { //nolint:exhaustive // Only these two say whether an attempt is open.
 		case EventRunStarted:

@@ -372,3 +372,88 @@ func TestFollow_CancellationStopsDeliveryAtOnce(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, rec.all())
 }
+
+// A viewer that exits with the run's status gets the state from Follow
+// itself: the same one Inspect returns, whatever the observers were spared.
+func TestFollow_ResultIsTheJournalReplayed(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	runToFile(t, path, mustPlan(t,
+		pipeline.Group("g", pipeline.Effect("a", chatty("hello"))),
+		pipeline.Effect("b", fail("boom")),
+		pipeline.Effect("c", ok()),
+	))
+
+	inspected, err := pipeline.Inspect(path)
+	require.NoError(t, err)
+
+	for name, opts := range map[string]pipeline.FollowOptions{
+		"everything":         {},
+		"lifecycle history":  {History: pipeline.HistoryLifecycle},
+		"nothing to deliver": {After: inspected.LastSeq},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var got pipeline.State
+
+			opts.Result = &got
+			require.NoError(t, pipeline.Follow(t.Context(), path, fast(opts), &recorder{}))
+
+			assert.Equal(t, *inspected, got)
+			require.Len(t, got.Attempts, 1)
+			assert.Equal(t, pipeline.OutcomeFailed, got.Attempts[0].Outcome)
+			assert.Equal(t, pipeline.StatusFailed, got.Element("p/b").Status)
+			assert.Equal(t, pipeline.StatusNotReached, got.Element("p/c").Status)
+		})
+	}
+}
+
+// The result is filled in however Follow ends.
+func TestFollow_ResultWhenTheRunnerIsGoneOrTheViewerLeaves(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+
+	j, err := pipeline.OpenJournal(path)
+	require.NoError(t, err)
+
+	hooked(j, func(e pipeline.Event) error {
+		if e.Kind == pipeline.EventStepFinished {
+			return errors.New("crashed")
+		}
+
+		return nil
+	})
+
+	_, err = pipeline.Run(t.Context(), mustPlan(t, pipeline.Effect("a", ok())), j)
+	require.Error(t, err)
+
+	// The runner still holds the journal, and the viewer gives up waiting.
+	var live pipeline.State
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+	defer cancel()
+
+	err = pipeline.Follow(ctx, path, fast(pipeline.FollowOptions{Result: &live}))
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.True(t, live.Live)
+	assert.Equal(t, pipeline.StatusStarted, live.Element("p/a").Status)
+
+	require.NoError(t, j.Close())
+
+	var gone pipeline.State
+
+	require.ErrorIs(t, pipeline.Follow(t.Context(), path, fast(pipeline.FollowOptions{Result: &gone})), pipeline.ErrRunnerGone)
+	assert.False(t, gone.Live)
+	assert.True(t, gone.Element("p/a").RunCalled)
+	assert.Empty(t, gone.Attempts[0].Outcome, "the attempt never finished")
+
+	// With no journal there is nothing to replay.
+	var empty pipeline.State
+
+	require.NoError(t, pipeline.Follow(t.Context(), journalPath(t), fast(pipeline.FollowOptions{Result: &empty})))
+	assert.Empty(t, empty.Attempts)
+	assert.Equal(t, pipeline.StatusNotReached, empty.Element("p/a").Status)
+}

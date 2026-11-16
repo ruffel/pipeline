@@ -20,7 +20,8 @@
 // Add -fail node3 to the first run to see a node fail while the node beside
 // it finishes; run again without it to resume. Ctrl-C in the runner stops it
 // gracefully, and a second Ctrl-C cancels the running steps. Killing a viewer
-// never affects the run.
+// never affects the run. watch exits as the run it followed did: with a
+// non-zero status unless the run passed.
 package main
 
 import (
@@ -190,7 +191,12 @@ func watch(args []string) error {
 		history = pipeline.HistoryAll
 	}
 
-	err := pipeline.Follow(ctx, *journal, pipeline.FollowOptions{History: history, KeepFollowing: *keep},
+	// Follow hands back the journal as it read it, so watch can exit as the
+	// run did without reading the journal again.
+	var st pipeline.State
+
+	err := pipeline.Follow(ctx, *journal,
+		pipeline.FollowOptions{History: history, KeepFollowing: *keep, Result: &st},
 		terminal.New(os.Stdout))
 
 	switch {
@@ -198,9 +204,17 @@ func watch(args []string) error {
 		return errors.New("the run ended without finishing, and nothing is running it; resume it with: detached run")
 	case ctx.Err() != nil:
 		return nil
-	default:
+	case err != nil:
 		return err
 	}
+
+	// The run has ended. A script waiting on watch gets the run's own
+	// result: a non-zero exit unless the latest attempt passed.
+	if n := len(st.Attempts); n > 0 && st.Attempts[n-1].Outcome != pipeline.OutcomePassed {
+		return fmt.Errorf("the run %s", st.Attempts[n-1].Outcome)
+	}
+
+	return nil
 }
 
 // approve releases the gate the run is waiting at, from any terminal.
