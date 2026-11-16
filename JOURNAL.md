@@ -22,7 +22,7 @@ Every event has these fields:
 
 | Field  | Meaning                                                                    |
 | ------ | -------------------------------------------------------------------------- |
-| `v`    | The schema version that wrote the event, currently 1                       |
+| `v`    | The schema version it was written as: 1 or 2, see [Reading one](#reading-one) |
 | `seq`  | A number that only increases through the file                              |
 | `ts`   | When it was written, in UTC                                                |
 | `kind` | What it records, from the table below                                      |
@@ -81,7 +81,8 @@ What each one means:
   a stop interrupts is never released.
 - **`value`** is a `Record`, and **`item`** a result for one target of a step.
 - **`message`** is an `Info` or a `Warn`. A warning from the run itself, such as
-  an observer being dropped, has no `path`.
+  an observer being dropped, has no `path`. One at a group's `path` is the run
+  saying that the group, a `drainOnStop` one, is finishing before a stop.
 - **`output`** is one line a step wrote. A line too long for one event is split,
   and every piece but the first has `continued`.
 - **`custom`** carries a step's own event: `type` names it, and `data` is JSON.
@@ -140,6 +141,7 @@ with an error of kind `cancelled`.
 | `parallel`, `limit`      | groups | Whether children run at once, and how many (0 is no limit)         |
 | `failure`                | groups | `stop`, `cancel` or `continue`: what a failing child does          |
 | `onFailure`, `recovers`  | groups | The failure handler's node, and whether it resets the group first  |
+| `drainOnStop`            | groups | Whether a graceful stop lets the group finish once it has started  |
 | `check`, `undo`          | steps  | Whether the step has a `Check` and an `Undo`                       |
 | `irreversible`           | steps  | Whether the step is marked `Irreversible`: no rollback once it ran |
 | `tries`, `backoff`       | steps  | How many tries, and the wait between them, in nanoseconds          |
@@ -154,6 +156,11 @@ with an error of kind `cancelled`.
 - **Ignore what you don't know.** A newer release may add kinds and fields that
   an older reader can pass over. A change that an older reader would get wrong
   raises `v`, and a reader should refuse a `v` newer than it knows.
+- **`v` is each attempt's own.** An attempt is written as the oldest version
+  that says everything about it, so one journal can hold both. Version 2 has
+  the events of version 1. It marks an attempt whose `plan` has a `drainOnStop`
+  group: a program that doesn't know the option must not carry on from it,
+  because its own plan would let a stop end such a group half-way.
 - **An attempt is the events sharing a `run`,** from its `run.started` to its
   `run.finished`. Later attempts append to the same file.
 - **The latest event about a path wins,** with five exceptions:

@@ -177,7 +177,12 @@ func (j *Journal) append(e Event) (Event, error) {
 		return Event{}, ErrJournalClosed
 	}
 
-	e.V = SchemaVersion
+	// The runner says which version its attempt needs; anything else is
+	// written as the first, which every release reads.
+	if e.V < schemaBase || e.V > SchemaVersion {
+		e.V = schemaBase
+	}
+
 	e.Seq = j.seq + 1
 
 	line, err := json.Marshal(e)

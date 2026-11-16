@@ -222,6 +222,37 @@ func (s *State) DecodeInputs(v any) (bool, error) {
 	return true, nil
 }
 
+// Draining returns the [GroupNode.DrainOnStop] groups that a graceful stop
+// is waiting for, in plan order: those that had started when the latest
+// attempt was asked to stop, and have not finished. The stop takes effect
+// when they end.
+//
+// It is empty once the attempt has finished, when no stop is pending, and
+// when the run was asked to cancel, which waits for nothing. If the
+// attempt's runner has gone, it died part-way through them, and nothing is
+// finishing them; see [State.Live].
+func (s *State) Draining() []string {
+	n := len(s.Attempts)
+	if n == 0 || s.Plan == nil {
+		return nil
+	}
+
+	last := s.Attempts[n-1]
+	if last.Outcome != "" || last.Stop == nil || last.Stop.Mode != StopGraceful {
+		return nil
+	}
+
+	var groups []string
+
+	for _, spec := range flatten(*s.Plan) {
+		if el := s.elements[spec.Path]; spec.DrainOnStop && el.Status == StatusStarted && el.Run == last.Run {
+			groups = append(groups, spec.Path)
+		}
+	}
+
+	return groups
+}
+
 // Unfinished reports whether the latest attempt did anything but pass: it is
 // still running, crashed, failed, was stopped or was cancelled. Any of these
 // can leave the system part-way through the plan.

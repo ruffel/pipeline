@@ -287,6 +287,9 @@ type runner struct {
 	id      string
 	attempt int
 	cancel  context.CancelCauseFunc
+	// version is the schema version the attempt's events are written as,
+	// set as the attempt starts.
+	version int
 
 	// prev is the journal as it stood when the attempt started. prior is
 	// what resume decides from: prev, or nothing for a forced run.
@@ -324,6 +327,9 @@ type runner struct {
 	stopNoted   sync.Once
 	halted      atomic.Bool
 	cancelNoted sync.Once
+	// draining are the DrainOnStop groups that have carried on past a stop,
+	// by path: each says so once.
+	draining sync.Map
 
 	// gates are the gates waiting for approval through the control
 	// directory, by path.
@@ -353,6 +359,7 @@ type runner struct {
 func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	start := r.clock.Now()
 	spec := r.plan.Spec()
+	r.version = r.plan.version()
 
 	err := r.emit(Event{
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
@@ -458,6 +465,10 @@ func (r *runner) element(ctx context.Context, n *node) error {
 	case KindGate:
 		return r.gate(ctx, n)
 	default:
+		if skip := r.prior.Element(n.path).Skip; n.boundary != nil && skip != "" {
+			return r.refuseSkip(n, skip)
+		}
+
 		return r.step(ctx, n, false)
 	}
 }
@@ -571,9 +582,14 @@ func (r *runner) children(ctx context.Context, n *node) error {
 
 	var errs []error
 
+	// Only a failure or a cancel ends a DrainOnStop group early. A stop, or
+	// a step elsewhere ending the run early, waits for it: either would
+	// leave it half done while it was healthy.
+	drains := n.boundary != nil
+
 children:
 	for i, c := range n.children {
-		if r.skipRun.Load() {
+		if !drains && r.skipRun.Load() {
 			errs = append(errs, r.skipRest(n.children[i:], ReasonRunSkipped))
 
 			break
@@ -587,12 +603,15 @@ children:
 			break
 		}
 
-		if r.stopping() {
+		switch stopping := r.stopping(); {
+		case stopping && drains:
+			r.noteDrain(n.boundary)
+		case stopping:
 			errs = append(errs, ErrStopped)
 
 			r.halt()
 
-			break
+			break children
 		}
 
 		err := r.element(ctx, c)
@@ -839,6 +858,22 @@ func (r *runner) step(ctx context.Context, n *node, fresh bool) error {
 	return r.applySkip(skip)
 }
 
+// refuseSkip fails a step for a skip that it recorded before a later build
+// made its group a DrainOnStop group, as a skip returned in one fails. The
+// failure clears the skip, so the next attempt runs the step.
+func (r *runner) refuseSkip(n *node, skip Skip) error {
+	err := fmt.Errorf("pipeline: an earlier attempt's Run returned %s, and nothing may end %s, "+
+		"a DrainOnStop group, early", skip, n.boundary.path)
+
+	if ferr := r.emit(Event{
+		Kind: EventStepFinished, Path: n.path, Outcome: OutcomeFailed, Error: errorInfo(err),
+	}); ferr != nil {
+		return ferr
+	}
+
+	return &StepError{Path: n.path, Err: err}
+}
+
 // skippedRun reports whether a step at or beneath n returned ErrSkipRun
 // when its Run last finished.
 func (r *runner) skippedRun(n *node) bool {
@@ -906,7 +941,7 @@ func (r *runner) tries(
 			return OutcomeSkipped, ReasonDone, "", nil
 		case err == nil:
 			return OutcomePassed, "", "", nil
-		case try >= n.tries || ctx.Err() != nil || r.fatalErr() != nil:
+		case r.lastTry(ctx, n, try):
 			return OutcomeFailed, "", "", err
 		}
 
@@ -918,6 +953,21 @@ func (r *runner) tries(
 			return OutcomeFailed, "", "", werr
 		}
 	}
+}
+
+// lastTry reports whether a step whose try has just failed is not tried
+// again: it is out of tries, or the run is ending.
+//
+// A DrainOnStop group is finished under a stop, not worked at. So a step in
+// one is not tried again once a stop is pending, and it is the failure that
+// ends the group, with tries left or without: the stop is not what kept
+// anything from happening, and the run has failed.
+func (r *runner) lastTry(ctx context.Context, n *node, try int) bool {
+	if try >= n.tries || ctx.Err() != nil || r.fatalErr() != nil {
+		return true
+	}
+
+	return n.boundary != nil && r.stopping()
 }
 
 // backoff waits before the step's next try. If a cancel or stop cuts the
@@ -964,6 +1014,14 @@ func (r *runner) try(ctx context.Context, n *node, sc *StepContext, ranOnce *boo
 	done, err := r.checkAndRun(tctx, n, sc, ranOnce)
 	if late := returnedLate(ctx, tctx, n.timeout, err); late != nil {
 		return false, late
+	}
+
+	// Ending the group early as passed is the one thing a DrainOnStop group
+	// is there to rule out. A skip returned late has been dealt with above:
+	// that try timed out or was cancelled.
+	if n.boundary != nil && skipOf(err) != "" {
+		return false, fmt.Errorf("pipeline: Run returned %q, and nothing may end %s, a DrainOnStop group, early",
+			err.Error(), n.boundary.path)
 	}
 
 	return done, err
@@ -1055,7 +1113,7 @@ func (r *runner) emitLocked(e Event) error {
 		return r.fatal
 	}
 
-	e.Run = r.id
+	e.Run, e.V = r.id, r.version
 	if e.TS.IsZero() {
 		e.TS = r.clock.Now().UTC()
 	}

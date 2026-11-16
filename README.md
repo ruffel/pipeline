@@ -766,6 +766,38 @@ A stopped, cancelled or crashed attempt leaves the operation unfinished, and
 the next `Run` resumes it. When `Run` returns after a stop or a cancel, its
 error matches `ErrStopped`, and `res.Outcome` says which it was.
 
+A stop takes effect between two steps, which can be the wrong place: a node
+that has been stopped for its upgrade and not yet started again. Mark such a
+sequence as one unit:
+
+```go
+pipeline.Group("node1", stop, install, start, verify).DrainOnStop()
+```
+
+- **A stop that finds the group started lets it finish.** The rest of its
+  steps still start, the stop takes effect when the group ends, and nothing
+  after it starts. A stop that comes before the group starts keeps it from
+  starting, as it does anything else.
+- **Only a stop is put off.** A step that fails, panics or passes its timeout
+  ends the group there, and the run has failed, not stopped. A cancel cancels
+  the running step. A step that fails once a stop is pending is not tried
+  again, however many tries it has left. So a stop can still leave the group
+  part-way: finishing is what a healthy group does, and no protection against
+  the process dying.
+- **Nothing in the group may hold a stop for ever, or end the group early.**
+  It is sequential and stops at its first failure, every step in it has a
+  `Timeout`, and it has no gate, failure handler or `DrainOnStop` group inside
+  it. `NewPlan` reports one that breaks these. A step in it that returns
+  `ErrSkipGroup` or `ErrSkipRun` fails.
+- **`State.Draining()` lists the groups a stop is waiting for,** so a status
+  command can say "stopping after node1" instead of "stopped".
+- **A rollback takes no notice of it:** there a stop takes effect between any
+  two `Undo`s.
+
+An attempt whose plan has such a group is written as schema version 2. A
+program built with a release before the option refuses that journal, where
+it would otherwise resume it with a plan that stops in the middle of a node.
+
 ### Watching and controlling from elsewhere
 
 Any process can read the journal while a run writes it:
@@ -1049,7 +1081,9 @@ its own directory, and says at the top of its `main.go` what to try.
 
 pipeline is pre-1.0, and its API can change between minor versions. The
 journal's format carries a schema version: a release reads journals written by
-every earlier schema version, and refuses a newer one.
+every earlier schema version, and refuses a newer one. An attempt is written
+as the oldest version that can say everything about it, so a journal that uses
+nothing new stays readable by older releases.
 
 ## Upgrading from v0.3
 

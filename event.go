@@ -5,15 +5,31 @@ import (
 	"time"
 )
 
-// SchemaVersion is the journal format this package writes. Readers accept
-// every version up to their own and refuse newer ones.
+// SchemaVersion is the newest journal format this package reads and writes.
+// Readers accept every version up to their own and refuse newer ones.
+//
+// Each attempt is written in the oldest version that says everything about
+// it, so a journal that uses nothing newer stays readable by older releases:
+//
+//   - 1 is an attempt whose plan has no [GroupNode.DrainOnStop] group.
+//   - 2 is an attempt whose plan has one. Its events are those of version
+//     1. The number is there for programs built before the option existed:
+//     they refuse the journal, where they would otherwise resume it with a
+//     plan that a stop can cut short in the middle of such a group.
 //
 // Readers ignore event kinds and fields they don't know. So a new kind or
 // field that only informs viewers, which an older reader can pass over
 // without getting a run's state wrong, keeps the version. One that changes
-// what [Replay] computes needs a new version, so that older readers refuse
-// the journal instead of misreading it.
-const SchemaVersion = 1
+// what [Replay] computes, or that an older writer must not carry on from
+// without honouring, needs a new version, so that older programs refuse the
+// journal instead of misreading it.
+const SchemaVersion = schemaDrain
+
+// The schema versions. An event with none set is written as the first.
+const (
+	schemaBase  = 1
+	schemaDrain = 2
+)
 
 // EventKind says what an [Event] records.
 type EventKind string

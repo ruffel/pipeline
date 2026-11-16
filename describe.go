@@ -96,6 +96,10 @@ func describeNotes(n *node) []string {
 			notes = append(notes, "continue on error")
 		case FailureStop:
 		}
+
+		if n.drain {
+			notes = append(notes, "finishes before a stop")
+		}
 	case KindEffect, KindEnsure, KindObserve:
 		notes = append(notes, string(n.kind))
 

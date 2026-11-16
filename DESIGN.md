@@ -210,6 +210,40 @@ A run never goes on by itself sooner than its timeout after it starts waiting.
 `Approve` releases a gate from any process, so nothing has to wait on a
 terminal.
 
+## A Stop Can Be Made to Wait for a Group
+
+**Decision:** A graceful stop takes effect between two steps, except inside a
+group marked `DrainOnStop` that has already started: that group runs to its end
+first. Nothing else about the group changes.
+
+A stop is for leaving the system somewhere safe, and between two steps is not
+always that: a node stopped for its upgrade and not yet started again. Making
+every group finish would be wrong the other way, since a group can be long,
+parallel, or waiting at a gate. So it is asked for, group by group, and
+`NewPlan` refuses one that could hold a stop for ever (a step with no timeout,
+a gate) or whose end would not mean what it says (a parallel or
+continue-on-error group, a failure handler, a step that skips the rest).
+
+Only the stop is put off. A failure, a timeout, a cancel and a journal that
+can't be written all end the group where they find it, and the run is then
+failed or cancelled, never reported as stopped at a safe place. A step that
+fails under a pending stop is not tried again: a retry would be doing more work
+to finish, not finishing. It is the failure that ends the group then, whether
+or not the step had tries left, so the run has failed. Only a stop that arrives
+while a step is already waiting to be tried again ends that wait, as it does
+anywhere, and leaves the run stopped. The group is entered at the same check
+that keeps any element from starting after a stop, so a stop and a group's
+start are ordered there, and nowhere else.
+
+Nothing new is recorded. The journal already has the stop request and each
+group's start and finish, so `State.Draining` reads "a stop is pending and
+this group has started" from them, and a resume treats the group like any
+other. The one new thing is for older programs: a build that predates the
+option has a plan without it, and would resume the journal and stop
+half-way through a node. An attempt whose plan has such a group is therefore
+written as schema version 2, which those builds refuse. Other attempts stay
+at version 1, so journals that don't use the option stay readable by them.
+
 ## Control Requests Are Acknowledged Through the Journal
 
 **Decision:** `RequestStop` and `Approve` write a request into a directory beside
