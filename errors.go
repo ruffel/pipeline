@@ -114,9 +114,10 @@ func (e *StepError) Unwrap() error {
 // be undone has run. It matches [ErrIrreversible].
 type IrreversibleError struct {
 	// Path is the first step, in plan order, whose Run was called while it
-	// was irreversible, and Attempt the first attempt that called it. The
-	// plan given to Rollback may no longer mark the step, or have it at all:
-	// what counts is what it was when it ran.
+	// was irreversible, and Attempt the first attempt that called it then.
+	// The plan given to Rollback may no longer mark the step, or have it at
+	// all: what counts is what it was when it ran. For a step that only ran
+	// before a plan marked it, Attempt is the first that called it.
 	Path    string
 	Attempt int
 

@@ -265,13 +265,19 @@ func (s *State) pointOfNoReturn(plan *NodeSpec) (string, noReturn, bool) {
 
 	// A step that a change of plan removed is no easier to undo.
 	for _, n := range append(specs, s.Removed...) {
-		// A step the plan marks now, that ran before it did: nothing says
-		// its Run was any easier to undo then.
-		if attempt, ran := s.ran[n.Path]; ran && n.Irreversible {
-			return n.Path, noReturn{attempt: attempt}, true
-		}
+		at, held := s.noReturn[n.Path]
+		attempt, ran := s.ran[n.Path]
 
-		if at, held := s.noReturn[n.Path]; held {
+		switch {
+		case held && !at.unplanned:
+			// What the journal says outright comes first, so the attempt
+			// named is the same whatever plan is asking.
+			return n.Path, at, true
+		case ran && n.Irreversible:
+			// A step the plan marks now, that ran before it did: nothing
+			// says its Run was any easier to undo then.
+			return n.Path, noReturn{attempt: attempt}, true
+		case held:
 			return n.Path, at, true
 		}
 	}
