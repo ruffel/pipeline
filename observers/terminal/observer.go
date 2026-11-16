@@ -109,10 +109,8 @@ func (o *Observer) OnEvent(_ context.Context, e pipeline.Event) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	// A kind newer than the core this module requires can't be named here
-	// until that core is released: it draws nothing.
-	switch e.Kind { //nolint:exhaustive // See above.
-	case pipeline.EventRunStarted:
+	switch e.Kind {
+	case pipeline.EventRunStarted, pipeline.EventPlanChanged:
 		o.runStarted(e)
 	case pipeline.EventRunFinished:
 		o.runFinished(e)
@@ -147,8 +145,26 @@ func (o *Observer) OnEvent(_ context.Context, e pipeline.Event) {
 	}
 }
 
-// runStarted takes in the run's plan and writes the opening box.
+// listed names what a change of plan added or removed, if anything.
+func listed(what string, paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+
+	return "; " + what + " " + strings.Join(paths, ", ")
+}
+
+// runStarted takes in the run's plan and writes the opening box, or says
+// that the plan has changed.
 func (o *Observer) runStarted(e pipeline.Event) {
+	// An attempt given a changed plan says so just after it starts.
+	if e.Kind == pipeline.EventPlanChanged {
+		o.line(e.Path, o.color("± the plan has changed", o.p.Warning)+
+			o.muted(listed("added", e.Added)+listed("removed", e.Removed)))
+
+		return
+	}
+
 	o.layout = newLayout(e.Plan, e.Path)
 	o.rollback = e.Rollback
 	o.steps = map[string]*stepState{}
