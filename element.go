@@ -66,6 +66,8 @@ type GroupNode struct {
 	limit       int
 	failure     FailurePolicy
 	children    []Element
+	// drain makes the group one unit to a graceful stop.
+	drain bool
 
 	// The failure handler, if any: cleanup or recovery.
 	cleanup  *StepNode
@@ -146,6 +148,46 @@ func (g GroupNode) OnFailure(step StepNode) GroupNode {
 // observer of the reset, lets the step finish, as it does any running step.
 func (g GroupNode) RecoverOnFailure(step StepNode) GroupNode {
 	g.recovery = &step
+
+	return g
+}
+
+// DrainOnStop makes the group one unit to a graceful stop: once the group
+// has started, a stop does not keep the rest of it from starting. The group
+// runs on to its end and the stop takes effect after it: nothing else
+// starts, and the run finishes as stopped. It is for a sequence that must
+// not be left half done while it is healthy, such as a node's stop, install,
+// start and verify.
+//
+// A stop requested before the group starts keeps it from starting, as it
+// does any element. And only a stop is put off. A step that fails, panics or
+// passes its timeout fails the group at once, and the rest of it does not
+// run. Cancelling the run cancels the step that is running and starts
+// nothing more. A step that fails while a stop is pending is not tried
+// again. A journal that can't be written stops the run. So a stop can still
+// find the group failed, part-way through: finishing it is what a healthy
+// group does, not a promise, and it is no protection against the process
+// dying. [State.Draining] says which groups a stop is waiting for.
+//
+// Nothing in the group may keep a stop waiting for ever, or end the group
+// early as passed. So the group, and every group in it, is sequential and
+// stops at the first failure; every step in it has a [StepNode.Timeout]; it
+// has no gate, failure handler or DrainOnStop group inside it; and a step in
+// it whose Run returns [ErrSkipGroup] or [ErrSkipRun] fails. [NewPlan]
+// reports a group that breaks these. A step elsewhere that ends the run
+// early with ErrSkipRun does not cut the group short either. The plan's
+// root may not drain.
+//
+// On resume the group is like any other: one that passed is settled and
+// skipped, and one that was interrupted is entered again, where each step's
+// Check says what is left. [Rollback] takes no notice of it: there a stop
+// takes effect between any two Undos.
+//
+// An attempt whose plan has such a group is written as schema version 2,
+// so that a program built before the option existed refuses the journal,
+// and does not resume it with a plan that stops in the middle of the group.
+func (g GroupNode) DrainOnStop() GroupNode {
+	g.drain = true
 
 	return g
 }

@@ -35,6 +35,10 @@ type node struct {
 	// it resets the group first.
 	handler  *node
 	recovers bool
+	// drain marks a DrainOnStop group. boundary is the DrainOnStop group
+	// that an element is, or is inside, if any.
+	drain    bool
+	boundary *node
 
 	// Step fields.
 	step     Step
@@ -59,8 +63,10 @@ type node struct {
 // limit, retry count or timeout, an Observe step that has Check or Undo, an
 // irreversible step that has Undo or is an Observe step, a
 // gate with a nil approver or a timeout and policy that don't go together,
-// or a group's failure handler that is not an Effect step, is named like one
-// of the group's children, or is one of two. Empty groups are allowed.
+// a group's failure handler that is not an Effect step, is named like one
+// of the group's children, or is one of two, or a [GroupNode.DrainOnStop]
+// group with something in it that could keep a stop waiting or end the group
+// early. Empty groups are allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
 	return NewPlanFromGroup(Group(name, elems...))
 }
@@ -143,6 +149,9 @@ type NodeSpec struct {
 	// it resets the group first.
 	OnFailure *NodeSpec `json:"onFailure,omitempty"`
 	Recovers  bool      `json:"recovers,omitempty"`
+	// DrainOnStop marks a group that a graceful stop lets finish. See
+	// [GroupNode.DrainOnStop].
+	DrainOnStop bool `json:"drainOnStop,omitempty"`
 
 	// Step fields: whether the step implements [Checker] and [Undoer], and its
 	// settings. Durations are in nanoseconds, as encoding/json writes them.
@@ -182,6 +191,7 @@ func (n *node) spec() NodeSpec {
 
 	if n.kind == KindGroup {
 		s.Failure = n.failure
+		s.DrainOnStop = n.drain
 
 		for _, c := range n.children {
 			s.Children = append(s.Children, c.spec())
@@ -208,6 +218,20 @@ func (n *node) walk(visit func(*node)) {
 	if n.handler != nil {
 		n.handler.walk(visit)
 	}
+}
+
+// version returns the schema version an attempt at the plan is written as:
+// the oldest that says everything about it.
+func (p *Plan) version() int {
+	version := schemaBase
+
+	p.root.walk(func(n *node) {
+		if n.drain {
+			version = schemaDrain
+		}
+	})
+
+	return version
 }
 
 // canSettle reports whether n has an Effect, Ensure or Gate step beneath it.
@@ -293,7 +317,51 @@ func (b *builder) group(parent *node, g GroupNode) *node {
 
 	b.handler(n, g, seen)
 
+	if g.drain {
+		n.drain = true
+
+		if parent == nil {
+			b.failf(n.path, "the plan's root may not be a DrainOnStop group: a stop would have nothing left to stop")
+		}
+
+		b.drain(n, n, "a DrainOnStop group")
+	}
+
 	return n
+}
+
+// drain marks n as part of the DrainOnStop group boundary, and reports what
+// n has that could keep a stop waiting for ever, or end the group early
+// without a failure. what says which group n is, for a group.
+func (b *builder) drain(boundary, n *node, what string) {
+	n.boundary = boundary
+
+	switch n.kind { //nolint:exhaustive // Every other kind is a step.
+	case KindGate:
+		b.failf(n.path, "a gate may not be inside a DrainOnStop group: it could keep a stop waiting for ever")
+	case KindGroup:
+		switch {
+		case n.drain && n != boundary:
+			b.failf(n.path, "a DrainOnStop group may not be inside another")
+		case n.parallel:
+			b.failf(n.path, "%s may not be parallel", what)
+		case n.failure != FailureStop:
+			b.failf(n.path, "%s must stop at its first failure", what)
+		}
+
+		if n.handler != nil {
+			b.failf(n.path, "%s may not have a failure handler", what)
+		}
+
+		for _, c := range n.children {
+			b.drain(boundary, c, "a group inside a DrainOnStop group")
+		}
+	default:
+		// A nil step has been reported, and has no timeout to speak of.
+		if n.timeout == 0 && !isNil(n.step) {
+			b.failf(n.path, "a step inside a DrainOnStop group needs a Timeout, so that it can't keep a stop waiting for ever")
+		}
+	}
 }
 
 // handler builds a group's failure handler, if it has one.

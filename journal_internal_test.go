@@ -42,7 +42,7 @@ func TestJournal_AppendStampsVersionAndSequence(t *testing.T) {
 
 	assert.Equal(t, int64(1), first.Seq)
 	assert.Equal(t, int64(2), second.Seq)
-	assert.Equal(t, SchemaVersion, second.V)
+	assert.Equal(t, schemaBase, second.V, "the oldest version, unless the attempt needs a newer one")
 
 	events, err := j.Events()
 	require.NoError(t, err)
@@ -138,7 +138,7 @@ func TestJournal_RefusesANewerSchemaVersion(t *testing.T) {
 	mem.data = append(mem.data, []byte(`{"v":99,"seq":2,"kind":"run.finished"}`))
 
 	_, err = j.Events()
-	require.ErrorContains(t, err, "journal line 2: schema version 99 is newer than this reader's 1")
+	require.ErrorContains(t, err, "journal line 2: schema version 99 is newer than this reader's 2")
 }
 
 func TestJournal_StateReplaysWhatWasAppended(t *testing.T) {

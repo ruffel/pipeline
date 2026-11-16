@@ -230,8 +230,8 @@ func TestReplay_BestEffortEventsChangeNoState(t *testing.T) {
 func TestReplay_RefusesBadJournals(t *testing.T) {
 	t.Parallel()
 
-	_, err := pipeline.Replay([]pipeline.Event{{V: 2, Seq: 1, Kind: pipeline.EventRunStarted}})
-	require.ErrorContains(t, err, "schema version 2 is newer")
+	_, err := pipeline.Replay([]pipeline.Event{{V: pipeline.SchemaVersion + 1, Seq: 1, Kind: pipeline.EventRunStarted}})
+	require.ErrorContains(t, err, "schema version 3 is newer")
 
 	_, err = pipeline.Replay([]pipeline.Event{
 		{V: 1, Seq: 2, Kind: pipeline.EventRunStarted},

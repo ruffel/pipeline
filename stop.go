@@ -26,6 +26,9 @@ const (
 // with its last error. Parallel steps still queued are not started. A stop
 // that comes after the work has ended changes nothing.
 //
+// A [GroupNode.DrainOnStop] group that has started is the exception: the
+// rest of it still starts, and the stop takes effect when the group ends.
+//
 // It can also cancel the run, as [RequestStop] with [StopCancel] does from
 // another process.
 //
@@ -248,6 +251,21 @@ func (r *runner) watchStop(done <-chan struct{}) {
 			return
 		}
 	}
+}
+
+// noteDrain says, once for each DrainOnStop group, that the group is
+// carrying on past a stop, so that whoever is following the run knows why
+// steps still start after the request. It is a message, and best-effort:
+// [State.Draining] is what a status command reads.
+func (r *runner) noteDrain(boundary *node) {
+	if _, said := r.draining.LoadOrStore(boundary.path, true); said {
+		return
+	}
+
+	_ = r.emit(Event{
+		Kind: EventMessage, Path: boundary.path, Level: LevelInfo,
+		Message: "a stop was requested: this group finishes first",
+	})
 }
 
 // halt records that a stop kept something from happening: a step from
