@@ -102,7 +102,12 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		return nil, err
 	}
 
-	prior, err := admit(prev, plan, in, cfg, rollback)
+	inputsChanged, err := changedInputsAccepted(prev, plan, in, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	prior, err := admit(prev, plan, cfg, rollback)
 	if err != nil {
 		return nil, err
 	}
@@ -126,30 +131,31 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 	defer cancel(nil)
 
 	r := &runner{
-		plan:        plan,
-		journal:     j,
-		clock:       cfg.clock,
-		id:          newRunID(),
-		attempt:     len(prev.Attempts) + 1,
-		observers:   cfg.observers,
-		obsCtx:      context.WithoutCancel(ctx),
-		cancel:      cancel,
-		runDone:     runCtx.Done(),
-		prev:        prev,
-		prior:       prior,
-		changed:     changed,
-		trust:       cfg.resume == ResumeTrust,
-		redact:      &redactor{fn: cfg.redact, secrets: in.secrets},
-		inputs:      in,
-		stopper:     cfg.stopper,
-		stop:        newStopSignal(),
-		gates:       map[string]chan controlRequest{},
-		control:     control,
-		controlPoll: cfg.controlPoll,
-		forced:      cfg.force && !rollback && len(prev.Attempts) > 0,
-		rollingBack: rollback,
-		values:      map[string]map[string]json.RawMessage{},
-		budget:      cfg.outputBudget,
+		plan:          plan,
+		journal:       j,
+		clock:         cfg.clock,
+		id:            newRunID(),
+		attempt:       len(prev.Attempts) + 1,
+		observers:     cfg.observers,
+		obsCtx:        context.WithoutCancel(ctx),
+		cancel:        cancel,
+		runDone:       runCtx.Done(),
+		prev:          prev,
+		prior:         prior,
+		changed:       changed,
+		inputsChanged: inputsChanged,
+		trust:         cfg.resume == ResumeTrust,
+		redact:        &redactor{fn: cfg.redact, secrets: in.secrets},
+		inputs:        in,
+		stopper:       cfg.stopper,
+		stop:          newStopSignal(),
+		gates:         map[string]chan controlRequest{},
+		control:       control,
+		controlPoll:   cfg.controlPoll,
+		forced:        cfg.force && !rollback && len(prev.Attempts) > 0,
+		rollingBack:   rollback,
+		values:        map[string]map[string]json.RawMessage{},
+		budget:        cfg.outputBudget,
 	}
 
 	res, err := r.run(runCtx, cfg.labels)
@@ -197,10 +203,52 @@ func changedPlan(prev *State, plan *Plan, how PlanChange) (*planDiff, error) {
 	return &d, nil
 }
 
+// changedInputsAccepted decides whether an attempt may be made with inputs
+// in against a journal that stands at prev. If they differ from the latest
+// attempt's and the change is accepted, it returns the pointers of the
+// fields that changed, for the attempt to record.
+func changedInputsAccepted(prev *State, plan *Plan, in *inputs, cfg config) ([]string, error) {
+	if len(prev.Attempts) == 0 || prev.InputsDigest == in.digest {
+		return nil, nil
+	}
+
+	decide := cfg.inputChange
+	if cfg.inputConsumers != nil {
+		decide = append([]func(InputChange) error{consumersHook(plan, cfg.inputConsumers)}, decide...)
+	}
+
+	if len(decide) == 0 && !cfg.newInputs {
+		return nil, ErrInputsChanged
+	}
+
+	changed, err := changedInputs(prev.Inputs, in.encoded)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.newInputs {
+		return changed, nil
+	}
+
+	change := InputChange{Old: prev.Inputs, New: in.encoded, Changed: changed, State: prev}
+
+	for _, fn := range decide {
+		if err := fn(change); err != nil {
+			if errors.Is(err, ErrInputsChanged) {
+				return nil, err
+			}
+
+			return nil, fmt.Errorf("%w: %w", ErrInputsChanged, err)
+		}
+	}
+
+	return changed, nil
+}
+
 // admit checks that an attempt may be made against a journal that stands at
 // prev, and returns what it decides which work is already done from: prev,
 // or, for a forced run, nothing, though earlier values stay readable.
-func admit(prev *State, plan *Plan, in *inputs, cfg config, rollback bool) (*State, error) {
+func admit(prev *State, plan *Plan, cfg config, rollback bool) (*State, error) {
 	n := len(prev.Attempts)
 	if n == 0 {
 		return prev, nil
@@ -209,8 +257,6 @@ func admit(prev *State, plan *Plan, in *inputs, cfg config, rollback bool) (*Sta
 	last := prev.Attempts[n-1]
 
 	switch {
-	case prev.InputsDigest != in.digest && !cfg.newInputs:
-		return nil, ErrInputsChanged
 	case rollback:
 		// A rollback undoes what the journal says ran, however the latest
 		// attempt ended.
@@ -245,6 +291,9 @@ type runner struct {
 	rollingBack bool
 	// changed is how the plan differs from the latest attempt's, if it does.
 	changed *planDiff
+	// inputsChanged are the pointers of the inputs that differ from the
+	// latest attempt's, if any do.
+	inputsChanged []string
 
 	// redact removes secrets from the text of every event and returned error.
 	redact *redactor
@@ -301,7 +350,7 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	err := r.emit(Event{
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
 		Plan: &spec, Fingerprint: r.plan.Fingerprint(), Labels: labels,
-		Inputs: r.inputs.encoded, InputsDigest: r.inputs.digest,
+		Inputs: r.inputs.encoded, InputsDigest: r.inputs.digest, InputsChanged: r.inputsChanged,
 		Forced: r.forced, Rollback: r.rollingBack, PID: os.Getpid(), Host: hostname(),
 	})
 	if err == nil && r.changed != nil {
