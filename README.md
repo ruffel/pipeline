@@ -947,6 +947,10 @@ interrupted, and calls each one's `Undo`, one at a time, in reverse plan order.
   then a rollback goes ahead as usual. `State.PointOfNoReturn()` returns the
   step's path, so a status command can say that rolling back is no longer
   possible. `Run` still resumes the journal.
+- The journal keeps what a step was when it ran. A later build that takes the
+  marker off, gives the step an `Undo`, or takes the step out of the plan is
+  refused all the same, and so is one that marks a step that had already run.
+  Nothing clears a point of no return.
 - A group's failure handler is undone like any other step, if it ran. A
   recovery handler's reset of its group doesn't take back an irreversible step
   that ran in it.

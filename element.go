@@ -236,8 +236,11 @@ func (s StepNode) Timeout(d time.Duration) StepNode {
 // undoing the steps around it would not put the system back where it
 // started. [State.PointOfNoReturn] says whether that point has been passed.
 //
-// Until the step runs, a rollback goes ahead as usual. An irreversible step
-// may not have an Undo, and may not be an Observe step.
+// Until the step runs, a rollback goes ahead as usual. Once it has, the
+// journal says so for good: a later build that takes the marker off, or
+// takes the step out of the plan, is still refused.
+//
+// An irreversible step may not have an Undo, and may not be an Observe step.
 func (s StepNode) Irreversible() StepNode {
 	s.irreversible = true
 

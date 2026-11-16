@@ -16,7 +16,7 @@ func upgradePlan(t *testing.T, c *calls, fails *bool) *pipeline.Plan {
 
 	return mustPlan(t,
 		pipeline.Effect("backup", undoable{c: c, name: "backup"}),
-		pipeline.Effect("alter-table", ok()).Irreversible(),
+		pipeline.Effect("alter-table", counted(c, "alter-table", nil)).Irreversible(),
 		pipeline.Effect("node1", undoable{c: c, name: "node1", runFails: fails}),
 	)
 }
@@ -81,6 +81,16 @@ func TestRollback_AnIrreversibleStepThatFailedCounts(t *testing.T) {
 	require.Error(t, resumeOn(t, j, plan).err)
 	require.ErrorIs(t, resumeRollback(t, j, plan).err, pipeline.ErrIrreversible)
 	assert.Zero(t, c.get("undo backup"))
+
+	// And whatever a later plan calls the step.
+	unmarked := mustPlan(t,
+		pipeline.Effect("backup", undoable{c: &c, name: "backup"}),
+		pipeline.Effect("alter-table", undoable{c: &c, name: "alter-table"}),
+	)
+
+	require.ErrorIs(t, resumeRollback(t, j, unmarked).err, pipeline.ErrIrreversible)
+	assert.Zero(t, c.get("undo backup"))
+	assert.Zero(t, c.get("undo alter-table"))
 }
 
 // Before the irreversible step runs, a rollback goes ahead as usual.
@@ -312,4 +322,284 @@ func TestNewPlan_IrreversibleSteps(t *testing.T) {
 	// in a fixed build doesn't strand a journal.
 	unmarked := mustPlan(t, pipeline.Effect("alter-table", ok()), pipeline.Ensure("setting", ok()))
 	assert.Equal(t, unmarked.Fingerprint(), plan.Fingerprint())
+}
+
+// laterPlan is upgradePlan as a later build has it: the same shape, with
+// alter-table's marker gone. With undo, the later build also gave it an Undo.
+func laterPlan(t *testing.T, c *calls, fails *bool, undo bool) *pipeline.Plan {
+	t.Helper()
+
+	alter := pipeline.Effect("alter-table", counted(c, "alter-table", nil))
+	if undo {
+		alter = pipeline.Effect("alter-table", undoable{c: c, name: "alter-table"})
+	}
+
+	return mustPlan(t,
+		pipeline.Effect("backup", undoable{c: c, name: "backup"}),
+		alter,
+		pipeline.Effect("node1", undoable{c: c, name: "node1", runFails: fails}),
+	)
+}
+
+// refusesAt checks that a rollback of plan is refused for alter-table, which
+// attempt 1 ran, that it writes nothing and that no Undo is called.
+func refusesAt(t *testing.T, c *calls, j *pipeline.Journal, plan *pipeline.Plan, opts ...pipeline.Option) {
+	t.Helper()
+
+	back := resumeRollback(t, j, plan, opts...)
+	require.ErrorIs(t, back.err, pipeline.ErrIrreversible)
+	assert.Nil(t, back.res)
+	assert.Empty(t, back.events, "the refusal writes nothing")
+
+	var refused *pipeline.IrreversibleError
+
+	require.ErrorAs(t, back.err, &refused)
+	assert.Equal(t, "p/alter-table", refused.Path)
+	assert.Equal(t, 1, refused.Attempt, "the attempt that ran it while it was irreversible")
+
+	for _, name := range []string{"backup", "alter-table", "node1"} {
+		assert.Zero(t, c.get("undo "+name), "nothing is undone")
+	}
+
+	state, err := j.State()
+	require.NoError(t, err)
+	assert.Equal(t, "p/alter-table", state.PointOfNoReturn())
+}
+
+// What a step was when it ran is the journal's to say, not the latest
+// plan's. A later build that drops the marker, and even gives the step an
+// Undo, has the same shape, so nothing else would notice the change.
+func TestRollback_DroppingTheMarkerDoesNotForgetAnIrreversibleStep(t *testing.T) {
+	t.Parallel()
+
+	for name, undo := range map[string]bool{"with an Undo": true, "with none": false} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var c calls
+
+			fails := true
+			marked, unmarked := upgradePlan(t, &c, &fails), laterPlan(t, &c, &fails, undo)
+			require.Equal(t, marked.Fingerprint(), unmarked.Fingerprint())
+
+			j := pipeline.MemoryJournal()
+			require.Error(t, resumeOn(t, j, marked).err)
+
+			// The later plan is refused when it is first given, and once an
+			// attempt has made it the journal's latest.
+			refusesAt(t, &c, j, unmarked)
+			require.Error(t, resumeOn(t, j, unmarked).err)
+			refusesAt(t, &c, j, unmarked)
+			refusesAt(t, &c, j, unmarked, pipeline.WithStrictUndo())
+
+			fails = false
+
+			require.NoError(t, resumeOn(t, j, unmarked).err)
+			refusesAt(t, &c, j, unmarked)
+			refusesAt(t, &c, j, marked)
+		})
+	}
+}
+
+// A path that is taken out of the plan and put back without its marker is
+// the step that ran.
+func TestRollback_ARemovedPathComingBackDoesNotForgetAnIrreversibleStep(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	marked, unmarked := upgradePlan(t, &c, &fails), laterPlan(t, &c, &fails, true)
+	without := mustPlan(t,
+		pipeline.Effect("backup", undoable{c: &c, name: "backup"}),
+		pipeline.Effect("node1", undoable{c: &c, name: "node1", runFails: &fails}),
+	)
+
+	j := pipeline.MemoryJournal()
+	require.Error(t, resumeOn(t, j, marked).err)
+	require.Error(t, resumeOn(t, j, without, matchByPath()).err)
+	refusesAt(t, &c, j, without)
+
+	refusesAt(t, &c, j, unmarked, matchByPath())
+	require.Error(t, resumeOn(t, j, unmarked, matchByPath()).err)
+	refusesAt(t, &c, j, unmarked)
+
+	state, err := j.State()
+	require.NoError(t, err)
+	assert.Empty(t, state.Removed)
+}
+
+// A marker dropped by one build and a path removed by the next: the removed
+// step is listed as it was last planned, which is not as it ran.
+func TestRollback_ARemovedStepThatLostItsMarkerFirstIsNotForgotten(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	marked, unmarked := upgradePlan(t, &c, &fails), laterPlan(t, &c, &fails, false)
+	without := mustPlan(t,
+		pipeline.Effect("backup", undoable{c: &c, name: "backup"}),
+		pipeline.Effect("node1", undoable{c: &c, name: "node1", runFails: &fails}),
+	)
+
+	j := pipeline.MemoryJournal()
+	require.Error(t, resumeOn(t, j, marked).err)
+	require.Error(t, resumeOn(t, j, unmarked).err)
+	require.Error(t, resumeOn(t, j, without, matchByPath()).err)
+
+	state, err := j.State()
+	require.NoError(t, err)
+	require.Len(t, state.Removed, 1)
+	assert.False(t, state.Removed[0].Irreversible, "as it was last planned")
+
+	refusesAt(t, &c, j, without)
+	refusesAt(t, &c, j, without, pipeline.WithStrictUndo())
+}
+
+// Once step.running is stored the step may have run, whatever a later plan
+// calls it. Before that, nothing has.
+func TestRollback_ACrashAroundAnIrreversibleStepOutlastsItsMarker(t *testing.T) {
+	t.Parallel()
+
+	for point, ran := range map[pipelinetest.Point]bool{
+		pipelinetest.Started:  false,
+		pipelinetest.Running:  true,
+		pipelinetest.Finished: true,
+	} {
+		t.Run(string(point), func(t *testing.T) {
+			t.Parallel()
+
+			var c calls
+
+			fails := false
+			marked, unmarked := upgradePlan(t, &c, &fails), laterPlan(t, &c, &fails, true)
+			crash := pipelinetest.CrashAfter("p/alter-table", point)
+
+			_, err := pipeline.Run(t.Context(), marked, crash.Journal)
+			require.ErrorIs(t, err, pipelinetest.ErrCrashed)
+
+			crash.Restart()
+
+			if ran {
+				refusesAt(t, &c, crash.Journal, unmarked)
+
+				return
+			}
+
+			// step.running could not be stored, so Run was not called.
+			assert.Zero(t, c.get("alter-table"))
+			require.NoError(t, resumeRollback(t, crash.Journal, unmarked).err)
+			assert.Equal(t, 1, c.get("undo backup"))
+			assert.Zero(t, c.get("undo alter-table"), "its Run was never called")
+		})
+	}
+}
+
+// The attempt named is the one that ran the step while it was irreversible,
+// whichever plan the rollback is given: not an earlier one that ran it
+// before it was marked.
+func TestRollback_NamesTheAttemptThatRanTheStepWhileItWasIrreversible(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	unmarked, marked := laterPlan(t, &c, &fails, false), upgradePlan(t, &c, &fails)
+	j := pipeline.MemoryJournal()
+
+	require.Error(t, resumeOn(t, j, unmarked).err)
+	require.Error(t, resumeOn(t, j, marked, pipeline.Force()).err)
+	require.Equal(t, 2, c.get("alter-table"), "the forced attempt ran it again, marked")
+
+	for name, plan := range map[string]*pipeline.Plan{"the plan that marks it": marked, "one that does not": unmarked} {
+		var refused *pipeline.IrreversibleError
+
+		require.ErrorAs(t, resumeRollback(t, j, plan).err, &refused, name)
+		assert.Equal(t, "p/alter-table", refused.Path, name)
+		assert.Equal(t, 2, refused.Attempt, name)
+	}
+}
+
+// A recovery step's reset and a forced attempt each forget what ran. Neither
+// forgets an irreversible step, and a later plan can't make them.
+func TestRollback_AResetOrAForcedAttemptDoesNotForgetWithTheMarkerGone(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+
+	plan := func(format pipeline.StepNode) *pipeline.Plan {
+		return mustPlan(t,
+			pipeline.Effect("backup", undoable{c: &c, name: "backup"}),
+			pipeline.Group("node",
+				format,
+				pipeline.Effect("apply", undoable{c: &c, name: "apply", runFails: &fails}),
+			).RecoverOnFailure(pipeline.Effect("recover", undoable{c: &c, name: "recover"})),
+		)
+	}
+
+	marked := plan(pipeline.Effect("format", counted(&c, "format", nil)).Irreversible())
+	unmarked := plan(pipeline.Effect("format", undoable{c: &c, name: "format"}))
+	j := pipeline.MemoryJournal()
+
+	require.Error(t, resumeOn(t, j, marked).err)
+
+	refuses := func() {
+		t.Helper()
+
+		var refused *pipeline.IrreversibleError
+
+		require.ErrorAs(t, resumeRollback(t, j, unmarked).err, &refused)
+		assert.Equal(t, "p/node/format", refused.Path)
+		assert.Equal(t, 1, refused.Attempt)
+
+		for _, name := range []string{"backup", "format", "apply", "recover"} {
+			assert.Zero(t, c.get("undo "+name), "nothing is undone")
+		}
+	}
+
+	refuses()
+
+	fails = false
+
+	require.NoError(t, resumeOn(t, j, unmarked).err)
+	require.NoError(t, resumeOn(t, j, unmarked, pipeline.Force()).err)
+	refuses()
+
+	state, err := j.State()
+	require.NoError(t, err)
+	assert.Equal(t, "p/node/format", state.PointOfNoReturn())
+}
+
+// A step that ran before a later build marked it is no easier to undo for
+// having run first.
+func TestRollback_AStepMarkedAfterItRanCounts(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	unmarked, marked := laterPlan(t, &c, &fails, false), upgradePlan(t, &c, &fails)
+	j := pipeline.MemoryJournal()
+
+	require.Error(t, resumeOn(t, j, unmarked).err)
+
+	state, err := j.State()
+	require.NoError(t, err)
+	assert.Empty(t, state.PointOfNoReturn(), "the journal has not seen the marker yet")
+
+	var refused *pipeline.IrreversibleError
+
+	back := resumeRollback(t, j, marked)
+	require.ErrorAs(t, back.err, &refused)
+	assert.Equal(t, "p/alter-table", refused.Path)
+	assert.Equal(t, 1, refused.Attempt)
+	assert.Empty(t, back.events)
+	assert.Zero(t, c.get("undo backup"), "nothing is undone")
+
+	// Once an attempt has recorded the plan that marks it, the journal says so.
+	require.Error(t, resumeOn(t, j, marked).err)
+	refusesAt(t, &c, j, marked)
 }
