@@ -896,6 +896,62 @@ Fields of type `Secret` are never stored, so they are supplied on every
 attempt, and their values are masked wherever a step writes them.
 `WithRedactor` masks anything else.
 
+#### Keeping an incompatible build out
+
+A plan's fingerprint is its shape. A later build can keep every path and
+still mean something else by what is recorded under one: a step that records
+another value, a `Check` that takes something else for granted. Nothing in
+the plan says so, and the tool is the only one that knows.
+
+So the tool says it in its inputs: an identifier for the operation, and one
+for each step whose record could be read differently, changed only when the
+meaning changes.
+
+```go
+type inputs struct {
+	Target    string    `json:"target"`
+	Contracts contracts `json:"contracts"`
+}
+
+type contracts struct {
+	Operation string            `json:"operation"`
+	Steps     map[string]string `json:"steps,omitempty"` // by path
+	Migration string            `json:"migration,omitempty"`
+}
+```
+
+- **A build with other contracts is refused** before any `Check`, `Run` or
+  `Undo` is called and before anything is written, whether it calls `Run`,
+  `Run` with `Force`, or `Rollback`. The error is `ErrInputsChanged`. If the
+  plan's shape differs as well, the shape is asked about first: the error is
+  `ErrPlanChanged`, and the function below is not called, until
+  `WithPlanChange` accepts the shape.
+- **A transition the tool supports is its own to approve**, in a
+  `WithInputChange` function. It is given the old and new inputs, the fields
+  that differ and the journal's state, and its error comes back from `Run`.
+  The attempt's `run.started` then records the new contracts, the name of the
+  migration and the fields that changed, before any step starts. The old ones
+  stay in the attempt before it.
+- **A journal with no contracts is refused in the same way**, until the tool
+  approves that one: nothing makes a matching identifier up.
+- **It works both ways.** A build from before the tool had contracts brings
+  none, and is refused a journal that has them. `WithNewInputs` is the way
+  round all of this, so a tool that relies on it never gives that option to a
+  resume.
+- **The approval does not outrank the journal.** A rollback past an
+  irreversible step, a step with no `Undo` under `WithStrictUndo` and a
+  changed kind are refused whatever the function says.
+
+The function is asked only when the inputs differ. A check to make on every
+attempt is made by the tool, before it calls `Run`, from the journal it holds
+open: `Journal.State()` is the journal as it stands, and `OpenJournal`'s lock
+keeps every other writer out until the journal is closed. One worth making
+under `WithPlanChange`: a step added to a group that had finished makes a
+resume enter that group again, where its `Ensure` steps run and its `Check`s
+are called. By the time `WithInputChange` is asked, the state it is given
+already has the group as unfinished, so only the tool's own look at
+`Journal.State()` shows that it had finished.
+
 ## Reference
 
 ### Resume rules

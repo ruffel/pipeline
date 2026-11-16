@@ -23,7 +23,10 @@ type InputChange struct {
 	// differs.
 	Changed []string
 	// State is the journal, replayed: what has started, and what was
-	// recorded.
+	// recorded. Under [WithPlanChange] it already has the change of plan
+	// applied: what the new plan removes is in [State.Removed], and a group
+	// that the new plan adds a step to is no longer done. [Journal.State],
+	// read before the attempt, is the journal as it stood.
 	State *State
 }
 
