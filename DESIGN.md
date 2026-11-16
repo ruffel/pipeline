@@ -49,6 +49,14 @@ Names are unique among siblings and limited to letters, digits, `.`, `_` and
 shape (`ErrPlanChanged`). The shape is the plan's fingerprint: its ordered paths
 and each element's kind.
 
+`WithPlanChange(MatchByPath)` is the way past it for a fixed build resuming what
+a broken one left. The path is an element's identity, so its record carries
+over by path, and nothing else is guessed: a changed kind is refused, a moved
+step is one removed and one added, and a rollback is refused once a removed
+step that ran took its `Undo` with it. Replay works the change out from the
+plans of consecutive attempts, so the journal needs no new version and a crash
+cannot lose it.
+
 Descriptions, labels, parallel limits, timeouts, retries and gate options are
 not part of the fingerprint, so a rebuilt tool that changed only those can
 resume. Inputs are compared separately (`ErrInputsChanged`).

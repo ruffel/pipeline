@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,11 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		return nil, err
 	}
 
+	changed, err := changedPlan(prev, plan, cfg.planChange)
+	if err != nil {
+		return nil, err
+	}
+
 	prior, err := admit(prev, plan, in, cfg, rollback)
 	if err != nil {
 		return nil, err
@@ -131,6 +137,7 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		runDone:     runCtx.Done(),
 		prev:        prev,
 		prior:       prior,
+		changed:     changed,
 		trust:       cfg.resume == ResumeTrust,
 		redact:      &redactor{fn: cfg.redact, secrets: in.secrets},
 		inputs:      in,
@@ -152,6 +159,33 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 	return res, r.redact.err(err)
 }
 
+// changedPlan decides whether an attempt may be made with plan against a
+// journal that stands at prev, and applies the change to prev if the plan
+// has a different shape and how allows it. It returns the change, for the
+// attempt to record, or nil if the shape is the same.
+func changedPlan(prev *State, plan *Plan, how PlanChange) (*planDiff, error) {
+	if len(prev.Attempts) == 0 || prev.Fingerprint == plan.Fingerprint() {
+		return nil, nil //nolint:nilnil // No change is not an error.
+	}
+
+	if how != MatchByPath || prev.Plan == nil {
+		return nil, ErrPlanChanged
+	}
+
+	d := diffPlans(*prev.Plan, plan.Spec())
+
+	if len(d.rekinded) > 0 {
+		return nil, fmt.Errorf("%w: the kind of %s differs, so its record can't be carried over",
+			ErrPlanChanged, strings.Join(d.rekinded, ", "))
+	}
+
+	// What replay does with the attempt's run.started, done now: resume and
+	// rollback decide from prev before that event is written.
+	prev.changePlan(d)
+
+	return &d, nil
+}
+
 // admit checks that an attempt may be made against a journal that stands at
 // prev, and returns what it decides which work is already done from: prev,
 // or, for a forced run, nothing, though earlier values stay readable.
@@ -164,8 +198,6 @@ func admit(prev *State, plan *Plan, in *inputs, cfg config, rollback bool) (*Sta
 	last := prev.Attempts[n-1]
 
 	switch {
-	case prev.Fingerprint != plan.Fingerprint():
-		return nil, ErrPlanChanged
 	case prev.InputsDigest != in.digest && !cfg.newInputs:
 		return nil, ErrInputsChanged
 	case rollback:
@@ -200,6 +232,8 @@ type runner struct {
 	forced bool
 	// rollingBack marks a rollback: it undoes steps instead of running them.
 	rollingBack bool
+	// changed is how the plan differs from the latest attempt's, if it does.
+	changed *planDiff
 
 	// redact removes secrets from the text of every event and returned error.
 	redact *redactor
@@ -259,6 +293,13 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 		Inputs: r.inputs.encoded, InputsDigest: r.inputs.digest,
 		Forced: r.forced, Rollback: r.rollingBack, PID: os.Getpid(), Host: hostname(),
 	})
+	if err == nil && r.changed != nil {
+		err = r.emit(Event{
+			Kind: EventPlanChanged, Path: r.plan.root.path,
+			Added: paths(r.changed.added), Removed: paths(r.changed.removed),
+		})
+	}
+
 	if err != nil {
 		return &Result{Run: r.id, Attempt: r.attempt, Outcome: OutcomeFailed}, err
 	}

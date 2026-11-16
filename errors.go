@@ -10,7 +10,9 @@ import (
 var (
 	// ErrPlanChanged is returned by [Run] when the journal's attempts were
 	// made with a plan of a different shape: its fingerprint differs. Start a
-	// new journal for a new plan.
+	// new journal for a new plan, or give [WithPlanChange] to carry on with
+	// a changed one. Under that option an error matching ErrPlanChanged
+	// names what could not be carried over.
 	ErrPlanChanged = errors.New("pipeline: the plan has changed since the journal's last attempt")
 
 	// ErrInputsChanged is returned by [Run] when the inputs differ from those

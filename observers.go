@@ -107,7 +107,7 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 	indent := strings.Repeat("  ", strings.Count(e.Path, "/"))
 
 	switch e.Kind {
-	case EventRunStarted:
+	case EventRunStarted, EventPlanChanged:
 		o.started(e)
 	case EventRunFinished:
 		o.printf("%s %s %s%s%s\n", mark(e.Outcome), e.Path, o.ended(e.Outcome), errorText(e.Error), elapsed(e.DurationMs))
@@ -148,6 +148,12 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 
 // started writes a run's first line, and keeps what it needs of its plan.
 func (o *PlainObserver) started(e Event) {
+	if e.Kind == EventPlanChanged {
+		o.printf("  ± the plan has changed%s%s\n", listed("added", e.Added), listed("removed", e.Removed))
+
+		return
+	}
+
 	o.root = e.Path
 	o.rollback = e.Rollback
 	o.capture(e.Plan)
@@ -158,6 +164,15 @@ func (o *PlainObserver) started(e Event) {
 	}
 
 	o.printf("▶ %s%s%s\n", e.Path, rollback, o.description(e.Path))
+}
+
+// listed names what a change of plan added or removed, if anything.
+func listed(what string, paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+
+	return "; " + what + " " + strings.Join(paths, ", ")
 }
 
 // deadline says when a gate times out, if it does.

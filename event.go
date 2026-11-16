@@ -57,6 +57,11 @@ const (
 	// EventStepRetry records a failed try that will be retried.
 	EventStepRetry EventKind = "step.retry"
 
+	// EventPlanChanged records that the attempt was given a plan of a
+	// different shape from the one before it, under [WithPlanChange]: the
+	// paths it added and removed. It follows the attempt's run.started.
+	EventPlanChanged EventKind = "plan.changed"
+
 	// EventStopRequested records that the run was asked to stop.
 	EventStopRequested EventKind = "stop.requested"
 
@@ -72,7 +77,7 @@ func (k EventKind) Durable() bool {
 	switch k {
 	case EventRunStarted, EventRunFinished, EventGroupStarted, EventGroupFinished, EventGroupReset,
 		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem, EventStopRequested,
-		EventGateWaiting, EventGateReleased, EventUndoStarted, EventUndoFinished:
+		EventGateWaiting, EventGateReleased, EventUndoStarted, EventUndoFinished, EventPlanChanged:
 		return true
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
 		return false
@@ -205,6 +210,11 @@ type Event struct {
 	// PID and Host say which process wrote the run.
 	PID  int    `json:"pid,omitempty"`
 	Host string `json:"host,omitempty"`
+
+	// plan.changed: the paths the attempt's plan has that the one before it
+	// did not, and the paths it no longer has, each in plan order.
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
 
 	// *.finished and step.retry.
 	Outcome    Outcome    `json:"outcome,omitempty"`

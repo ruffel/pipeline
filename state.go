@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,6 +44,11 @@ type State struct {
 	// LastSeq is the sequence number of the last event replayed. A viewer
 	// follows the journal from the event after it.
 	LastSeq int64
+	// Removed lists the elements that a change of plan took out, under
+	// [WithPlanChange], and that no later plan put back: each as it was last
+	// planned, without its children. [State.Element] still says where each
+	// one stood, and what it recorded stays readable.
+	Removed []NodeSpec
 	// Live reports whether a process held the journal open for writing when
 	// [Inspect] read it. It is false for states from other sources.
 	Live bool
@@ -204,14 +210,26 @@ func (s *State) Unfinished() bool {
 // [ErrIrreversible], so a status command can say that rolling back is no
 // longer possible without trying it.
 //
-// It goes by the plan of the latest attempt. A group's reset by its recovery
+// It goes by the plan of the latest attempt, and by the steps that a change
+// of plan removed. A group's reset by its recovery
 // step does not move it back: what an irreversible step did is still done.
 func (s *State) PointOfNoReturn() string {
 	if s.Plan == nil {
 		return ""
 	}
 
-	return s.pointOfNoReturn(*s.Plan)
+	if path := s.pointOfNoReturn(*s.Plan); path != "" {
+		return path
+	}
+
+	// A step that a change of plan removed is no easier to undo.
+	for _, n := range s.Removed {
+		if path := s.pointOfNoReturn(n); path != "" {
+			return path
+		}
+	}
+
+	return ""
 }
 
 func (s *State) pointOfNoReturn(n NodeSpec) string {
@@ -323,8 +341,9 @@ func (s *State) apply(e Event) {
 		}
 
 		s.items[e.Path][e.Item] = ItemState{Status: e.ItemStatus, Message: e.Message, Run: e.Run}
-	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
+	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry, EventPlanChanged:
 		// Best-effort chatter: viewers render it, but it changes no state.
+		// So do they a change of plan, which run.started has applied.
 	}
 }
 
@@ -335,8 +354,7 @@ func (s *State) applyAttempt(e Event) {
 			s.startOver()
 		}
 
-		s.Plan = e.Plan
-		s.Fingerprint = e.Fingerprint
+		s.replan(e.Plan, e.Fingerprint)
 		s.Labels = e.Labels
 		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
 		s.Attempts = append(s.Attempts, AttemptState{
@@ -382,6 +400,121 @@ func (s *State) applyAttempt(e Event) {
 		// A cancel outranks a graceful stop, whichever came first.
 		if cur := s.Attempts[n-1].Stop; cur == nil || cur.Mode != StopCancel {
 			s.Attempts[n-1].Stop = &StopRequest{Mode: e.Mode, By: e.By, Who: e.Who, UID: e.UID}
+		}
+	}
+}
+
+// replan applies the plan an attempt started with. If its shape differs from
+// the one before it, the attempt was made under WithPlanChange. The change
+// is worked out here, from the two plans, and not from the plan.changed
+// event that follows: a crash between the two events must not lose it.
+func (s *State) replan(plan *NodeSpec, fingerprint string) {
+	if s.Plan != nil && plan != nil && s.Fingerprint != fingerprint {
+		s.changePlan(diffPlans(*s.Plan, *plan))
+	}
+
+	s.Plan, s.Fingerprint = plan, fingerprint
+}
+
+// planDiff is what changed between the plans of two attempts.
+type planDiff struct {
+	// added and removed are the elements only in the new plan and only in
+	// the old one, in plan order, without their children.
+	added, removed []NodeSpec
+	// rekinded are the paths in both plans whose kind differs.
+	rekinded []string
+}
+
+// diffPlans compares two plans by path.
+func diffPlans(before, after NodeSpec) planDiff {
+	was, now := flatten(before), flatten(after)
+
+	index := func(specs []NodeSpec) map[string]Kind {
+		kinds := make(map[string]Kind, len(specs))
+		for _, n := range specs {
+			kinds[n.Path] = n.Kind
+		}
+
+		return kinds
+	}
+
+	wasKind, nowKind := index(was), index(now)
+
+	var d planDiff
+
+	for _, n := range was {
+		if _, ok := nowKind[n.Path]; !ok {
+			d.removed = append(d.removed, n)
+		}
+	}
+
+	for _, n := range now {
+		switch kind, ok := wasKind[n.Path]; {
+		case !ok:
+			d.added = append(d.added, n)
+		case kind != n.Kind:
+			d.rekinded = append(d.rekinded, n.Path)
+		}
+	}
+
+	return d
+}
+
+// flatten lists n and everything beneath it in plan order, a failure handler
+// after its group's children, each without its own children.
+func flatten(n NodeSpec) []NodeSpec {
+	flat := n
+	flat.Children, flat.OnFailure = nil, nil
+
+	out := []NodeSpec{flat}
+
+	for _, c := range n.Children {
+		out = append(out, flatten(c)...)
+	}
+
+	if n.OnFailure != nil {
+		out = append(out, flatten(*n.OnFailure)...)
+	}
+
+	return out
+}
+
+// paths returns the paths of specs.
+func paths(specs []NodeSpec) []string {
+	out := make([]string, 0, len(specs))
+	for _, n := range specs {
+		out = append(out, n.Path)
+	}
+
+	return out
+}
+
+// changePlan applies a change of plan. What was removed keeps its record and
+// is listed in Removed, until a later plan puts it back. A group that had
+// settled and now has something new beneath it is settled no longer, so a
+// resume enters it.
+func (s *State) changePlan(d planDiff) {
+	back := map[string]bool{}
+
+	for _, n := range d.added {
+		back[n.Path] = true
+
+		s.unsettle(n.Path)
+	}
+
+	s.Removed = slices.DeleteFunc(s.Removed, func(n NodeSpec) bool { return back[n.Path] })
+	s.Removed = append(s.Removed, d.removed...)
+}
+
+// unsettle marks the groups around path as part-way through, if they had
+// finished their work.
+func (s *State) unsettle(path string) {
+	for i := strings.LastIndexByte(path, '/'); i >= 0; i = strings.LastIndexByte(path, '/') {
+		path = path[:i]
+
+		if el, ok := s.elements[path]; ok && el.Done {
+			el.Status, el.Reason, el.Done = StatusStarted, "", false
+			s.elements[path] = el
 		}
 	}
 }
