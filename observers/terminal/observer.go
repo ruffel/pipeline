@@ -63,10 +63,11 @@ type Observer struct {
 	cancelled []string
 }
 
-// stepState is what the observer keeps about a step while it runs.
+// stepState is what the observer keeps about a step, or a group, while it
+// runs.
 type stepState struct {
-	// opened records that a line naming the step has been written, so lines
-	// under it can follow.
+	// opened records that a line naming the element has been written, so
+	// lines under it can follow.
 	opened bool
 	// items holds the latest status for each target the step reported on.
 	items map[string]pipeline.ItemStatus
@@ -115,6 +116,9 @@ func (o *Observer) OnEvent(_ context.Context, e pipeline.Event) {
 	case pipeline.EventRunFinished:
 		o.runFinished(e)
 	case pipeline.EventGroupStarted:
+		// This is the group's line, so a message for the group goes under
+		// it without another: the note that a stop is waiting for it.
+		o.step(e.Path).opened = true
 		o.line(e.Path, o.color("▶", o.p.Primary)+" "+o.layout.name(e.Path)+o.description(e.Path))
 	case pipeline.EventGroupReset:
 		o.line(e.Path, o.color("↺ "+o.layout.name(e.Path)+" reset", o.p.Warning)+

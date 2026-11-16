@@ -374,6 +374,38 @@ func TestObserver_StopsGatesAndResets(t *testing.T) {
 │ Total time: 1m0s`)
 }
 
+// TestObserver_AStopWaitingForAGroup covers the run's own message to a
+// DrainOnStop group. The group's line is already there, so the message opens
+// no second one.
+func TestObserver_AStopWaitingForAGroup(t *testing.T) {
+	t.Parallel()
+
+	out := render(t,
+		pipeline.Event{Kind: pipeline.EventRunStarted, Path: "upgrade", Plan: upgrade()},
+		pipeline.Event{Kind: pipeline.EventGroupStarted, Path: "upgrade/prechecks"},
+		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/prechecks/ring", Outcome: pipeline.OutcomePassed},
+		pipeline.Event{Kind: pipeline.EventStopRequested, Who: "alice"},
+		pipeline.Event{
+			Kind: pipeline.EventMessage, Path: "upgrade/prechecks", Level: pipeline.LevelInfo,
+			Message: "a stop was requested: this group finishes first",
+		},
+		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/prechecks/disks", Outcome: pipeline.OutcomePassed},
+		pipeline.Event{Kind: pipeline.EventGroupFinished, Path: "upgrade/prechecks", Outcome: pipeline.OutcomePassed},
+		pipeline.Event{
+			Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomeStopped,
+			Error: &pipeline.ErrorInfo{Message: "pipeline: stopped"},
+		},
+	)
+
+	assert.Equal(t, `▶ prechecks — Read-only checks
+│ ✓ ring
+■ stop requested by alice; running steps will finish
+│ [INFO] a stop was requested: this group finishes first
+│ ✓ disks
+✓ prechecks
+`, between(t, out))
+}
+
 func TestObserver_Rollback(t *testing.T) {
 	t.Parallel()
 
