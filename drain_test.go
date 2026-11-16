@@ -351,6 +351,72 @@ func TestDrain_AStepIsNotTriedAgainUnderAStop(t *testing.T) {
 	assert.Contains(t, trace(out.events), "group.finished p/node1 failed")
 }
 
+// With a stop already pending, a step that fails is not tried again either,
+// and it is the failure that ends the group: the run has failed, as it has
+// when the step had no tries left. The stop kept nothing from starting.
+func TestDrain_AStepThatFailsUnderAPendingStopHasFailedTheRun(t *testing.T) {
+	t.Parallel()
+
+	for name, retry := range map[string]func(pipeline.StepNode) pipeline.StepNode{
+		"with tries left": func(s pipeline.StepNode) pipeline.StepNode { return s.Retry(3, time.Hour) },
+		"with none":       func(s pipeline.StepNode) pipeline.StepNode { return s },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var c calls
+
+			fails := true
+			stopper := pipeline.NewStopper()
+			plan := mustPlan(t,
+				pipeline.Group("node1",
+					bounded(pipeline.Effect("stop", stopsWith(stopper))),
+					retry(bounded(pipeline.Effect("start", counted(&c, "start", &fails)))),
+					bounded(pipeline.Effect("verify", counted(&c, "verify", nil))),
+				).DrainOnStop(),
+				pipeline.Effect("after", counted(&c, "after", nil)),
+			)
+
+			out := resumeOn(t, pipeline.MemoryJournal(), plan, pipeline.WithStopper(stopper))
+
+			require.ErrorContains(t, out.err, "start failed")
+			require.NotErrorIs(t, out.err, pipeline.ErrStopped)
+			assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome)
+			assert.Equal(t, 1, c.get("start"), "it is not tried again")
+			assert.Zero(t, c.get("verify"))
+			assert.Zero(t, c.get("after"))
+			assert.Empty(t, kinds(out.events, pipeline.EventStepRetry))
+			assert.Contains(t, trace(out.events), "group.finished p/node1 failed")
+		})
+	}
+}
+
+// A step that outstays its timeout has timed out, whatever it then returns:
+// a skip returned late is not mistaken for one returned in time.
+func TestDrain_ASkipReturnedLateIsATimeout(t *testing.T) {
+	t.Parallel()
+
+	plan := mustPlan(t,
+		pipeline.Group("node1",
+			pipeline.Effect("stop", pipeline.StepFunc(func(ctx context.Context, _ *pipeline.StepContext) error {
+				<-ctx.Done()
+
+				return pipeline.ErrSkipGroup
+			})).Timeout(20*time.Millisecond),
+		).DrainOnStop(),
+	)
+
+	out := resumeOn(t, pipeline.MemoryJournal(), plan)
+
+	require.ErrorIs(t, out.err, context.DeadlineExceeded)
+	require.ErrorContains(t, out.err, "returned after its 20ms timeout had passed")
+
+	finished := kinds(out.events, pipeline.EventStepFinished)
+	require.Len(t, finished, 1)
+	require.NotNil(t, finished[0].Error)
+	assert.Equal(t, pipeline.ErrorTimeout, finished[0].Error.Kind)
+}
+
 // A cancel waits for nothing: it outranks the stop the group was finishing
 // under.
 func TestDrain_ACancelEndsTheGroup(t *testing.T) {

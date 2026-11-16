@@ -219,10 +219,13 @@ continue-on-error group, a failure handler, a step that skips the rest).
 Only the stop is put off. A failure, a timeout, a cancel and a journal that
 can't be written all end the group where they find it, and the run is then
 failed or cancelled, never reported as stopped at a safe place. A step that
-fails under a pending stop is not tried again: a retry would be doing more
-work to finish, not finishing. The group is entered at the same check that
-keeps any element from starting after a stop, so a stop and a group's start
-are ordered there, and nowhere else.
+fails under a pending stop is not tried again: a retry would be doing more work
+to finish, not finishing. It is the failure that ends the group then, whether
+or not the step had tries left, so the run has failed. Only a stop that arrives
+while a step is already waiting to be tried again ends that wait, as it does
+anywhere, and leaves the run stopped. The group is entered at the same check
+that keeps any element from starting after a stop, so a stop and a group's
+start are ordered there, and nowhere else.
 
 Nothing new is recorded. The journal already has the stop request and each
 group's start and finish, so `State.Draining` reads "a stop is pending and

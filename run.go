@@ -941,7 +941,7 @@ func (r *runner) tries(
 			return OutcomeSkipped, ReasonDone, "", nil
 		case err == nil:
 			return OutcomePassed, "", "", nil
-		case try >= n.tries || ctx.Err() != nil || r.fatalErr() != nil:
+		case r.lastTry(ctx, n, try):
 			return OutcomeFailed, "", "", err
 		}
 
@@ -953,6 +953,21 @@ func (r *runner) tries(
 			return OutcomeFailed, "", "", werr
 		}
 	}
+}
+
+// lastTry reports whether a step whose try has just failed is not tried
+// again: it is out of tries, or the run is ending.
+//
+// A DrainOnStop group is finished under a stop, not worked at. So a step in
+// one is not tried again once a stop is pending, and it is the failure that
+// ends the group, with tries left or without: the stop is not what kept
+// anything from happening, and the run has failed.
+func (r *runner) lastTry(ctx context.Context, n *node, try int) bool {
+	if try >= n.tries || ctx.Err() != nil || r.fatalErr() != nil {
+		return true
+	}
+
+	return n.boundary != nil && r.stopping()
 }
 
 // backoff waits before the step's next try. If a cancel or stop cuts the
@@ -999,6 +1014,14 @@ func (r *runner) try(ctx context.Context, n *node, sc *StepContext, ranOnce *boo
 	done, err := r.checkAndRun(tctx, n, sc, ranOnce)
 	if late := returnedLate(ctx, tctx, n.timeout, err); late != nil {
 		return false, late
+	}
+
+	// Ending the group early as passed is the one thing a DrainOnStop group
+	// is there to rule out. A skip returned late has been dealt with above:
+	// that try timed out or was cancelled.
+	if n.boundary != nil && skipOf(err) != "" {
+		return false, fmt.Errorf("pipeline: Run returned %q, and nothing may end %s, a DrainOnStop group, early",
+			err.Error(), n.boundary.path)
 	}
 
 	return done, err
@@ -1072,16 +1095,7 @@ func (r *runner) checkAndRun(ctx context.Context, n *node, sc *StepContext, ranO
 		*ranOnce = true
 	}
 
-	err := safely(func() error { return n.step.Run(ctx, sc) })
-
-	// Ending the group early as passed is the one thing a DrainOnStop group
-	// is there to rule out.
-	if n.boundary != nil && skipOf(err) != "" {
-		return false, fmt.Errorf("pipeline: Run returned %q, and nothing may end %s, a DrainOnStop group, early",
-			err.Error(), n.boundary.path)
-	}
-
-	return false, err
+	return false, safely(func() error { return n.step.Run(ctx, sc) })
 }
 
 // emit stores e in the journal, then gives it to the observers. If the

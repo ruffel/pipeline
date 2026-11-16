@@ -780,9 +780,10 @@ pipeline.Group("node1", stop, install, start, verify).DrainOnStop()
   starting, as it does anything else.
 - **Only a stop is put off.** A step that fails, panics or passes its timeout
   ends the group there, and the run has failed, not stopped. A cancel cancels
-  the running step. A step that fails while a stop is pending is not tried
-  again. So a stop can still leave the group part-way: finishing is what a
-  healthy group does, and no protection against the process dying.
+  the running step. A step that fails once a stop is pending is not tried
+  again, however many tries it has left. So a stop can still leave the group
+  part-way: finishing is what a healthy group does, and no protection against
+  the process dying.
 - **Nothing in the group may hold a stop for ever, or end the group early.**
   It is sequential and stops at its first failure, every step in it has a
   `Timeout`, and it has no gate, failure handler or `DrainOnStop` group inside

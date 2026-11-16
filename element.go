@@ -163,11 +163,16 @@ func (g GroupNode) RecoverOnFailure(step StepNode) GroupNode {
 // does any element. And only a stop is put off. A step that fails, panics or
 // passes its timeout fails the group at once, and the rest of it does not
 // run. Cancelling the run cancels the step that is running and starts
-// nothing more. A step that fails while a stop is pending is not tried
-// again. A journal that can't be written stops the run. So a stop can still
-// find the group failed, part-way through: finishing it is what a healthy
-// group does, not a promise, and it is no protection against the process
-// dying. [State.Draining] says which groups a stop is waiting for.
+// nothing more. A step that fails once a stop is pending is not tried
+// again, however many tries it has left: the group has failed, and so has
+// the run. A journal that can't be written stops the run. So a stop can
+// still find the group failed, part-way through: finishing it is what a
+// healthy group does, not a promise, and it is no protection against the
+// process dying. [State.Draining] says which groups a stop is waiting for.
+//
+// A stop that comes while a step is waiting to be tried again ends the
+// wait, as it does in any group: the step has failed, and the run is
+// stopped, with that failure in its error.
 //
 // Nothing in the group may keep a stop waiting for ever, or end the group
 // early as passed. So the group, and every group in it, is sequential and
