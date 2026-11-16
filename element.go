@@ -216,7 +216,8 @@ func (s StepNode) Retry(n int, backoff time.Duration) StepNode {
 // are given. A step has to watch its context to be stopped: one that ignores
 // it runs on. When it does return, the try has failed with a timeout,
 // whatever it returns, because a step that took too long has not done what
-// the plan allowed for.
+// the plan allowed for. A step that returns after a cancel has failed in the
+// same way.
 func (s StepNode) Timeout(d time.Duration) StepNode {
 	s.timeout = d
 

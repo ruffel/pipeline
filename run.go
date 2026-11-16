@@ -32,7 +32,9 @@ type Result struct {
 // cannot be written, the run stops at once and Run returns that error.
 //
 // Cancelling ctx cancels running steps, which are recorded as failed, and
-// starts nothing new. The run's outcome is then [OutcomeCancelled].
+// starts nothing new. The run's outcome is then [OutcomeCancelled]. A step
+// that ignores the cancel runs on, and has failed when it returns, whatever
+// it returns.
 //
 // A [Stopper] given with [WithStopper] stops the run gracefully instead:
 // running steps finish, nothing new starts, and the outcome is
@@ -842,39 +844,52 @@ func (r *runner) backoff(ctx context.Context, n *node, err error) error {
 // try runs one Check and, if the work isn't done, Run, within the step's
 // timeout. It reports whether Check found the work done.
 func (r *runner) try(ctx context.Context, n *node, sc *StepContext, ranOnce *bool) (bool, error) {
-	if n.timeout <= 0 {
-		return r.checkAndRun(ctx, n, sc, ranOnce)
+	tctx := ctx
+
+	if n.timeout > 0 {
+		var cancel context.CancelFunc
+
+		tctx, cancel = context.WithTimeout(ctx, n.timeout)
+		defer cancel()
 	}
 
-	tctx, cancel := context.WithTimeout(ctx, n.timeout)
-	defer cancel()
-
 	done, err := r.checkAndRun(tctx, n, sc, ranOnce)
-	if overran(ctx, tctx, err) {
-		return false, overrunError(n.timeout)
+	if late := returnedLate(ctx, tctx, n.timeout, err); late != nil {
+		return false, late
 	}
 
 	return done, err
 }
 
-// overran reports whether a try, or an Undo, that was given tctx took longer
-// than its timeout and still claimed to succeed: it returned nil, or a skip,
-// after tctx's deadline. A step that watches its context returns the
-// context's error instead, and fails with that. One cut short by ctx, the
-// run's own context, was cancelled and did not overrun.
-func overran(ctx, tctx context.Context, err error) bool {
+// returnedLate is what a try, or an Undo, fails with when it claimed to
+// succeed after it was told to stop: it returned nil, or a skip, once ctx,
+// the context of the run or of its group, was cancelled, or once tctx, its
+// own, had passed its timeout. A step that watches its context returns the
+// context's error instead, and fails with that; one that fails with an
+// error of its own keeps it.
+//
+// The errors match what a step that stopped in time returns:
+// [context.Canceled] after a cancel, [context.DeadlineExceeded] after a
+// timeout.
+func returnedLate(ctx, tctx context.Context, timeout time.Duration, err error) error {
 	if err != nil && skipOf(err) == "" {
-		return false
+		return nil
 	}
 
-	return ctx.Err() == nil && errors.Is(tctx.Err(), context.DeadlineExceeded)
-}
+	if cerr := ctx.Err(); cerr != nil {
+		// A cancel given a cause of its own keeps it within reach.
+		if cause := context.Cause(ctx); !errors.Is(cause, cerr) {
+			return fmt.Errorf("pipeline: returned after it was cancelled: %w: %w", cerr, cause)
+		}
 
-// overrunError is what a step fails with when it overruns its timeout. It
-// matches [context.DeadlineExceeded], as the error of a step that stopped in
-// time does.
-func overrunError(timeout time.Duration) error {
-	return fmt.Errorf("pipeline: returned after its %s timeout had passed: %w", timeout, context.DeadlineExceeded)
+		return fmt.Errorf("pipeline: returned after it was cancelled: %w", cerr)
+	}
+
+	if errors.Is(tctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("pipeline: returned after its %s timeout had passed: %w", timeout, context.DeadlineExceeded)
+	}
+
+	return nil
 }
 
 // checkAndRun runs one Check and, if the work isn't done, Run.

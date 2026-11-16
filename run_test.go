@@ -331,14 +331,10 @@ func TestRun_B6_QueuedChildrenDoNotStartAfterACancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 
 	out := runPlan(t, ctx, mustPlan(t, pipeline.Group("g",
-		pipeline.Effect("a", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
-			cancel()
-
-			return nil
-		})),
+		pipeline.Effect("a", ok()),
 		pipeline.Effect("b", ok()),
 		pipeline.Effect("c", ok()),
-	).Parallel(1).ContinueOnError()))
+	).Parallel(1).ContinueOnError()), pipeline.WithObservers(whenFinished("p/g/a", cancel)))
 
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
@@ -557,9 +553,46 @@ func TestRun_TimeoutLeavesOtherResultsAlone(t *testing.T) {
 	require.NotErrorIs(t, out.err, context.DeadlineExceeded)
 }
 
-// A cancel is not an overrun: what a step returns after one stands, as it
-// did before.
-func TestRun_AStepCancelledUnderATimeoutHasNotOverrun(t *testing.T) {
+// A step that ignores a cancel and then claims to have succeeded has failed:
+// the run is cancelled, and a resume runs the step again.
+func TestRun_AStepThatReturnsAfterACancelFails(t *testing.T) {
+	t.Parallel()
+
+	for name, result := range map[string]error{"nil": nil, "skip": pipeline.ErrSkipRun} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+
+			step := pipeline.StepFunc(func(ctx context.Context, _ *pipeline.StepContext) error {
+				cancel()
+				<-ctx.Done()
+
+				return result
+			})
+
+			out := runPlan(t, ctx, mustPlan(t,
+				pipeline.Effect("a", step).Retry(3, 0),
+				pipeline.Effect("b", noop()),
+			))
+
+			require.ErrorIs(t, out.err, context.Canceled)
+			require.ErrorIs(t, out.err, pipeline.ErrStopped)
+			require.ErrorContains(t, out.err, "returned after it was cancelled")
+			assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
+
+			a := out.state.Element("p/a")
+			assert.Equal(t, pipeline.StatusFailed, a.Status)
+			assert.Equal(t, pipeline.ErrorCancelled, a.Error.Kind)
+			assert.False(t, a.Done, "a resume runs it again")
+			assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/b").Status)
+			assert.Empty(t, kinds(out.events, pipeline.EventStepRetry), "a cancelled step is not tried again")
+		})
+	}
+}
+
+// The step's own error says more than "cancelled" does, so it is kept.
+func TestRun_AStepThatFailsAfterACancelKeepsItsError(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -568,12 +601,47 @@ func TestRun_AStepCancelledUnderATimeoutHasNotOverrun(t *testing.T) {
 		cancel()
 		<-ctx.Done()
 
-		return nil
+		return errors.New("disk full")
 	})
 
 	out := runPlan(t, ctx, mustPlan(t, pipeline.Effect("a", step).Timeout(time.Minute)))
 
-	assert.Equal(t, pipeline.StatusPassed, out.state.Element("p/a").Status)
+	require.ErrorContains(t, out.err, "disk full")
+	assert.NotContains(t, out.err.Error(), "returned after")
+}
+
+// A cancel that comes from the step's group, not the run, counts as well.
+func TestRun_AStepThatReturnsAfterItsGroupCancelledItFails(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+
+	fails := pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+		<-started
+
+		return errors.New("disk full")
+	})
+
+	ignores := pipeline.StepFunc(func(ctx context.Context, _ *pipeline.StepContext) error {
+		close(started)
+		<-ctx.Done()
+
+		return nil
+	})
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Group("g",
+			pipeline.Effect("fails", fails),
+			pipeline.Effect("ignores", ignores),
+		).Parallel(2).CancelOnError(),
+	))
+
+	require.ErrorContains(t, out.err, "disk full")
+	assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome, "the group's cancel is its failure, not the run's")
+
+	el := out.state.Element("p/g/ignores")
+	assert.Equal(t, pipeline.StatusFailed, el.Status)
+	assert.Contains(t, el.Error.Message, "returned after it was cancelled")
 }
 
 func TestRun_RunDoesNotStartWhenCheckUsedUpTheTry(t *testing.T) {
@@ -934,14 +1002,10 @@ func TestRun_A7_CancelLeavesEveryElementResolved(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 
 	out := runPlan(t, ctx, mustPlan(t,
-		pipeline.Effect("a", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
-			cancel()
-
-			return nil
-		})),
+		pipeline.Effect("a", ok()),
 		pipeline.Effect("b", ok()),
 		pipeline.Group("g", pipeline.Effect("c", ok())),
-	))
+	), pipeline.WithObservers(whenFinished("p/a", cancel)))
 
 	require.ErrorIs(t, out.err, context.Canceled)
 	assert.Equal(t, pipeline.OutcomeCancelled, out.res.Outcome)
@@ -1004,15 +1068,20 @@ func TestRun_CancelAfterTheLastStepLeavesTheRunPassed(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 
-	out := runPlan(t, ctx, mustPlan(t, pipeline.Effect("a", pipeline.StepFunc(
-		func(context.Context, *pipeline.StepContext) error {
-			cancel()
-
-			return nil
-		}))))
+	out := runPlan(t, ctx, mustPlan(t, pipeline.Effect("a", ok())), pipeline.WithObservers(whenFinished("p/a", cancel)))
 
 	require.NoError(t, out.err)
 	assert.Equal(t, pipeline.OutcomePassed, out.res.Outcome)
+}
+
+// whenFinished calls do as the step at path is recorded as finished: between
+// steps, when nothing is running to be cancelled.
+func whenFinished(path string, do func()) pipeline.Observer {
+	return pipeline.ObserverFunc(func(_ context.Context, e pipeline.Event) {
+		if e.Kind == pipeline.EventStepFinished && e.Path == path {
+			do()
+		}
+	})
 }
 
 // -----------------------------------------------------------------------------
