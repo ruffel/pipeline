@@ -158,7 +158,9 @@ const MatchByPath PlanChange = 1
 //     enters it and runs the new element. The group's other steps are
 //     treated as on any resume.
 //   - An element only in the old plan keeps its record, and the values it
-//     recorded stay readable. It is listed in [State.Removed].
+//     recorded stay readable. It is listed in [State.Removed]. A later plan
+//     that puts it back carries on from that record, so it must have the
+//     kind it had.
 //
 // A step that moved to another path is one removed and one added.
 //

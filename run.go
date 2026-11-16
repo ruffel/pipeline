@@ -174,9 +174,20 @@ func changedPlan(prev *State, plan *Plan, how PlanChange) (*planDiff, error) {
 
 	d := diffPlans(*prev.Plan, plan.Spec())
 
-	if len(d.rekinded) > 0 {
+	// A path that an earlier change removed still has its record, which a
+	// plan that puts it back carries on from: its kind must not differ
+	// either.
+	rekinded := d.rekinded
+
+	for _, n := range d.added {
+		if slices.ContainsFunc(prev.Removed, func(was NodeSpec) bool { return was.Path == n.Path && was.Kind != n.Kind }) {
+			rekinded = append(rekinded, n.Path)
+		}
+	}
+
+	if len(rekinded) > 0 {
 		return nil, fmt.Errorf("%w: the kind of %s differs, so its record can't be carried over",
-			ErrPlanChanged, strings.Join(d.rekinded, ", "))
+			ErrPlanChanged, strings.Join(rekinded, ", "))
 	}
 
 	// What replay does with the attempt's run.started, done now: resume and

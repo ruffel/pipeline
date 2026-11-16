@@ -125,6 +125,39 @@ func TestPlanChange_AChangedKindIsRefused(t *testing.T) {
 	assert.Nil(t, out.res)
 }
 
+// A removed step keeps its record, so a plan that puts its path back with
+// another kind is refused: a passed Ensure step coming back as an Effect
+// step would be skipped as done, and its Run never called.
+func TestPlanChange_ARemovedPathMayNotComeBackAsAnotherKind(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	fails := true
+	before := mustPlan(t, pipeline.Ensure("setting", ok()), effect(&c, "b", &fails))
+	without := mustPlan(t, effect(&c, "b", &fails))
+	j := pipeline.MemoryJournal()
+
+	require.Error(t, resumeOn(t, j, before).err)
+	require.Error(t, resumeOn(t, j, without, matchByPath()).err)
+
+	rekinded := mustPlan(t, effect(&c, "setting", nil), effect(&c, "b", nil))
+	out := resumeOn(t, j, rekinded, matchByPath())
+	require.ErrorIs(t, out.err, pipeline.ErrPlanChanged)
+	require.ErrorContains(t, out.err, "the kind of p/setting differs")
+	assert.Empty(t, out.events)
+	assert.Zero(t, c.get("setting"))
+
+	// With the kind it had, it carries on from its record.
+	fails = false
+
+	require.NoError(t, resumeOn(t, j, before, matchByPath()).err)
+
+	state, err := j.State()
+	require.NoError(t, err)
+	assert.Empty(t, state.Removed)
+}
+
 // A removed step keeps its record. If it ran and had an Undo, the code to
 // undo it has gone, so a rollback is refused.
 func TestPlanChange_RemovedSteps(t *testing.T) {
