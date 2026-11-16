@@ -721,7 +721,8 @@ if approved. A gate released in an earlier attempt doesn't wait again.
 
 - **`Retry(3, 10*time.Second)`** allows up to three tries within an attempt,
   ten seconds apart.
-- **`Timeout(d)`** bounds each try, by cancelling the step's context.
+- **`Timeout(d)`** bounds each try, by cancelling the step's context. A try that
+  returns after it has failed, whatever it returns.
 - **`Description(text)`** is a line for the views to show beside the name.
 - **`Labels(l)`** are for observers and viewers of your own, to group or filter
   by node, region or tenant. A group's labels pass down to everything in it.
@@ -903,7 +904,8 @@ it again.
 
 Both are given a context, and that is the only way a step is stopped. A
 timeout, a cancel and a second Ctrl-C all cancel it. A step that ignores its
-context runs on regardless, and whatever it then returns stands.
+context runs on regardless. If it returns after its timeout, the try has failed
+with a timeout, even if it returns nil; after a cancel, what it returns stands.
 
 `StepFunc` turns a plain function into a step with neither `Check` nor `Undo`.
 `Check` and `Undo` are found on the value you give the plan, so a wrapper

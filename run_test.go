@@ -484,6 +484,98 @@ func TestRun_TimeoutBoundsEachTry(t *testing.T) {
 	assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome)
 }
 
+// overrun is a step that ignores its context: it waits for the context's
+// deadline to pass, and then returns what it was told to, as if nothing had
+// gone wrong.
+func overrun(returns error) pipeline.StepFunc {
+	return func(ctx context.Context, _ *pipeline.StepContext) error {
+		<-ctx.Done()
+
+		return returns
+	}
+}
+
+// A step that ignores its context and returns nil after its timeout has not
+// done what the plan allowed for: the try fails with a timeout.
+func TestRun_AStepThatOverrunsItsTimeoutFails(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", overrun(nil)).Timeout(10*time.Millisecond)))
+
+	require.ErrorIs(t, out.err, context.DeadlineExceeded)
+	require.ErrorContains(t, out.err, "p/a: pipeline: returned after its 10ms timeout had passed")
+	assert.Equal(t, pipeline.StatusFailed, out.state.Element("p/a").Status)
+	assert.Equal(t, pipeline.ErrorTimeout, out.state.Element("p/a").Error.Kind)
+	assert.True(t, out.state.Element("p/a").RunCalled)
+}
+
+// A skip is a claim to have succeeded too, so it cannot be made late.
+func TestRun_AStepThatOverrunsItsTimeoutCannotSkip(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Effect("a", overrun(pipeline.ErrSkipRun)).Timeout(10*time.Millisecond),
+		pipeline.Effect("b", ok()),
+	))
+
+	require.ErrorIs(t, out.err, context.DeadlineExceeded)
+	assert.Equal(t, pipeline.StatusNotReached, out.state.Element("p/b").Status)
+}
+
+// An overrun is a failed try like any other: the next try can pass.
+func TestRun_ATryThatOverrunsIsRetried(t *testing.T) {
+	t.Parallel()
+
+	var tries atomic.Int32
+
+	step := pipeline.StepFunc(func(ctx context.Context, _ *pipeline.StepContext) error {
+		if tries.Add(1) == 1 {
+			<-ctx.Done()
+		}
+
+		return nil
+	})
+
+	out := runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Effect("a", step).Timeout(50*time.Millisecond).Retry(2, time.Millisecond)))
+
+	require.NoError(t, out.err)
+	assert.Equal(t, int32(2), tries.Load())
+}
+
+// A step that returns in time passes, and its own error is kept when it is
+// late: only a late success is replaced.
+func TestRun_TimeoutLeavesOtherResultsAlone(t *testing.T) {
+	t.Parallel()
+
+	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Effect("a", ok()).Timeout(time.Minute)))
+	require.NoError(t, out.err)
+
+	out = runPlan(t, t.Context(), mustPlan(t,
+		pipeline.Effect("a", overrun(errors.New("disk full"))).Timeout(10*time.Millisecond)))
+	require.ErrorContains(t, out.err, "p/a: disk full")
+	require.NotErrorIs(t, out.err, context.DeadlineExceeded)
+}
+
+// A cancel is not an overrun: what a step returns after one stands, as it
+// did before.
+func TestRun_AStepCancelledUnderATimeoutHasNotOverrun(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	step := pipeline.StepFunc(func(ctx context.Context, _ *pipeline.StepContext) error {
+		cancel()
+		<-ctx.Done()
+
+		return nil
+	})
+
+	out := runPlan(t, ctx, mustPlan(t, pipeline.Effect("a", step).Timeout(time.Minute)))
+
+	assert.Equal(t, pipeline.StatusPassed, out.state.Element("p/a").Status)
+}
+
 func TestRun_RunDoesNotStartWhenCheckUsedUpTheTry(t *testing.T) {
 	t.Parallel()
 

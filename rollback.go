@@ -114,6 +114,12 @@ func (r *runner) undo(ctx context.Context, n *node) error {
 	sc := &StepContext{r: r, n: n}
 	err := safely(func() error { return undoer.Undo(uctx, sc) })
 
+	// As for a try: an Undo that outlasts its timeout has failed, whatever
+	// it returns.
+	if n.timeout > 0 && overran(ctx, uctx, err) {
+		err = overrunError(n.timeout)
+	}
+
 	// As for a step: nothing the Undo writes may follow undo.finished.
 	sc.close()
 
