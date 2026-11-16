@@ -904,8 +904,8 @@ it again.
 
 Both are given a context, and that is the only way a step is stopped. A
 timeout, a cancel and a second Ctrl-C all cancel it. A step that ignores its
-context runs on regardless. If it returns after its timeout, the try has failed
-with a timeout, even if it returns nil; after a cancel, what it returns stands.
+context runs on regardless. When it does return, after its timeout or after a
+cancel, it has failed, even if it returns nil.
 
 `StepFunc` turns a plain function into a step with neither `Check` nor `Undo`.
 `Check` and `Undo` are found on the value you give the plan, so a wrapper

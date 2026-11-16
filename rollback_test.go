@@ -492,6 +492,34 @@ func TestRollback_AnUndoThatOverrunsItsTimeoutFails(t *testing.T) {
 	require.ErrorIs(t, err, pipeline.ErrRollbackUnfinished)
 }
 
+func TestRollback_AnUndoThatReturnsAfterACancelFails(t *testing.T) {
+	t.Parallel()
+
+	var c calls
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	late := func(ctx context.Context, _ *pipeline.StepContext) error {
+		cancel()
+		<-ctx.Done()
+
+		return nil
+	}
+
+	plan := mustPlan(t, pipeline.Effect("a", undoable{c: &c, name: "a", undo: late}))
+	j := pipeline.MemoryJournal()
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+
+	res, err := pipeline.Rollback(ctx, plan, j)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorContains(t, err, "returned after it was cancelled")
+	assert.Equal(t, pipeline.OutcomeCancelled, res.Outcome)
+
+	_, err = pipeline.Run(t.Context(), plan, j)
+	require.ErrorIs(t, err, pipeline.ErrRollbackUnfinished)
+}
+
 func TestPlainObserver_ARollback(t *testing.T) {
 	t.Parallel()
 

@@ -296,13 +296,30 @@ func TestRedactor_CoversEveryErrorRunReturns(t *testing.T) {
 		ctx, cancel := context.WithCancelCause(t.Context())
 
 		out := runPlan(t, ctx, mustPlan(t,
+			pipeline.Effect("a", ok()),
+			pipeline.Effect("b", ok()),
+		), pipeline.WithRedactor(hideSecret), pipeline.WithObservers(whenFinished("p/a", func() { cancel(cause) })))
+
+		require.ErrorIs(t, out.err, cause, "the cause is still reachable")
+		assert.NotContains(t, out.err.Error(), secret)
+		assert.Contains(t, out.err.Error(), "token ***")
+	})
+
+	t.Run("a cancel cause, from a step that ignored the cancel", func(t *testing.T) {
+		t.Parallel()
+
+		cause := errors.New("aborted by operator with token " + secret)
+		ctx, cancel := context.WithCancelCause(t.Context())
+
+		out := runPlan(t, ctx, mustPlan(t,
 			pipeline.Effect("a", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
 				cancel(cause)
 
 				return nil
 			})),
-			pipeline.Effect("b", ok()),
 		), pipeline.WithRedactor(hideSecret))
+
+		require.ErrorIs(t, out.err, context.Canceled)
 
 		require.ErrorIs(t, out.err, cause, "the cause is still reachable")
 		assert.NotContains(t, out.err.Error(), secret)

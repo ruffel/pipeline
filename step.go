@@ -9,7 +9,8 @@ import "context"
 //
 // Run should return when ctx is done. That is how a timeout and a cancel
 // reach it: nothing else can stop a step, and one that ignores ctx runs on.
-// A try that returns after its timeout has failed, whatever it returns.
+// A try that returns after its timeout, or after a cancel, has failed,
+// whatever it returns.
 type Step interface {
 	Run(ctx context.Context, s *StepContext) error
 }
