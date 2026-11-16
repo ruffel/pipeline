@@ -81,6 +81,10 @@ type AttemptState struct {
 	// Rollback marks an attempt made by [Rollback], which undid steps
 	// instead of running them.
 	Rollback bool
+	// InputsChanged are the fields of the inputs that differ from the
+	// attempt before, as JSON pointers, when the attempt accepted a change:
+	// under [WithInputConsumers], [WithInputChange] or [WithNewInputs].
+	InputsChanged []string
 }
 
 // ElementState is where one group or step stands. The plan's root is a group
@@ -358,7 +362,7 @@ func (s *State) applyAttempt(e Event) {
 		s.Labels = e.Labels
 		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
 		s.Attempts = append(s.Attempts, AttemptState{
-			Run: e.Run, Attempt: e.Attempt, Started: e.TS, Rollback: e.Rollback,
+			Run: e.Run, Attempt: e.Attempt, Started: e.TS, Rollback: e.Rollback, InputsChanged: e.InputsChanged,
 		})
 
 		clear(s.kinds)

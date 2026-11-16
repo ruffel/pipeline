@@ -835,6 +835,28 @@ results. A resume must be given the same inputs, or `Run` returns
 `WithNewInputs` accepts a change, but work already done under the old inputs
 is not done again for it.
 
+The usual fix after a failed run is to correct one input and run again. That
+is safe if nothing has used the input yet, and `WithInputConsumers` says what
+uses what:
+
+```go
+pipeline.WithInputConsumers(map[string][]string{
+	"/hosts/0": {"install/node1"},
+	"/hosts/1": {"install/node2"},
+	"/license": {"install/activate"},
+})
+```
+
+A field is named by its JSON pointer into the encoded inputs, and a pointer
+covers everything beneath it. On resume, a changed field is accepted if none
+of its consumers has started, and the attempt records which fields changed.
+If a consumer has started, or the field has no consumer declared, `Run`
+returns an `*InputChangeError`, which matches `ErrInputsChanged` and lists
+each field, its old and new value, and the step that used it. A group counts
+as started once anything in it has. For a rule that isn't a list of paths,
+`WithInputChange` takes a function that is given the change and the journal's
+state.
+
 Fields of type `Secret` are never stored, so they are supplied on every
 attempt, and their values are masked wherever a step writes them.
 `WithRedactor` masks anything else.
