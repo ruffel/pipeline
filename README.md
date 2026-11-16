@@ -888,10 +888,12 @@ type contracts struct {
 }
 ```
 
-- **A build with other contracts is refused**, with `ErrInputsChanged`, before
-  any `Check`, `Run` or `Undo` is called and before anything is written:
-  whether it calls `Run`, `Run` with `Force`, or `Rollback`, and whether or
-  not the shape is the same.
+- **A build with other contracts is refused** before any `Check`, `Run` or
+  `Undo` is called and before anything is written, whether it calls `Run`,
+  `Run` with `Force`, or `Rollback`. The error is `ErrInputsChanged`. If the
+  plan's shape differs as well, the shape is asked about first: the error is
+  `ErrPlanChanged`, and the function below is not called, until
+  `WithPlanChange` accepts the shape.
 - **A transition the tool supports is its own to approve**, in a
   `WithInputChange` function. It is given the old and new inputs, the fields
   that differ and the journal's state, and its error comes back from `Run`.

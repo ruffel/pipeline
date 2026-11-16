@@ -1,3 +1,5 @@
+//go:build linux || darwin || freebsd || netbsd || openbsd || dragonfly
+
 package pipeline_test
 
 import (
@@ -468,12 +470,36 @@ func TestContracts_ShapeAndContractAreDecidedSeparately(t *testing.T) {
 	next := v1()
 	next.Contracts.Operation = "upgrade/2"
 
-	out := resumeOn(t, j, reordered, pipeline.WithInputs(next), matchByPath())
+	// The shape is asked about first. Until WithPlanChange accepts it, the
+	// refusal is about the shape, and the validator is never asked.
+	asked := false
+	validator := pipeline.WithInputChange(func(pipeline.InputChange) error {
+		asked = true
+
+		return nil
+	})
+
+	out := resumeOn(t, j, reordered, pipeline.WithInputs(next), validator)
+	require.ErrorIs(t, out.err, pipeline.ErrPlanChanged)
+	require.NotErrorIs(t, out.err, pipeline.ErrInputsChanged)
+	assert.False(t, asked)
+
+	out = resumeOn(t, j, reordered, pipeline.WithInputs(next), matchByPath())
 	require.ErrorIs(t, out.err, pipeline.ErrInputsChanged)
 	assert.Equal(t, before, fileBytes(t, path))
 
 	// With the contract it had, the shape alone is WithPlanChange's to allow.
 	require.NoError(t, resumeOn(t, j, reordered, pipeline.WithInputs(v1()), matchByPath()).err)
+}
+
+// within returns what a group has in it: its children, and its failure
+// handler, which is as much a part of it.
+func within(n pipeline.NodeSpec) []pipeline.NodeSpec {
+	if n.OnFailure == nil {
+		return n.Children
+	}
+
+	return append(append([]pipeline.NodeSpec(nil), n.Children...), *n.OnFailure)
 }
 
 // addedToSettled returns the paths that next adds inside a group that prior
@@ -487,8 +513,8 @@ func addedToSettled(prior *pipeline.State, next pipeline.NodeSpec) []string {
 	index = func(n pipeline.NodeSpec) {
 		had[n.Path] = true
 
-		for _, child := range n.Children {
-			index(child)
+		for _, inner := range within(n) {
+			index(inner)
 		}
 	}
 
@@ -506,8 +532,8 @@ func addedToSettled(prior *pipeline.State, next pipeline.NodeSpec) []string {
 			added = append(added, n.Path)
 		}
 
-		for _, child := range n.Children {
-			walk(child, settled || prior.Element(n.Path).Done && n.Kind == pipeline.KindGroup && had[n.Path])
+		for _, inner := range within(n) {
+			walk(inner, settled || prior.Element(n.Path).Done && n.Kind == pipeline.KindGroup && had[n.Path])
 		}
 	}
 
@@ -545,6 +571,18 @@ func TestContracts_ACheckOnEveryAttemptIsMadeFromTheOpenJournal(t *testing.T) {
 
 	assert.Equal(t, []string{"p/node1/repair"}, addedToSettled(prior, hotfix.Spec()))
 	assert.Empty(t, addedToSettled(prior, nodePlan(t, &c, &fails).Spec()))
+
+	// A failure handler given to the group is an addition like any other:
+	// the library enters the group again for it too.
+	handled := mustPlan(t,
+		pipeline.Group("node1",
+			pipeline.Effect("install", probe{c: &c, name: "install"}),
+			pipeline.Effect("start", probe{c: &c, name: "start"}),
+		).OnFailure(pipeline.Effect("cleanup", probe{c: &c, name: "cleanup"})),
+		pipeline.Effect("finish", probe{c: &c, name: "finish", fails: &fails}),
+	)
+	assert.Equal(t, []string{"p/node1/cleanup"}, addedToSettled(prior, handled.Spec()))
+
 	assert.Equal(t, called, c.total())
 	assert.Equal(t, before, fileBytes(t, path))
 
