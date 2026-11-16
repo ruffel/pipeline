@@ -109,7 +109,9 @@ func (o *Observer) OnEvent(_ context.Context, e pipeline.Event) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	switch e.Kind {
+	// A kind newer than the core this module requires can't be named here
+	// until that core is released: it draws nothing.
+	switch e.Kind { //nolint:exhaustive // See above.
 	case pipeline.EventRunStarted:
 		o.runStarted(e)
 	case pipeline.EventRunFinished:
