@@ -926,6 +926,17 @@ Three of them are easy to misread:
   failed keeps its status and has an `UndoError`, and a group around work that
   could not be undone reads `started`.
 
+A run that passed may still have something to say. `State.Warnings()` lists
+what its steps recorded as wrong without failing, with `RecordWarning` or as
+items with the status `warned`, so a tool can exit differently for a run that
+passed with warnings. A step that an earlier attempt finished with a warning
+still has it after the attempts that skipped it.
+
+`Inspect` gives the state. A tool that wants the events too, for a report or to
+show the messages and output that the state does not keep, calls
+`ReadEvents(path)`: it returns every event with the state they replay to, from
+one reading of the journal, whether or not a run is still writing it.
+
 What an operator can do next depends only on the latest attempt:
 
 | Latest attempt             | Next                                                  |
@@ -1158,14 +1169,23 @@ The `StepContext` is the step's way into the run:
 - `Info`, `Warn`, `Progress`, `Stdout` and `Stderr` report what it is doing.
   They are best-effort: a crash can lose the last of them, and output past a
   step's allowance is dropped. Nothing a later attempt or an `Undo` needs
-  goes here.
+  goes here. Each `Progress` report says when its task was first reported, so
+  a viewer that joins late can show how long it has run.
 - `Record` stores a small value durably, and `Recorded` reads it from a later
-  step, a later attempt or an `Undo`.
+  step, a later attempt or an `Undo`. `RecordOnce` stores one only if the step
+  has none under that key yet, for a value that must be the first one seen,
+  such as what a setting was before the step changed it.
 - `Item` records a result for one target of a step that fans out, such as one
   host, and `PreviousItems` reads them back on a later attempt. It is a record
   and no more: the run doesn't know which targets a step has, a failed item
   doesn't fail the step, and what to do about each target next time is the
-  step's to decide.
+  step's to decide. `ItemWith` adds small data of the step's own to a result,
+  such as the host it is about, so that a viewer need not parse it out of the
+  ID or the message.
+- `RecordWarning` records, durably, that something is wrong which does not
+  fail the step, and an item can have the status `ItemWarned`. The run takes
+  no notice of either. `State.Warnings()` lists those that stand, which is how
+  a tool tells a run that passed from one that passed with warnings.
 - `Inputs` returns what the run was given with `WithInputs`.
 - `Attempt`, `Path` and `Labels` say which attempt this is, and the step's own
   path and labels.
@@ -1175,7 +1195,7 @@ The `StepContext` is the step's way into the run:
 Only the secrets among the inputs are known to the run. One that a step makes
 or reads while it runs, such as a generated password or a token in a command's
 output, is masked only where the `WithRedactor` function catches it: in
-messages, output, errors and custom events. A value given to `Record`, an
+messages, output, errors, custom events and the data of an item. A value given to `Record`, an
 item's ID, a label and a path are stored as they are, so none of them may be
 secret.
 

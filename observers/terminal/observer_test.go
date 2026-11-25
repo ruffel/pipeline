@@ -374,6 +374,29 @@ func TestObserver_StopsGatesAndResets(t *testing.T) {
 │ Total time: 1m0s`)
 }
 
+// A warning a step recorded reads as a warning it only messaged does, and an
+// item that warned has a mark and a count of its own.
+func TestObserver_RecordedWarningsAndItemsThatWarned(t *testing.T) {
+	t.Parallel()
+
+	out := render(t,
+		pipeline.Event{Kind: pipeline.EventRunStarted, Path: "upgrade", Plan: upgrade()},
+		pipeline.Event{Kind: pipeline.EventStepStarted, Path: "upgrade/apply"},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node1", ItemStatus: pipeline.ItemPassed},
+		pipeline.Event{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node2", ItemStatus: pipeline.ItemWarned, Message: "clock is 2s out"},
+		pipeline.Event{Kind: pipeline.EventWarning, Path: "upgrade/apply", Message: "the old packages could not be removed"},
+		pipeline.Event{Kind: pipeline.EventStepFinished, Path: "upgrade/apply", Outcome: pipeline.OutcomePassed, DurationMs: 400},
+		pipeline.Event{Kind: pipeline.EventRunFinished, Path: "upgrade", Outcome: pipeline.OutcomePassed, DurationMs: 400},
+	)
+
+	assert.Equal(t, `· apply — Install the packages
+│ ✓ node1
+│ ! node2 — clock is 2s out
+│ [WARN] the old packages could not be removed
+✓ apply · 1 passed, 1 warned (400ms)
+`, between(t, out))
+}
+
 // TestObserver_AStopWaitingForAGroup covers the run's own message to a
 // DrainOnStop group. The group's line is already there, so the message opens
 // no second one.

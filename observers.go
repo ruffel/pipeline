@@ -124,7 +124,7 @@ func (o *PlainObserver) OnEvent(_ context.Context, e Event) {
 			reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
 	case EventGroupFinished, EventStepFinished:
 		o.printf("%s%s %s%s%s%s\n", indent, mark(e.Outcome), o.name(e.Path), reasonText(e.Reason), errorText(e.Error), elapsed(e.DurationMs))
-	case EventOutput, EventMessage, EventProgress, EventItem, EventCustom, EventStepRetry:
+	case EventOutput, EventMessage, EventWarning, EventProgress, EventItem, EventCustom, EventStepRetry:
 		o.detail(indent, e.Path, detailText(e))
 	case EventStopRequested:
 		by := ""
@@ -203,6 +203,8 @@ func detailText(e Event) string {
 	switch e.Kind { //nolint:exhaustive // Only the kinds shown under a step.
 	case EventMessage:
 		return fmt.Sprintf("[%s] %s", strings.ToUpper(string(e.Level)), e.Message)
+	case EventWarning:
+		return "[WARN] " + e.Message
 	case EventProgress:
 		if e.Total > 0 {
 			return fmt.Sprintf("%s (%d/%d)", e.Message, e.Current, e.Total)

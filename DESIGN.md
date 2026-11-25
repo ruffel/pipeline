@@ -305,6 +305,28 @@ nothing. A program built before the option would resume such a journal in the
 plan's own order, so an attempt whose plan has such a group is written as
 schema version 3.
 
+## A Warning Is a Record, Not an Outcome
+
+**Decision:** A step records a warning durably with `RecordWarning`, or as an
+item with the status `warned`, and `State.Warnings` lists those that stand. A
+run's outcome takes no notice of them, and `Warn` stays a best-effort message.
+
+Whether an operation that passed with warnings is a success is the tool's to
+say: it may map it to an exit code, a colour, or nothing. A third outcome would
+have had to be honoured by resume, rollback and every viewer in order to say
+what a list says already. So the run stays passed, and the warnings are there
+to be read.
+
+`Warn` could not simply be made durable. Messages are most of what a step
+writes after its output, replay passes over them without decoding them, and a
+durable write is a sync to disk. A warning that something acts on is rarer, and
+worth that cost, so the step says which it means.
+
+A step's own warnings stand until an attempt calls its `Run` again, not until
+the next attempt. The attempts that resume an operation skip the steps already
+done, and a warning about work that was done still applies when the operation
+finally passes.
+
 ## Control Requests Are Acknowledged Through the Journal
 
 **Decision:** `RequestStop` and `Approve` write a request into a directory beside

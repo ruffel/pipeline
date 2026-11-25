@@ -135,7 +135,7 @@ func (o *Observer) OnEvent(_ context.Context, e pipeline.Event) {
 		o.item(e)
 	case pipeline.EventOutput:
 		o.output(e)
-	case pipeline.EventMessage, pipeline.EventProgress, pipeline.EventCustom, pipeline.EventStepRetry:
+	case pipeline.EventMessage, pipeline.EventWarning, pipeline.EventProgress, pipeline.EventCustom, pipeline.EventStepRetry:
 		o.detail(e.Path, o.detailText(e), false)
 	case pipeline.EventStopRequested:
 		o.stopRequested(e)
@@ -323,6 +323,8 @@ func (o *Observer) item(e pipeline.Event) {
 		icon = o.color(o.p.ErrorIcon, o.p.Error)
 	case pipeline.ItemSkipped:
 		icon = o.muted(o.p.SkipIcon)
+	case pipeline.ItemWarned:
+		icon = o.color("!", o.p.Warning)
 	default:
 		icon = o.muted("?")
 	}
@@ -357,10 +359,12 @@ func (o *Observer) stopRequested(e pipeline.Event) {
 	o.println(o.color(text, o.p.Warning))
 }
 
-// detailText is what a message, progress report, custom event or retry
-// shows under its step.
+// detailText is what a message, recorded warning, progress report, custom
+// event or retry shows under its step.
 func (o *Observer) detailText(e pipeline.Event) string {
 	switch e.Kind { //nolint:exhaustive // Only the kinds shown under a step.
+	case pipeline.EventWarning:
+		return "[" + o.color("WARN", o.p.Warning) + "] " + e.Message
 	case pipeline.EventMessage:
 		if e.Level == pipeline.LevelWarn {
 			return "[" + o.color("WARN", o.p.Warning) + "] " + e.Message
@@ -545,7 +549,9 @@ func counts(items map[string]pipeline.ItemStatus) string {
 
 	var parts []string
 
-	for _, s := range []pipeline.ItemStatus{pipeline.ItemPassed, pipeline.ItemFailed, pipeline.ItemSkipped} {
+	for _, s := range []pipeline.ItemStatus{
+		pipeline.ItemPassed, pipeline.ItemWarned, pipeline.ItemFailed, pipeline.ItemSkipped,
+	} {
 		if n[s] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", n[s], s))
 		}

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/ruffel/pipeline/internal/linesplit"
 )
@@ -19,6 +21,11 @@ const (
 	MaxRecordBytes = 64 << 10
 	// MaxCustomBytes caps the encoded data of one custom event.
 	MaxCustomBytes = 64 << 10
+	// MaxItemDataBytes caps the encoded data of one item.
+	MaxItemDataBytes = 4 << 10
+	// MaxWarningBytes caps the warnings one step records in one attempt
+	// with RecordWarning: the lengths of their messages, added up.
+	MaxWarningBytes = 64 << 10
 	// MaxOutputLine is the longest output line recorded as one event. Longer
 	// lines are recorded in pieces, all but the first marked Continued.
 	MaxOutputLine = 16 << 10
@@ -48,6 +55,9 @@ type StepContext struct {
 	mu       sync.Mutex
 	closed   bool
 	recorded int
+	warned   int
+	// tasks is when the step first reported progress on each task, by key.
+	tasks map[string]time.Time
 
 	// Output writers, created on first use, and the step's output so far.
 	stdout, stderr *linesplit.Writer
@@ -96,16 +106,83 @@ func (s *StepContext) Info(msg string) {
 	_ = s.emit(Event{Kind: EventMessage, Level: LevelInfo, Message: msg})
 }
 
-// Warn records a warning. It is best-effort.
+// Warn records a warning. It is best-effort: a message for whoever is
+// watching, which a crash can lose and the state does not keep. For a
+// warning that anything is to act on, use RecordWarning.
 func (s *StepContext) Warn(msg string) {
 	_ = s.emit(Event{Kind: EventMessage, Level: LevelWarn, Message: msg})
+}
+
+// RecordWarning records that something is wrong which does not fail the
+// step, such as a task after the main work that could not be done. It is
+// durable, where Warn is best-effort: it is stored before RecordWarning
+// returns, and [State.Warnings] lists it, so a tool can tell a run that
+// passed from one that passed with warnings.
+//
+// It is a record, and the run takes no notice of it: the step passes or
+// fails by what its Run returns, and the run's outcome is the same either
+// way. A step's warnings stand until a later attempt calls its Run again,
+// which then says afresh what is wrong, and are forgotten with its other
+// records: when a rollback undoes the step, a recovery step resets its
+// group, or a forced attempt starts over. A warning about one target of
+// many is an item with status [ItemWarned].
+//
+// It returns an error, and records nothing, if the message is empty or
+// would take the step past [MaxWarningBytes] in this attempt.
+func (s *StepContext) RecordWarning(msg string) error {
+	if msg == "" {
+		return errors.New("pipeline: warning is empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.r == nil {
+		return ErrStepReturned
+	}
+
+	if s.warned+len(msg) > MaxWarningBytes {
+		return fmt.Errorf("pipeline: the step's recorded warnings would exceed %d bytes", MaxWarningBytes)
+	}
+
+	if err := s.emitLocked(Event{Kind: EventWarning, Message: msg}); err != nil {
+		return err
+	}
+
+	s.warned += len(msg)
+
+	return nil
 }
 
 // Progress reports progress on the task named key. A total of zero means the
 // total is unknown. It is best-effort, and viewers keep only the latest value
 // for each key.
+//
+// Every report says when the step first reported on the task, in this
+// attempt, so a viewer that joins late can say how long the task has run
+// from the one report it sees. A step that does one thing after another
+// gives each its own key.
 func (s *StepContext) Progress(key, msg string, current, total int) {
-	_ = s.emit(Event{Kind: EventProgress, Key: key, Message: msg, Current: current, Total: total})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.r == nil {
+		return
+	}
+
+	started, reported := s.tasks[key]
+	if !reported {
+		if s.tasks == nil {
+			s.tasks = map[string]time.Time{}
+		}
+
+		started = s.r.clock.Now().UTC()
+		s.tasks[key] = started
+	}
+
+	_ = s.emitLocked(Event{
+		Kind: EventProgress, Key: key, Message: msg, Current: current, Total: total, Started: started,
+	})
 }
 
 // Item records the step's result for one target, such as one host of a call
@@ -118,18 +195,50 @@ func (s *StepContext) Progress(key, msg string, current, total int) {
 // returns. And what a later attempt does about each target is the step's to
 // decide, from PreviousItems. The latest result for a target replaces the
 // one before.
+//
+// A target that passed with something wrong is [ItemWarned], with the
+// message saying what. [State.Warnings] lists such items.
 func (s *StepContext) Item(id string, status ItemStatus, msg string) error {
+	return s.ItemWith(id, status, msg, nil)
+}
+
+// ItemWith is Item, with data of the step's own about the result: small and
+// structured, for whatever reads the journal to show or act on, such as the
+// host a check ran against, or a fingerprint an operator is to verify. It
+// saves putting such things in the id or the message, to be parsed out
+// again.
+//
+// The data is encoded as JSON when ItemWith is called, and kept with the
+// item in [ItemState], until the target's next result replaces both. Nil is
+// no data. ItemWith returns an error, and records nothing, if the data
+// can't be encoded or is larger than [MaxItemDataBytes]. Strings in it are
+// redacted, as a message is.
+func (s *StepContext) ItemWith(id string, status ItemStatus, msg string, data any) error {
 	if id == "" {
 		return errors.New("pipeline: item id is empty")
 	}
 
 	switch status {
-	case ItemPassed, ItemFailed, ItemSkipped:
+	case ItemPassed, ItemFailed, ItemSkipped, ItemWarned:
 	default:
 		return fmt.Errorf("pipeline: unknown item status %q", status)
 	}
 
-	return s.emit(Event{Kind: EventItem, Item: id, ItemStatus: status, Message: msg})
+	var raw json.RawMessage
+
+	if data != nil {
+		var err error
+
+		if raw, err = encodeEmbeddable(data); err != nil {
+			return fmt.Errorf("pipeline: item %q: %w", id, err)
+		}
+
+		if len(raw) > MaxItemDataBytes {
+			return fmt.Errorf("pipeline: item %q: data is %d bytes, over the %d limit", id, len(raw), MaxItemDataBytes)
+		}
+	}
+
+	return s.emit(Event{Kind: EventItem, Item: id, ItemStatus: status, Message: msg, Data: raw})
 }
 
 // PreviousItems returns the results this step recorded for each target in
@@ -175,30 +284,32 @@ func (s *StepContext) Prior(path string) ElementState {
 // would take the step past [MaxRecordBytes] in this attempt. Nothing is cut
 // short to fit: record where a large result is kept, not the result.
 func (s *StepContext) Record(key string, value any) error {
-	if key == "" {
-		return errors.New("pipeline: record key is empty")
-	}
+	_, err := s.record(key, value, false)
 
-	raw, err := encodeEmbeddable(value)
-	if err != nil {
-		return fmt.Errorf("pipeline: record %q: %w", key, err)
-	}
+	return err
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.recorded+len(raw) > MaxRecordBytes {
-		return fmt.Errorf("pipeline: record %q: the step's recorded values would exceed %d bytes", key, MaxRecordBytes)
-	}
-
-	if err := s.emitLocked(Event{Kind: EventValue, Key: key, Value: raw}); err != nil {
-		return err
-	}
-
-	s.recorded += len(raw)
-	s.r.remember(s.n.path, key, raw)
-
-	return nil
+// RecordOnce records value under key, as Record does, unless the step
+// already has a value under it: one recorded earlier in this attempt, or by
+// an earlier attempt and not forgotten since. It reports whether it
+// recorded. The check and the record are one step, so if several goroutines
+// of a step call it with one key, exactly one of them records.
+//
+// It is for a value that has to be the first one seen, such as what a
+// setting was before the step changed it. A later attempt finds the setting
+// already changed, and must not record that as what was there before.
+//
+// A value that is not recorded takes nothing from the step's allowance. One
+// that is recorded lasts as every recorded value does: through a forced
+// attempt, and until a rollback undoes the step or a recovery step resets
+// its group, after which RecordOnce records again.
+//
+// It goes by what the journal holds now. A reset forgets every value
+// beneath its group, the recovery step's own from an earlier attempt among
+// them, so a recovery step that runs again records again, though Recorded
+// still reads it what the attempt started with.
+func (s *StepContext) RecordOnce(key string, value any) (bool, error) {
+	return s.record(key, value, true)
 }
 
 // Recorded decodes into v the latest value recorded under path and key, by
@@ -262,6 +373,43 @@ func (s *StepContext) Stdout() io.Writer {
 // Stderr is [StepContext.Stdout] for standard error.
 func (s *StepContext) Stderr() io.Writer {
 	return s.writer(&s.stderr, "stderr")
+}
+
+// record stores value under key, and reports whether it did. If once is
+// set, it stores nothing when the step already has a value under key.
+func (s *StepContext) record(key string, value any, once bool) (bool, error) {
+	if key == "" {
+		return false, errors.New("pipeline: record key is empty")
+	}
+
+	raw, err := encodeEmbeddable(value)
+	if err != nil {
+		return false, fmt.Errorf("pipeline: record %q: %w", key, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.r == nil {
+		return false, ErrStepReturned
+	}
+
+	if once && s.r.holds(s.n.path, key) {
+		return false, nil
+	}
+
+	if s.recorded+len(raw) > MaxRecordBytes {
+		return false, fmt.Errorf("pipeline: record %q: the step's recorded values would exceed %d bytes", key, MaxRecordBytes)
+	}
+
+	if err := s.emitLocked(Event{Kind: EventValue, Key: key, Value: raw}); err != nil {
+		return false, err
+	}
+
+	s.recorded += len(raw)
+	s.r.remember(s.n.path, key, raw)
+
+	return true, nil
 }
 
 func (s *StepContext) writer(w **linesplit.Writer, stream string) io.Writer {
@@ -445,6 +593,54 @@ func (r *runner) remember(path, key string, raw json.RawMessage) {
 	}
 
 	r.values[path][key] = raw
+
+	if r.standing == nil {
+		r.standing = map[string]map[string]bool{}
+	}
+
+	if r.standing[path] == nil {
+		r.standing[path] = map[string]bool{}
+	}
+
+	r.standing[path][key] = true
+}
+
+// forget notes that a recovery step has reset the group at path: the journal
+// no longer holds the values recorded beneath it, in this attempt or before.
+// Recorded still reads them, so that the recovery step can.
+func (r *runner) forget(path string) {
+	r.valuesMu.Lock()
+	defer r.valuesMu.Unlock()
+
+	if r.reset == nil {
+		r.reset = map[string]bool{}
+	}
+
+	r.reset[path] = true
+
+	maps.DeleteFunc(r.standing, func(p string, _ map[string]bool) bool { return strings.HasPrefix(p, path+"/") })
+}
+
+// holds reports whether the journal, as it is now, holds a value under path
+// and key: one recorded in this attempt that no reset has forgotten since,
+// or one from before it that no reset of this attempt has reached.
+func (r *runner) holds(path, key string) bool {
+	r.valuesMu.Lock()
+	defer r.valuesMu.Unlock()
+
+	if r.standing[path][key] {
+		return true
+	}
+
+	for group := range r.reset {
+		if strings.HasPrefix(path, group+"/") {
+			return false
+		}
+	}
+
+	_, ok := r.prev.Value(path, key)
+
+	return ok
 }
 
 // recalled returns the latest value recorded under path and key: from this

@@ -50,9 +50,10 @@ one can't be written. The rest are best-effort: a crash can lose the last few.
 | `gate.waiting`   | yes     | a gate       | `prompt`, `deadline`                                                                                                       |
 | `gate.released`  | yes     | a gate       | `by`, `who`, `uid`, `policy`                                                                                               |
 | `value`          | yes     | a step       | `key`, `value`                                                                                                             |
-| `item`           | yes     | a step       | `item`, `itemStatus`, `message`                                                                                            |
+| `item`           | yes     | a step       | `item`, `itemStatus`, `message`, `data`                                                                                    |
+| `warning`        | yes     | a step       | `message`                                                                                                                  |
 | `message`        | no      | a step       | `level`, `message`                                                                                                         |
-| `progress`       | no      | a step       | `key`, `message`, `current`, `total`                                                                                       |
+| `progress`       | no      | a step       | `key`, `message`, `current`, `total`, `started`                                                                            |
 | `output`         | no      | a step       | `stream`, `line`, `continued`                                                                                              |
 | `custom`         | no      | a step       | `type`, `data`                                                                                                             |
 | `stop.requested` | yes     | the root     | `mode`, `by`, `who`, `uid`                                                                                                 |
@@ -88,6 +89,15 @@ What each one means:
 - **`gate.waiting`** and **`gate.released`** bracket a gate's wait. A gate that
   a stop interrupts is never released.
 - **`value`** is a `Record`, and **`item`** a result for one target of a step.
+  An item's `data` is JSON of the step's own about that result, if it gave
+  any. The latest `item` for a target replaces the one before, `data` and all.
+- **`progress`** reports on the task its `key` names. `started` is when the
+  step first reported on that task in this attempt, and every report of the
+  task repeats it: a viewer that joins late shows how long the task has run
+  from the one report it sees.
+- **`warning`** is a `RecordWarning`: something a step found wrong that did
+  not fail it, kept for whatever decides what a run that passed with warnings
+  is worth. An `item` with the status `warned` says the same of one target.
 - **`message`** is an `Info` or a `Warn`. A warning from the run itself, such as
   an observer being dropped, has no `path`. One at a group's `path` is the run
   saying that the group, a `drainOnStop` one, is finishing before a stop.
@@ -115,7 +125,7 @@ ended before reaching.
 | `outcome`    | `undo.finished`                | `undone`, `skipped`, `failed`                                                                               |
 | `reason`     | a skipped or recovered outcome | `done`, `earlier-attempt`, `recovered`, `settled`, `not-reached`, `group-skipped`, `run-skipped`, `no-undo` |
 | `skip`       | `step.finished`                | `skip-group`, `skip-run`: what the step's `Run` asked for                                                   |
-| `itemStatus` | `item`                         | `passed`, `failed`, `skipped`                                                                               |
+| `itemStatus` | `item`                         | `passed`, `failed`, `skipped`, `warned`                                                                     |
 | `level`      | `message`                      | `info`, `warn`                                                                                              |
 | `stream`     | `output`                       | `stdout`, `stderr`                                                                                          |
 | `mode`       | `stop.requested`               | `graceful`, `cancel`                                                                                        |
@@ -188,6 +198,11 @@ with an error of kind `cancelled`.
   - a `run.started` whose `plan` has paths the one before it lacked means the
     groups around each new path are no longer finished. Paths it no longer
     has keep what they had.
+- **A step's `warning` events add up,** where the latest `item` for a target
+  wins. They stand until a later attempt has a `step.running` for the step,
+  which forgets those of the attempts before it, and they go with the step's
+  values and items: at a `group.reset` around it, an `undo.finished` that
+  undoes it, or a `run.started` with `forced`.
 - **What a step was when it ran is in the attempt that ran it.** A
   `step.running` for a step that its own attempt's `plan` marks `irreversible`
   is a point of no return, and nothing after it takes that back: not an
