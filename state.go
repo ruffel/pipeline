@@ -118,6 +118,9 @@ type AttemptState struct {
 	// attempt before, as JSON pointers, when the attempt accepted a change:
 	// under [WithInputConsumers], [WithInputChange] or [WithNewInputs].
 	InputsChanged []string
+	// Data is what the attempt was given with [WithRunData], encoded, if
+	// anything: its own, whatever the attempts around it were given.
+	Data json.RawMessage
 }
 
 // ElementState is where one group or step stands. The plan's root is a group
@@ -594,6 +597,7 @@ func (s *State) applyAttempt(e Event) {
 		s.Inputs, s.InputsDigest = e.Inputs, e.InputsDigest
 		s.Attempts = append(s.Attempts, AttemptState{
 			Run: e.Run, Attempt: e.Attempt, Started: e.TS, Rollback: e.Rollback, InputsChanged: e.InputsChanged,
+			Data: e.Data,
 		})
 
 		clear(s.kinds)

@@ -54,6 +54,8 @@ const (
 type config struct {
 	observers []Observer
 	labels    L
+	// data is what the attempt was given with WithRunData.
+	data      any
 	clock     Clock
 	resume    ResumeMode
 	force     bool
@@ -89,6 +91,29 @@ func WithObservers(observers ...Observer) Option {
 func WithRunLabels(l L) Option {
 	return func(c *config) {
 		c.labels = maps.Clone(l)
+	}
+}
+
+// MaxRunDataBytes caps the encoded data an attempt is given with
+// [WithRunData].
+const MaxRunDataBytes = 64 << 10
+
+// WithRunData records v with the attempt: data about this attempt for
+// whoever reads the journal, such as the layout of a cluster that a viewer
+// draws before any step has reported. It is encoded as JSON and stored in
+// the attempt's run.started event, and [AttemptState] returns it as Data.
+//
+// Unlike [WithInputs] it binds nothing. Each attempt has its own: a later
+// one may be given other data, or none, and nothing compares the two. It is
+// no part of the inputs or of the plan's fingerprint, and steps are not
+// given it.
+//
+// [Run] returns an error, and starts no attempt, if v can't be encoded or is
+// larger than [MaxRunDataBytes]. Strings in it are redacted, as a message
+// is, and a [Secret] is recorded as null. Nil is no data.
+func WithRunData(v any) Option {
+	return func(c *config) {
+		c.data = v
 	}
 }
 
@@ -255,8 +280,8 @@ func WithStrictUndo() Option {
 
 // WithRedactor sets a function that removes secrets from text. It is applied
 // to every message, output line, error message and panic stack, and to every
-// string inside the data of a custom event or an item, before the event is
-// written to the journal or given to an observer. So secrets a step prints never reach
+// string inside the data of a custom event, an item or [WithRunData], before
+// the event is written to the journal or given to an observer. So secrets a step prints never reach
 // either.
 //
 // Every error [Run] returns carries a redacted message too, and still

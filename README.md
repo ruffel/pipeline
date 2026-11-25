@@ -875,6 +875,12 @@ Any process can read the journal while a run writes it:
 - **`Inspect`** replays it into a `State`: every attempt, and where each
   element stands.
 
+A viewer often needs something the plan does not say before any step has
+reported, such as the layout of the cluster it is to draw. `WithRunData` records
+such data with the attempt, and each of `State.Attempts` has it as `Data`. It is
+the attempt's own: unlike the inputs it binds nothing, and a later attempt may
+be given other data, or none.
+
 An observer of your own, or a viewer in another language, reads the events
 themselves. [JOURNAL.md](./JOURNAL.md) lists every kind of event and its fields.
 [examples/06-web](./examples/06-web) is such a viewer: a web page built on

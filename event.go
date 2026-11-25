@@ -282,7 +282,8 @@ type Event struct {
 	Line      string `json:"line,omitempty"`
 	Continued bool   `json:"continued,omitempty"`
 
-	// custom, and an item recorded with ItemWith: the step's own data.
+	// custom, and an item recorded with ItemWith: the step's own data. On
+	// run.started, what the attempt was given with WithRunData.
 	Type string          `json:"type,omitempty"`
 	Data json.RawMessage `json:"data,omitempty"`
 

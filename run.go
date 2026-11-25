@@ -161,7 +161,7 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		budget:        cfg.outputBudget,
 	}
 
-	res, err := r.run(runCtx, cfg.labels)
+	res, err := r.run(runCtx, cfg.labels, cfg.data)
 
 	// Every error leaves redacted, not only step failures: a cancel's cause
 	// or a journal failure can carry a secret too.
@@ -408,7 +408,13 @@ type runner struct {
 	standing map[string]map[string]bool
 }
 
-func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
+func (r *runner) run(ctx context.Context, labels L, given any) (*Result, error) {
+	// Data that can't be recorded is refused before the attempt starts.
+	data, err := runData(given)
+	if err != nil {
+		return nil, err
+	}
+
 	start := r.clock.Now()
 	spec := r.plan.Spec()
 	r.version = r.plan.version()
@@ -419,11 +425,11 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 		r.version = max(r.version, schemaOrder)
 	}
 
-	err := r.emit(Event{
+	err = r.emit(Event{
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
 		Plan: &spec, Fingerprint: r.plan.Fingerprint(), Labels: labels,
 		Inputs: r.inputs.encoded, InputsDigest: r.inputs.digest, InputsChanged: r.inputsChanged,
-		Forced: r.forced, Rollback: r.rollingBack, PID: os.Getpid(), Host: hostname(),
+		Forced: r.forced, Rollback: r.rollingBack, PID: os.Getpid(), Host: hostname(), Data: data,
 	})
 	if err == nil && r.changed != nil {
 		err = r.emit(Event{
@@ -466,6 +472,29 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	}
 
 	return &Result{Run: r.id, Attempt: r.attempt, Outcome: outcome}, err
+}
+
+// runData encodes what an attempt was given with WithRunData. Nil, of any
+// type, is no data.
+func runData(v any) (json.RawMessage, error) {
+	if v == nil {
+		return nil, nil
+	}
+
+	raw, err := encodeEmbeddable(v)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: run data: %w", err)
+	}
+
+	if len(raw) > MaxRunDataBytes {
+		return nil, fmt.Errorf("pipeline: run data is %d bytes, over the %d limit", len(raw), MaxRunDataBytes)
+	}
+
+	if string(raw) == "null" {
+		return nil, nil
+	}
+
+	return raw, nil
 }
 
 // work runs the plan's elements, recording a stop request as soon as it is

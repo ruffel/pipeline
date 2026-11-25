@@ -50,9 +50,9 @@ func (r *redactor) text(s string) string {
 }
 
 // event redacts the free text in e: messages, output lines, errors, and the
-// strings inside the data of a custom event or an item. Names, paths, labels,
-// keys and recorded values are left alone: they are the plan's and the
-// step's own data, which must not be secret.
+// strings inside the data of a custom event, an item or an attempt. Names,
+// paths, labels, keys and recorded values are left alone: they are the
+// plan's and the step's own data, which must not be secret.
 func (r *redactor) event(e Event) Event {
 	if !r.active() {
 		return e
@@ -68,8 +68,10 @@ func (r *redactor) event(e Event) Event {
 		e.Error = &info
 	}
 
-	if (e.Kind == EventCustom || e.Kind == EventItem) && len(e.Data) > 0 {
-		e.Data = r.json(e.Data)
+	if e.Kind == EventCustom || e.Kind == EventItem || e.Kind == EventRunStarted {
+		if len(e.Data) > 0 {
+			e.Data = r.json(e.Data)
+		}
 	}
 
 	return e
