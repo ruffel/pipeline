@@ -99,7 +99,7 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		return nil, err
 	}
 
-	changed, err := changedPlan(prev, plan, cfg.planChange)
+	changed, err := applyPlanChange(prev, plan, cfg.planChange)
 	if err != nil {
 		return nil, err
 	}
@@ -168,11 +168,11 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 	return res, r.redact.err(err)
 }
 
-// changedPlan decides whether an attempt may be made with plan against a
+// applyPlanChange decides whether an attempt may be made with plan against a
 // journal that stands at prev, and applies the change to prev if the plan
 // has a different shape and how allows it. It returns the change, for the
 // attempt to record, or nil if the shape is the same.
-func changedPlan(prev *State, plan *Plan, how PlanChange) (*planDiff, error) {
+func applyPlanChange(prev *State, plan *Plan, how PlanChange) (*planDiff, error) {
 	if len(prev.Attempts) == 0 || prev.Fingerprint == plan.Fingerprint() {
 		return nil, nil //nolint:nilnil // No change is not an error.
 	}
@@ -288,7 +288,7 @@ func admitted(prev *State, plan *Plan, cfg config, rollback bool) (*State, error
 	case last.Rollback && last.Outcome != OutcomePassed:
 		return nil, ErrRollbackUnfinished
 	case cfg.force:
-		return Replay(nil)
+		return newState(), nil
 	case !last.Rollback && last.Outcome == OutcomePassed:
 		return nil, ErrAlreadyComplete
 	default:
@@ -822,7 +822,7 @@ func (r *runner) parallel(ctx context.Context, n *node) error {
 			}
 		}
 
-		if g.admit(ctx, r) {
+		if g.holdBack(ctx, r) {
 			started = i
 
 			break
@@ -858,9 +858,9 @@ type parallelGroup struct {
 	skip    Reason // a child signalled: record the rest as skipped
 }
 
-// admit reports whether the next child must not start. A cancel or stop
+// holdBack reports whether the next child must not start. A cancel or stop
 // that keeps it from starting is recorded.
-func (g *parallelGroup) admit(ctx context.Context, r *runner) bool {
+func (g *parallelGroup) holdBack(ctx context.Context, r *runner) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 

@@ -37,9 +37,9 @@ func (e *JournalBusyError) Error() string {
 	return fmt.Sprintf("pipeline: journal %s is in use, last written by process %d", e.Path, e.PID)
 }
 
-// Is reports whether target is [ErrJournalBusy].
-func (e *JournalBusyError) Is(target error) bool {
-	return target == ErrJournalBusy
+// Unwrap returns [ErrJournalBusy].
+func (e *JournalBusyError) Unwrap() error {
+	return ErrJournalBusy
 }
 
 // writerPID returns the PID recorded by the latest run in the journal at

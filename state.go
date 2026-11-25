@@ -440,6 +440,20 @@ func (s *State) pointOfNoReturn(plan *NodeSpec) (string, noReturn, bool) {
 	return "", noReturn{}, false
 }
 
+// started reports whether the step or gate at path, or any beneath it, has
+// been started by an attempt and not taken back since: by an Undo, or by its
+// group's reset. One that was only recorded as skipped, because its group or
+// the run ended before reaching it, has not.
+func (s *State) started(path string) bool {
+	for p := range s.begun {
+		if p == path || strings.HasPrefix(p, path+"/") {
+			return true
+		}
+	}
+
+	return false
+}
+
 // add replays one more event, which must follow the last one.
 func (s *State) add(e Event) error {
 	if err := s.follows(e.V, e.Seq); err != nil {
@@ -759,12 +773,12 @@ func (s *State) unsettle(path string) {
 	}
 }
 
-// startOver applies a forced attempt: it does everything again, so nothing
-// done before it counts as done after it, whether or not the forced attempt
-// got that far. Element completion, signals, item results, recorded warnings
-// and the orders that groups settled are forgotten. Recorded values are kept, and so are the
-// fact that a step's Run was once called and the order a group's children
-// ran in, which rollback needs.
+// startOver applies a forced attempt: it does everything again, so nothing done
+// before it counts as done after it, whether or not the forced attempt got that
+// far. Element completion, signals, item results, recorded warnings and the
+// orders that groups settled are forgotten. Recorded values are kept, and so
+// are the fact that a step's Run was once called and the order a group's
+// children ran in, which rollback needs.
 func (s *State) startOver() {
 	for path, el := range s.elements {
 		s.elements[path] = ElementState{Status: StatusNotReached, RunCalled: el.RunCalled}

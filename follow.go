@@ -55,9 +55,9 @@ type FollowOptions struct {
 }
 
 // Follow delivers the events in the journal file named by journal to the
-// observers, then keeps delivering new ones as a run writes them, like tail
-// -f. It reads without locking, so it works from any process and cannot
-// disturb the run. Observers get exactly the events the runner's own observers got.
+// observers, then keeps delivering new ones as a run writes them, like tail -f.
+// It reads without locking, so it works from any process and cannot disturb the
+// run. Observers get exactly the events the runner's own observers got.
 //
 // Follow returns:
 //

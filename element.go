@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"maps"
+	"slices"
 	"time"
 )
 
@@ -82,7 +83,7 @@ func Group(name string, children ...Element) GroupNode {
 	return GroupNode{
 		name:     name,
 		failure:  FailureStop,
-		children: append([]Element(nil), children...),
+		children: slices.Clone(children),
 	}
 }
 

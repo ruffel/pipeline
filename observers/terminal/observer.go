@@ -23,9 +23,9 @@
 //	│ ✗ node2 (38s)
 //	✗ nodes (41s)
 //
-// Lines from below a parallel group interleave, so they all sit one level
-// below it and name their element by its path below the group. Item results are rows under their
-// step, and the step's line counts them.
+// Lines from below a parallel group interleave, so they all sit one level below
+// it and name their element by its path below the group. Item results are rows
+// under their step, and the step's line counts them.
 //
 // The observer writes as it is called. Wrap it in [pipeline.AsyncObserver] so
 // a slow or lost terminal cannot hold up a run, unless gates are answered at

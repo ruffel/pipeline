@@ -121,11 +121,12 @@ type StopRequest struct {
 	UID *int
 }
 
-// How a stop request was made.
+// How a stop was requested, or a gate released, other than by an approver:
+// what [StopRequest].By and an [Event]'s By say.
 const (
-	stopBy        = "stopper"
-	stopByControl = "control"
-	stopByTimeout = "timeout"
+	byStopper = "stopper"
+	byControl = "control"
+	byTimeout = "timeout"
 )
 
 // stopSignal is a run's graceful stop: the first request wins, and is
@@ -191,11 +192,11 @@ func (r *runner) stopDone() <-chan struct{} {
 }
 
 func (r *runner) stopperRequest() StopRequest {
-	return StopRequest{Mode: StopGraceful, By: stopBy, Who: r.stopper.requester()}
+	return StopRequest{Mode: StopGraceful, By: byStopper, Who: r.stopper.requester()}
 }
 
 func (r *runner) stopperCancel() StopRequest {
-	return StopRequest{Mode: StopCancel, By: stopBy, Who: r.stopper.cancelRequester()}
+	return StopRequest{Mode: StopCancel, By: byStopper, Who: r.stopper.cancelRequester()}
 }
 
 // noteStop records the graceful stop request, once. A journal failure here

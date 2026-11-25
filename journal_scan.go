@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -86,7 +87,7 @@ const scanBuffer = 64 << 10
 
 // longLine reads the rest of a line that did not fit the reader's buffer.
 func longLine(br *bufio.Reader, start []byte) ([]byte, error) {
-	line := append([]byte(nil), start...)
+	line := bytes.Clone(start)
 
 	for {
 		more, err := br.ReadSlice('\n')
@@ -113,8 +114,8 @@ func halt(err error) error {
 	return &haltError{err: err}
 }
 
-// Inspect replays the journal file named by journal without locking it, so it works
-// while a run is writing the journal, from this or any other process. A
+// Inspect replays the journal file named by journal without locking it, so it
+// works while a run is writing the journal, from this or any other process. A
 // journal that does not exist yet is an empty state.
 //
 // The state's Live field reports whether a process holds the journal open

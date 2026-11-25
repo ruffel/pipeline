@@ -159,20 +159,6 @@ func usedBy(s *State, consumers map[string][]string, pointer string) (string, bo
 	return used, declared
 }
 
-// started reports whether the step or gate at path, or any beneath it, has
-// been started by an attempt and not taken back since: by an Undo, or by its
-// group's reset. One that was only recorded as skipped, because its group or
-// the run ended before reaching it, has not.
-func (s *State) started(path string) bool {
-	for p := range s.begun {
-		if p == path || strings.HasPrefix(p, path+"/") {
-			return true
-		}
-	}
-
-	return false
-}
-
 // changedInputs returns the JSON pointers of the fields that differ between
 // two encoded inputs, sorted. They are compared as their digests are:
 // without anything that holds nothing.

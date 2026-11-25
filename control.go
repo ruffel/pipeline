@@ -174,9 +174,9 @@ func (r *runner) readControl() {
 	for _, req := range takeRequests(r.control, r.id) {
 		switch req.kind {
 		case requestCancel:
-			r.cancelRequested(StopRequest{Mode: StopCancel, By: stopByControl, Who: req.Who, UID: req.uid})
+			r.cancelRequested(StopRequest{Mode: StopCancel, By: byControl, Who: req.Who, UID: req.uid})
 		case requestStop:
-			r.stop.fire(StopRequest{Mode: StopGraceful, By: stopByControl, Who: req.Who, UID: req.uid})
+			r.stop.fire(StopRequest{Mode: StopGraceful, By: byControl, Who: req.Who, UID: req.uid})
 		case requestApprove:
 			r.approveGate(req)
 		}
@@ -503,8 +503,8 @@ func writeRequest(dir, name string, data []byte) error {
 }
 
 // Approve approves the gate at the path gate (such as
-// "upgrade/region1/continue-DC2") in the run in progress on the journal
-// file named by journal, from this or any other process. who says who approved; it
+// "upgrade/region1/continue-DC2") in the run in progress on the journal file
+// named by journal, from this or any other process. who says who approved; it
 // is recorded in the journal, with the user that wrote the approval.
 //
 // The approval goes through the run's control directory, as [RequestStop]

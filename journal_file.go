@@ -24,9 +24,9 @@ const (
 	lockInterval = 20 * time.Millisecond
 )
 
-// OpenJournal opens the journal file named by journal for writing, creating
-// it if it does not exist, and locks it: a journal has one writer at a time. A second
-// OpenJournal, from this or any other process, fails with a
+// OpenJournal opens the journal file named by journal for writing, creating it
+// if it does not exist, and locks it: a journal has one writer at a time. A
+// second OpenJournal, from this or any other process, fails with a
 // [JournalBusyError], which matches [ErrJournalBusy]. The lock is released by
 // Close, or by the kernel if the process dies.
 //
