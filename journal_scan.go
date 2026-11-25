@@ -113,26 +113,6 @@ func halt(err error) error {
 	return &haltError{err: err}
 }
 
-// readJournal decodes the events in the journal file at path, ignoring a
-// half-written last line. It takes no lock, so it can read a journal that a
-// run is writing.
-func readJournal(path string) ([]Event, error) {
-	var events []Event
-
-	_, err := scanJournal(path, func(line []byte) error {
-		e, err := decodeEvent(line)
-		if err != nil {
-			return err
-		}
-
-		events = append(events, e)
-
-		return nil
-	})
-
-	return events, err
-}
-
 // Inspect replays the journal file named by journal without locking it, so it works
 // while a run is writing the journal, from this or any other process. A
 // journal that does not exist yet is an empty state.
@@ -160,4 +140,47 @@ func Inspect(journal string) (*State, error) {
 	state.Live = journalLocked(journal)
 
 	return state, nil
+}
+
+// ReadEvents reads the journal file named by journal without locking it, as
+// [Inspect] does, and returns every event in it with the state they replay
+// to. The two come from one reading, so they agree: the state's LastSeq is
+// the last event's, which an Inspect and a separate read of a journal that a
+// run is writing can't promise. A journal that does not exist yet has no
+// events, and an empty state.
+//
+// It is for a tool that wants a run's events as data: a report, or a status
+// that shows what the state does not keep, such as messages and output. The
+// events of one attempt share its Run. A half-written last line is left
+// out, as it is by Inspect.
+//
+// It decodes every line and holds every event in memory, and a long run's
+// output can be large: Inspect is the quick way to the state alone, and
+// [Follow] gives events one at a time, with those still to come.
+func ReadEvents(journal string) ([]Event, *State, error) {
+	var events []Event
+
+	state := newState()
+
+	_, err := scanJournal(journal, func(line []byte) error {
+		e, err := decodeEvent(line)
+		if err != nil {
+			return err
+		}
+
+		if err := state.add(e); err != nil {
+			return err
+		}
+
+		events = append(events, e)
+
+		return nil
+	})
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+
+	state.Live = journalLocked(journal)
+
+	return events, state, nil
 }

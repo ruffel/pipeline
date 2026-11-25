@@ -548,3 +548,92 @@ func TestJournal_ReadersIgnoreKindsAndFieldsTheyDontKnow(t *testing.T) {
 	_, err = pipeline.Run(t.Context(), mustPlan(t, pipeline.Effect("a", ok()), pipeline.Effect("b", ok())), j)
 	require.NoError(t, err, "the run resumes")
 }
+
+// ReadEvents gives a tool a journal's events and the state they replay to
+// from one reading, without the writer's lock: here from inside a step, with
+// the run still writing.
+func TestReadEvents_ReadsWhatARunHasWrittenSoFar(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+
+	events, state, err := pipeline.ReadEvents(path)
+	require.NoError(t, err, "a journal that doesn't exist yet has no events")
+	assert.Empty(t, events)
+	assert.Empty(t, state.Attempts)
+	assert.False(t, state.Live)
+
+	var (
+		during []pipeline.Event
+		then   *pipeline.State
+	)
+
+	reads := pipeline.StepFunc(func(_ context.Context, s *pipeline.StepContext) error {
+		s.Info("half-way")
+
+		var err error
+
+		during, then, err = pipeline.ReadEvents(path)
+
+		return err
+	})
+
+	j, err := pipeline.OpenJournal(path)
+	require.NoError(t, err)
+
+	_, err = pipeline.Run(t.Context(), mustPlan(t,
+		pipeline.Effect("a", ok()), pipeline.Effect("b", reads), pipeline.Effect("c", ok()),
+	), j)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, during)
+	assert.Equal(t, "half-way", during[len(during)-1].Message, "best-effort events are among them")
+	assert.Equal(t, during[len(during)-1].Seq, then.LastSeq, "the state is of the same reading")
+	assert.True(t, then.Live, "a writer holds the journal")
+	assert.Equal(t, pipeline.StatusPassed, then.Element("p/a").Status)
+	assert.Equal(t, pipeline.StatusStarted, then.Element("p/b").Status)
+	assert.Equal(t, pipeline.StatusNotReached, then.Element("p/c").Status)
+
+	written, err := j.Events()
+	require.NoError(t, err)
+	require.NoError(t, j.Close())
+
+	events, state, err = pipeline.ReadEvents(path)
+	require.NoError(t, err)
+	assert.Equal(t, written, events, "every event, as the journal holds it")
+	assert.Equal(t, during, events[:len(during)])
+	assert.False(t, state.Live)
+
+	inspected, err := pipeline.Inspect(path)
+	require.NoError(t, err)
+	assert.Equal(t, inspected.LastSeq, state.LastSeq)
+	assert.Equal(t, inspected.Element("p/c"), state.Element("p/c"))
+	assert.False(t, state.Unfinished())
+}
+
+// A half-written last line is left out, as it is by Inspect. A whole line
+// that is not an event is damage.
+func TestReadEvents_LeavesAHalfWrittenLineAndReportsDamage(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	runToFile(t, path, mustPlan(t, pipeline.Effect("a", ok())))
+
+	whole, _, err := pipeline.ReadEvents(path)
+	require.NoError(t, err)
+	require.NotEmpty(t, whole)
+
+	appendBytes(t, path, `{"v":1,"seq":999,"kind":"mess`)
+
+	events, state, err := pipeline.ReadEvents(path)
+	require.NoError(t, err)
+	assert.Equal(t, whole, events)
+	assert.Equal(t, whole[len(whole)-1].Seq, state.LastSeq)
+
+	appendBytes(t, path, "\n")
+
+	events, state, err = pipeline.ReadEvents(path)
+	require.ErrorIs(t, err, pipeline.ErrJournalCorrupt)
+	assert.Nil(t, events)
+	assert.Nil(t, state)
+}

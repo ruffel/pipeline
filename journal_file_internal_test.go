@@ -100,7 +100,7 @@ func TestFileJournal_StaysBrokenAfterAFailedWrite(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrDeadlineExceeded, "the journal stays broken")
 	require.NoError(t, j.Close())
 
-	events, err := readJournal(path)
+	events, _, err := ReadEvents(path)
 	require.NoError(t, err)
 	assert.Len(t, events, 2)
 

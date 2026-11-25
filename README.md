@@ -926,6 +926,11 @@ Three of them are easy to misread:
   failed keeps its status and has an `UndoError`, and a group around work that
   could not be undone reads `started`.
 
+`Inspect` gives the state. A tool that wants the events too, for a report or to
+show the messages and output that the state does not keep, calls
+`ReadEvents(path)`: it returns every event with the state they replay to, from
+one reading of the journal, whether or not a run is still writing it.
+
 What an operator can do next depends only on the latest attempt:
 
 | Latest attempt             | Next                                                  |
