@@ -33,9 +33,8 @@ var (
 	// ErrIrreversible is matched by the error [Rollback] returns when an
 	// attempt has called the Run of a step marked [StepNode.Irreversible],
 	// whether or not the plan still marks it. The error is an
-	// [*IrreversibleError], which names the step. Nothing
-	// was undone, and nothing was written to the journal, so [Run] still
-	// resumes it.
+	// [*IrreversibleError], which names the step. Nothing was undone, and
+	// nothing was written to the journal, so [Run] still resumes it.
 	ErrIrreversible = errors.New("pipeline: an irreversible step has run")
 
 	// ErrNoUndo is matched by the error [Rollback] returns under

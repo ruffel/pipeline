@@ -260,6 +260,6 @@ func (w *Writer) drain(atEOF bool) {
 		w.buf = nil
 	case cap(w.buf) > 4*w.max:
 		// Don't keep a large backing array alive for a short tail.
-		w.buf = append([]byte(nil), w.buf...)
+		w.buf = bytes.Clone(w.buf)
 	}
 }

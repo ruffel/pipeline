@@ -13,12 +13,12 @@ import (
 //
 // It takes every Effect and Ensure step whose Run an attempt called, whether
 // that Run passed, failed or was interrupted, and that no rollback has undone
-// since. A step that Check found already done was never Run, and is not
-// taken. In reverse plan order, one at a time, it calls each one's Undo,
-// bounded by the step's Timeout and not retried. The steps of a
-// [GroupNode.OrderFrom] group are undone in the reverse of the order they ran
-// in. A step without an Undo is
-// recorded as skipped, with reason [ReasonNoUndo], and keeps its outcome.
+// since. A step that Check found already done was never Run, and is not taken.
+// In reverse plan order, one at a time, it calls each one's Undo, bounded by
+// the step's Timeout and not retried. The steps of a [GroupNode.OrderFrom]
+// group are undone in the reverse of the order they ran in. A step without an
+// Undo is recorded as skipped, with reason [ReasonNoUndo], and keeps its
+// outcome.
 //
 // An Undo can read what the step's Run recorded, with
 // [StepContext.Recorded], even if that Run was interrupted. A step undone
@@ -55,7 +55,7 @@ func Rollback(ctx context.Context, plan *Plan, j *Journal, opts ...Option) (*Res
 // undoAll undoes the steps a rollback takes, in reverse plan order, until
 // one fails or a stop or cancel is requested.
 func (r *runner) undoAll(ctx context.Context) error {
-	for _, n := range r.toUndo() {
+	for _, n := range toUndo(r.prior, r.plan) {
 		if r.cancelled(ctx) {
 			r.markCut()
 
@@ -80,10 +80,6 @@ func (r *runner) undoAll(ctx context.Context) error {
 // and no rollback has undone since, in reverse plan order: a group's
 // failure handler after its children, and the children of an OrderFrom group
 // in the order they ran in.
-func (r *runner) toUndo() []*node {
-	return toUndo(r.prior, r.plan)
-}
-
 func toUndo(prior *State, plan *Plan) []*node {
 	var steps []*node
 

@@ -64,18 +64,17 @@ type node struct {
 // the root of the tree: a sequential group whose path is its name. It is
 // [NewPlanFromGroup] of [Group](name, elems...).
 //
-// It reports every problem it finds, each prefixed with the path of the
-// element at fault: an invalid or duplicate name, a nil step, a negative
-// limit, retry count or timeout, an Observe step that has Check or Undo, an
-// irreversible step that has Undo or is an Observe step, a
-// gate with a nil approver or a timeout and policy that don't go together,
-// a group's failure handler that is not an Effect step, is named like one
-// of the group's children, or is one of two, a [GroupNode.DrainOnStop]
-// group with something in it that could keep a stop waiting or end the group
-// early, a failure handler without a timeout on a group around one, or a
-// [GroupNode.OrderFrom] group that is parallel, or whose order is to come
-// from a step that may not have run when it starts. Empty groups are
-// allowed.
+// It reports every problem it finds, each prefixed with the path of the element
+// at fault: an invalid or duplicate name, a nil step, a negative limit, retry
+// count or timeout, an Observe step that has Check or Undo, an irreversible
+// step that has Undo or is an Observe step, a gate with a nil approver or a
+// timeout and policy that don't go together, a group's failure handler that is
+// not an Effect step, is named like one of the group's children, or is one of
+// two, a [GroupNode.DrainOnStop] group with something in it that could keep a
+// stop waiting or end the group early, a failure handler without a timeout on a
+// group around one, or a [GroupNode.OrderFrom] group that is parallel, or whose
+// order is to come from a step that may not have run when it starts. Empty
+// groups are allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
 	return NewPlanFromGroup(Group(name, elems...))
 }
@@ -528,7 +527,7 @@ func (b *builder) drain(boundary, n *node, what string) {
 		}
 	default:
 		// A nil step has been reported, and has no timeout to speak of.
-		if n.timeout == 0 && !isNil(n.step) {
+		if n.timeout == 0 && !isNilValue(n.step) {
 			b.failf(n.path, "a step inside a DrainOnStop group needs a Timeout, so that it can't keep a stop waiting for ever")
 		}
 	}
@@ -562,7 +561,7 @@ func (b *builder) handler(n *node, g GroupNode, names map[string]bool) {
 
 	// A stop waits for the handler when the DrainOnStop group fails. A nil
 	// step has been reported, and has no timeout to speak of.
-	if n.aroundDrain && h.timeout == 0 && !isNil(h.step) {
+	if n.aroundDrain && h.timeout == 0 && !isNilValue(h.step) {
 		b.failf(n.handler.path, "the failure handler of a group around a DrainOnStop group needs a Timeout, "+
 			"so that it can't keep a stop waiting for ever")
 	}
@@ -575,7 +574,7 @@ func (b *builder) step(parent *node, s StepNode) *node {
 	n.backoff = s.backoff
 	n.timeout = s.timeout
 
-	if isNil(s.step) {
+	if isNilValue(s.step) {
 		b.failf(n.path, "step is nil")
 
 		return n
@@ -637,14 +636,9 @@ func (b *builder) gate(parent *node, g GateNode) *node {
 	return n
 }
 
-// isNil reports whether step is nil, or holds a nil func, pointer, map,
-// slice, channel or interface, any of which would panic when Run is called.
-func isNil(step Step) bool {
-	return isNilValue(step)
-}
-
 // isNilValue reports whether x is nil, or holds a nil func, pointer, map,
-// slice, channel or interface.
+// slice, channel or interface. A step or approver that does would panic when
+// it is called.
 func isNilValue(x any) bool {
 	if x == nil {
 		return true

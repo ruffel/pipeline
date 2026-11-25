@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"runtime/debug"
+	"slices"
 	"time"
 )
 
@@ -87,7 +88,7 @@ type GateNode struct {
 // started afresh: a run never goes on by itself sooner than its timeout
 // after it starts waiting.
 func Gate(name string, opts GateOptions) GateNode {
-	opts.Approvers = append([]Approver(nil), opts.Approvers...)
+	opts.Approvers = slices.Clone(opts.Approvers)
 
 	return GateNode{name: name, opts: opts}
 }
@@ -216,7 +217,7 @@ func (r *runner) await(
 	for {
 		select {
 		case req := <-approvals:
-			return gateRelease{end: gateApproved, by: stopByControl, who: req.Who, uid: req.uid}, nil
+			return gateRelease{end: gateApproved, by: byControl, who: req.Who, uid: req.uid}, nil
 		case a := <-answers:
 			if a.err == nil {
 				return gateRelease{end: gateApproved, by: a.name, who: a.who}, nil
@@ -271,7 +272,7 @@ func (r *runner) released(ctx context.Context, n *node, rel gateRelease, start t
 		}
 	case rel.end == gateTimedOut && n.gate.onTimeout == TimeoutStop:
 		// The gate stays unreleased: the run stops before it, as if asked.
-		r.stop.fire(StopRequest{Mode: StopGraceful, By: stopByTimeout, Who: n.path})
+		r.stop.fire(StopRequest{Mode: StopGraceful, By: byTimeout, Who: n.path})
 		r.noteStop()
 
 		fallthrough
@@ -284,7 +285,7 @@ func (r *runner) released(ctx context.Context, n *node, rel gateRelease, start t
 		finished.Outcome, err = OutcomeStopped, ErrStopped
 	case rel.end == gateTimedOut:
 		if eerr := r.emit(Event{
-			Kind: EventGateReleased, Path: n.path, By: stopByTimeout, Policy: n.gate.onTimeout,
+			Kind: EventGateReleased, Path: n.path, By: byTimeout, Policy: n.gate.onTimeout,
 		}); eerr != nil {
 			return eerr
 		}

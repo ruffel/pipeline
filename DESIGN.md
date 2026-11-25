@@ -184,8 +184,8 @@ Nobody writes the reverse plan by hand. A step whose `Run` was never called (its
 `Check` found the work done) is not undone, because it changed nothing. Plan
 order is a valid dependency order by construction, and it stays well-defined
 across attempts and in parallel groups, where "when it started" is not. A
-rollback is an attempt of its own, and running
-it again after a failure carries on without undoing anything twice.
+rollback is an attempt of its own, and running it again after a failure carries
+on without undoing anything twice.
 
 A step marked `Irreversible` is a point of no return: once its `Run` has been
 called, `Rollback` refuses. A rollback that undid the steps around it and then

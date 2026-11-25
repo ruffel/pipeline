@@ -1208,12 +1208,12 @@ The `StepContext` is the step's way into the run:
 - `Custom` sends an event of your own to observers, best-effort like a
   message.
 
-Only the secrets among the inputs are known to the run. One that a step makes
-or reads while it runs, such as a generated password or a token in a command's
+Only the secrets among the inputs are known to the run. One that a step makes or
+reads while it runs, such as a generated password or a token in a command's
 output, is masked only where the `WithRedactor` function catches it: in
-messages, output, errors, custom events and the data of an item. A value given to `Record`, an
-item's ID, a label and a path are stored as they are, so none of them may be
-secret.
+messages, output, errors, custom events and the data of an item. A value given
+to `Record`, an item's ID, a label and a path are stored as they are, so none of
+them may be secret.
 
 ### Observers
 
