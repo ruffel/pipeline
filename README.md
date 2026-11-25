@@ -1165,7 +1165,9 @@ The `StepContext` is the step's way into the run:
   step's allowance is dropped. Nothing a later attempt or an `Undo` needs
   goes here.
 - `Record` stores a small value durably, and `Recorded` reads it from a later
-  step, a later attempt or an `Undo`.
+  step, a later attempt or an `Undo`. `RecordOnce` stores one only if the step
+  has none under that key yet, for a value that must be the first one seen,
+  such as what a setting was before the step changed it.
 - `Item` records a result for one target of a step that fans out, such as one
   host, and `PreviousItems` reads them back on a later attempt. It is a record
   and no more: the run doesn't know which targets a step has, a failed item

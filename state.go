@@ -207,6 +207,16 @@ func (s *State) Value(path, key string) (json.RawMessage, bool) {
 	return v, ok
 }
 
+// Values returns every value recorded under path, by key: the latest for
+// each, from any attempt. It is for a viewer that shows all a step has
+// recorded without knowing its keys.
+func (s *State) Values(path string) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(s.values[path]))
+	maps.Copy(out, s.values[path])
+
+	return out
+}
+
 // Items returns the latest result for each target of the step at path.
 func (s *State) Items(path string) map[string]ItemState {
 	out := make(map[string]ItemState, len(s.items[path]))

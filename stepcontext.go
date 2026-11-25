@@ -175,30 +175,27 @@ func (s *StepContext) Prior(path string) ElementState {
 // would take the step past [MaxRecordBytes] in this attempt. Nothing is cut
 // short to fit: record where a large result is kept, not the result.
 func (s *StepContext) Record(key string, value any) error {
-	if key == "" {
-		return errors.New("pipeline: record key is empty")
-	}
+	_, err := s.record(key, value, false)
 
-	raw, err := encodeEmbeddable(value)
-	if err != nil {
-		return fmt.Errorf("pipeline: record %q: %w", key, err)
-	}
+	return err
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.recorded+len(raw) > MaxRecordBytes {
-		return fmt.Errorf("pipeline: record %q: the step's recorded values would exceed %d bytes", key, MaxRecordBytes)
-	}
-
-	if err := s.emitLocked(Event{Kind: EventValue, Key: key, Value: raw}); err != nil {
-		return err
-	}
-
-	s.recorded += len(raw)
-	s.r.remember(s.n.path, key, raw)
-
-	return nil
+// RecordOnce records value under key, as Record does, unless the step
+// already has a value under it: one recorded earlier in this attempt, or by
+// an earlier attempt and not forgotten since. It reports whether it
+// recorded. The check and the record are one step, so if several goroutines
+// of a step call it with one key, exactly one of them records.
+//
+// It is for a value that has to be the first one seen, such as what a
+// setting was before the step changed it. A later attempt finds the setting
+// already changed, and must not record that as what was there before.
+//
+// A value that is not recorded takes nothing from the step's allowance. One
+// that is recorded lasts as every recorded value does: through a forced
+// attempt, and until a rollback undoes the step or a recovery step resets
+// its group, after which RecordOnce records again.
+func (s *StepContext) RecordOnce(key string, value any) (bool, error) {
+	return s.record(key, value, true)
 }
 
 // Recorded decodes into v the latest value recorded under path and key, by
@@ -262,6 +259,45 @@ func (s *StepContext) Stdout() io.Writer {
 // Stderr is [StepContext.Stdout] for standard error.
 func (s *StepContext) Stderr() io.Writer {
 	return s.writer(&s.stderr, "stderr")
+}
+
+// record stores value under key, and reports whether it did. If once is
+// set, it stores nothing when the step already has a value under key.
+func (s *StepContext) record(key string, value any, once bool) (bool, error) {
+	if key == "" {
+		return false, errors.New("pipeline: record key is empty")
+	}
+
+	raw, err := encodeEmbeddable(value)
+	if err != nil {
+		return false, fmt.Errorf("pipeline: record %q: %w", key, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.r == nil {
+		return false, ErrStepReturned
+	}
+
+	if once {
+		if _, recorded := s.r.recalled(s.n.path, key); recorded {
+			return false, nil
+		}
+	}
+
+	if s.recorded+len(raw) > MaxRecordBytes {
+		return false, fmt.Errorf("pipeline: record %q: the step's recorded values would exceed %d bytes", key, MaxRecordBytes)
+	}
+
+	if err := s.emitLocked(Event{Kind: EventValue, Key: key, Value: raw}); err != nil {
+		return false, err
+	}
+
+	s.recorded += len(raw)
+	s.r.remember(s.n.path, key, raw)
+
+	return true, nil
 }
 
 func (s *StepContext) writer(w **linesplit.Writer, stream string) io.Writer {
