@@ -32,13 +32,17 @@ type node struct {
 	failure  FailurePolicy
 	children []*node
 	// handler is the group's failure handler, if any, and recovers whether
-	// it resets the group first.
+	// it resets the group first. handles is the group that a failure handler
+	// is the handler of.
 	handler  *node
 	recovers bool
+	handles  *node
 	// drain marks a DrainOnStop group. boundary is the DrainOnStop group
-	// that an element is, or is inside, if any.
-	drain    bool
-	boundary *node
+	// that an element is, or is inside, if any, and aroundDrain whether a
+	// group has one beneath it.
+	drain       bool
+	boundary    *node
+	aroundDrain bool
 
 	// Step fields.
 	step     Step
@@ -64,9 +68,10 @@ type node struct {
 // irreversible step that has Undo or is an Observe step, a
 // gate with a nil approver or a timeout and policy that don't go together,
 // a group's failure handler that is not an Effect step, is named like one
-// of the group's children, or is one of two, or a [GroupNode.DrainOnStop]
+// of the group's children, or is one of two, a [GroupNode.DrainOnStop]
 // group with something in it that could keep a stop waiting or end the group
-// early. Empty groups are allowed.
+// early, or a failure handler without a timeout on a group around one. Empty
+// groups are allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
 	return NewPlanFromGroup(Group(name, elems...))
 }
@@ -313,6 +318,7 @@ func (b *builder) group(parent *node, g GroupNode) *node {
 
 		seen[c.name] = true
 		n.children = append(n.children, c)
+		n.aroundDrain = n.aroundDrain || c.drain || c.aroundDrain
 	}
 
 	b.handler(n, g, seen)
@@ -380,6 +386,7 @@ func (b *builder) handler(n *node, g GroupNode, names map[string]bool) {
 	}
 
 	n.handler, n.recovers = b.step(n, *h), recovers
+	n.handler.handles = n
 
 	if h.kind != KindEffect {
 		b.failf(n.handler.path, "a failure handler must be an effect step, not %s", h.kind)
@@ -387,6 +394,13 @@ func (b *builder) handler(n *node, g GroupNode, names map[string]bool) {
 
 	if names[h.name] {
 		b.failf(n.handler.path, "a failure handler may not share its name with one of the group's children")
+	}
+
+	// A stop waits for the handler when the DrainOnStop group fails. A nil
+	// step has been reported, and has no timeout to speak of.
+	if n.aroundDrain && h.timeout == 0 && !isNil(h.step) {
+		b.failf(n.handler.path, "the failure handler of a group around a DrainOnStop group needs a Timeout, "+
+			"so that it can't keep a stop waiting for ever")
 	}
 }
 

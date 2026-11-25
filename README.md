@@ -804,6 +804,12 @@ pipeline.Group("node1", stop, install, start, verify).DrainOnStop()
   again, however many tries it has left. So a stop can still leave the group
   part-way: finishing is what a healthy group does, and no protection against
   the process dying.
+- **A group that fails is handled, stop or no stop.** The failure handlers of
+  the groups around it still run, so a `RecoverOnFailure` step on a group
+  around this one puts a failed node back instead of leaving it as it fell.
+  The stop waits for them too: each needs a `Timeout`, and is tried once. A
+  cancel keeps them from starting. The run has failed, and a later attempt
+  starts the node again from its first step.
 - **Nothing in the group may hold a stop for ever, or end the group early.**
   It is sequential and stops at its first failure, every step in it has a
   `Timeout`, and it has no gate, failure handler or `DrainOnStop` group inside

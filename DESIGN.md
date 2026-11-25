@@ -217,7 +217,8 @@ terminal.
 
 **Decision:** A graceful stop takes effect between two steps, except inside a
 group marked `DrainOnStop` that has already started: that group runs to its end
-first. Nothing else about the group changes.
+first, and if it ends in failure, that failure is handled first too. Nothing
+else about the group changes.
 
 A stop is for leaving the system somewhere safe, and between two steps is not
 always that: a node stopped for its upgrade and not yet started again. Making
@@ -237,6 +238,16 @@ while a step is already waiting to be tried again ends that wait, as it does
 anywhere, and leaves the run stopped. The group is entered at the same check
 that keeps any element from starting after a stop, so a stop and a group's
 start are ordered there, and nowhere else.
+
+A group that fails under a pending stop is still handled: the failure handlers
+of the groups around it run, as they would have with no stop. Everywhere else
+a stop keeps a handler from starting, and here that rule would undo the
+option's purpose. The stop was put off so that the unit would not be left half
+done, and a unit that failed and was then denied its recovery is left exactly
+that way, by the stop. So the handling of the failure is part of what the stop
+waits for. That is why those handlers need a timeout, and why one is tried
+once, like a step of the group. A failure outside the group has no such claim
+on the stop, and a cancel waits for nothing.
 
 Nothing new is recorded. The journal already has the stop request and each
 group's start and finish, so `State.Draining` reads "a stop is pending and

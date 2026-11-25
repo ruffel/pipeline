@@ -328,8 +328,10 @@ type runner struct {
 	halted      atomic.Bool
 	cancelNoted sync.Once
 	// draining are the DrainOnStop groups that have carried on past a stop,
-	// by path: each says so once.
-	draining sync.Map
+	// by path: each says so once. drainFailed are those that have failed, by
+	// path: a stop does not hold back the handling of their failure.
+	draining    sync.Map
+	drainFailed sync.Map
 
 	// gates are the gates waiting for approval through the control
 	// directory, by path.
@@ -517,6 +519,10 @@ func (r *runner) group(ctx context.Context, n *node) error {
 		outcome = OutcomeStopped
 	default:
 		outcome = OutcomeFailed
+
+		if n.drain {
+			r.drainFailed.Store(n.path, true)
+		}
 	}
 
 	if ferr := r.emit(Event{
@@ -533,6 +539,11 @@ func (r *runner) group(ctx context.Context, n *node) error {
 // keeps it from starting, and returns the handler's failure. A recovery
 // handler's reset is recorded as it starts. A stop or cancel requested before
 // it starts keeps it from running, as it keeps any step from starting.
+//
+// A stop does not keep it from running if a DrainOnStop group beneath the
+// group has failed. The stop waited for that group to end, and a group that
+// ends in failure is not left as it fell because a stop happened to be
+// pending: its failure is handled as it would have been.
 func (r *runner) handle(ctx context.Context, n *node) error {
 	if n.handler == nil {
 		return nil
@@ -547,7 +558,14 @@ func (r *runner) handle(ctx context.Context, n *node) error {
 		r.markCut()
 
 		return nil
-	case r.stopping():
+	case !r.stopping():
+	case r.failedDraining(n):
+		// Whoever is following the run sees a step start after the stop.
+		_ = r.emit(Event{
+			Kind: EventMessage, Path: n.path, Level: LevelInfo,
+			Message: "a stop was requested: this group's failure is handled first",
+		})
+	default:
 		r.halt()
 
 		return nil
@@ -961,13 +979,31 @@ func (r *runner) tries(
 // A DrainOnStop group is finished under a stop, not worked at. So a step in
 // one is not tried again once a stop is pending, and it is the failure that
 // ends the group, with tries left or without: the stop is not what kept
-// anything from happening, and the run has failed.
+// anything from happening, and the run has failed. The same goes for a
+// failure handler that a stop is waiting for, because such a group failed.
 func (r *runner) lastTry(ctx context.Context, n *node, try int) bool {
 	if try >= n.tries || ctx.Err() != nil || r.fatalErr() != nil {
 		return true
 	}
 
-	return n.boundary != nil && r.stopping()
+	awaited := n.boundary != nil || (n.handles != nil && r.failedDraining(n.handles))
+
+	return awaited && r.stopping()
+}
+
+// failedDraining reports whether a DrainOnStop group beneath n has failed in
+// this attempt.
+func (r *runner) failedDraining(n *node) bool {
+	failed := false
+
+	r.drainFailed.Range(func(path, _ any) bool {
+		p, _ := path.(string)
+		failed = strings.HasPrefix(p, n.path+"/")
+
+		return !failed
+	})
+
+	return failed
 }
 
 // backoff waits before the step's next try. If a cancel or stop cuts the
