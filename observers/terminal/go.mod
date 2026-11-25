@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/ruffel/pipeline v0.5.1-0.20261125133441-25ae393e0ae8
+	github.com/ruffel/pipeline v0.6.0
 	github.com/stretchr/testify v1.12.1
 )
 
