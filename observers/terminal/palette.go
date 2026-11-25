@@ -4,6 +4,10 @@ import "github.com/charmbracelet/lipgloss"
 
 // Palette is the colors and icons an [Observer] uses, so its output can be
 // re-branded without changing its layout.
+//
+// The icons are those of the three commonest outcomes: passed, failed and
+// skipped. The rest of the marks, such as a group starting, a stop, a gate
+// waiting, an undo and a retry, are part of the layout and stay as they are.
 type Palette struct {
 	// Primary colors the run's boxes and the mark of a group starting or a
 	// gate released.

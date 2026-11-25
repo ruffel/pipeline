@@ -374,6 +374,6 @@ func TestPlanChange_InspectAndFollow(t *testing.T) {
 	assert.Equal(t, pipeline.StatusPassed, state.Element("p/new").Status)
 	assert.Len(t, state.Plan.Children, 3)
 
-	require.NoError(t, pipeline.Follow(t.Context(), path, pipeline.FollowOptions{}, pipeline.NewPlainObserver(&b)))
+	require.NoError(t, followErr(pipeline.Follow(t.Context(), path, pipeline.FollowOptions{}, pipeline.NewPlainObserver(&b))))
 	assert.Contains(t, b.String(), "± the plan has changed; added p/new; removed p/old\n")
 }

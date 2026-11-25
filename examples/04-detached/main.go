@@ -159,7 +159,7 @@ func run(args []string) error {
 	}
 
 	_, err = pipeline.Run(context.Background(), plan, j,
-		pipeline.WithObservers(view), pipeline.WithStopper(stopper), pipeline.WithRunLabels(pipeline.L{"operator": who()}))
+		pipeline.WithObservers(view), pipeline.WithStopper(stopper), pipeline.WithRunData(map[string]string{"operator": who()}))
 
 	if async != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -194,10 +194,8 @@ func watch(args []string) error {
 
 	// Follow hands back the journal as it read it, so watch can exit as the
 	// run did without reading the journal again.
-	var st pipeline.State
-
-	err := pipeline.Follow(ctx, *journal,
-		pipeline.FollowOptions{History: history, KeepFollowing: *keep, Result: &st},
+	st, err := pipeline.Follow(ctx, *journal,
+		pipeline.FollowOptions{History: history, KeepFollowing: *keep},
 		terminal.New(os.Stdout))
 
 	switch {

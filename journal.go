@@ -218,7 +218,7 @@ func decodeEvent(line []byte) (Event, error) {
 	}
 
 	if e.V > SchemaVersion {
-		return Event{}, fmt.Errorf("schema version %d is newer than this reader's %d", e.V, SchemaVersion)
+		return Event{}, &tooNewError{v: e.V}
 	}
 
 	return e, nil

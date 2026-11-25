@@ -876,9 +876,9 @@ it would otherwise resume it with a plan that stops in the middle of a node.
 Any process can read the journal while a run writes it:
 
 - **`Follow`** delivers its events to observers as they are written, like
-  `tail -f`. A viewer sees exactly what the runner's own observers saw. Set
-  `FollowOptions.Result` and it hands back the `State` when it returns, so a
-  viewer can exit with the run's outcome.
+  `tail -f`. A viewer sees exactly what the runner's own observers saw. It
+  returns the `State` as it read it, so a viewer can exit with the run's
+  outcome.
 - **`Inspect`** replays it into a `State`: every attempt, and where each
   element stands.
 
@@ -1287,14 +1287,14 @@ its own directory, and says at the top of its `main.go` what to try.
 
 pipeline is pre-1.0, and its API can change between minor versions. The
 journal's format carries a schema version: a release reads journals written by
-every earlier schema version, and refuses a newer one. An attempt is written
-as the oldest version that can say everything about it, so a journal that uses
-nothing new stays readable by older releases.
+every earlier schema version, and refuses a newer one with `ErrJournalTooNew`.
+An attempt is written as the oldest version that can say everything about it, so
+a journal that uses nothing new stays readable by older releases.
 
 ## Upgrading from v0.5
 
 v0.6.0 changes what happens when a `DrainOnStop` group fails under a stop,
-and adds a schema version:
+adds a schema version, and changes two things in the API:
 
 - **The failure handlers around the group now run.** In v0.5, when a step of
   a draining group failed while a stop was pending, the handlers of the
@@ -1315,9 +1315,19 @@ and adds a schema version:
   `OrderFrom` group is written as version 3, which v0.5 and earlier refuse to
   read. Before a tool starts using `OrderFrom`, upgrade everything else that
   reads its journal.
+- **A journal from a newer release is not corrupt.** Every reader used to
+  refuse one with `ErrJournalCorrupt`. It now returns `ErrJournalTooNew`,
+  which does not match `ErrJournalCorrupt`. A tool that handles a corrupt
+  journal should handle this too, by telling the operator to upgrade it.
+- **`Follow` returns the state.** It is `Follow(...) (*State, error)`, and
+  `FollowOptions.Result` is gone. Write `_, err := pipeline.Follow(...)`, or
+  take the state it returns in place of `Result`.
+- **Run labels are deprecated.** `WithRunLabels` and `State.Labels` still
+  work, and will be removed in a later release. `WithRunData` records any
+  JSON with each attempt, and each attempt reads it back as
+  `AttemptState.Data`.
 
-Nothing was removed from the API, and journals written by v0.5 are read as
-before.
+Journals written by v0.5 are read as before.
 
 ## Upgrading from v0.4
 

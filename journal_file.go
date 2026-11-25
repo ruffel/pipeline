@@ -47,7 +47,8 @@ const (
 //
 // A crash can leave half a line at the end of the file. OpenJournal removes
 // it, so the next event starts on a line of its own. A complete line that is
-// not a valid event is [ErrJournalCorrupt].
+// not a valid event is [ErrJournalCorrupt], and one written by a newer
+// release is [ErrJournalTooNew]. Either way the file is left as it was.
 //
 // Lifecycle events are synced to disk before the write returns; output,
 // progress and messages are not. If a write or sync fails, every later write
@@ -140,7 +141,7 @@ func repairJournal(path string, f *os.File) (int64, error) {
 		}
 
 		if v > SchemaVersion {
-			return fmt.Errorf("schema version %d is newer than this reader's %d", v, SchemaVersion)
+			return &tooNewError{v: v}
 		}
 
 		if lineSeq <= seq {

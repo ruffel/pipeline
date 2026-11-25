@@ -233,6 +233,7 @@ func TestReplay_RefusesBadJournals(t *testing.T) {
 
 	_, err := pipeline.Replay([]pipeline.Event{{V: pipeline.SchemaVersion + 1, Seq: 1, Kind: pipeline.EventRunStarted}})
 	require.ErrorContains(t, err, fmt.Sprintf("schema version %d is newer", pipeline.SchemaVersion+1))
+	require.ErrorIs(t, err, pipeline.ErrJournalTooNew)
 
 	_, err = pipeline.Replay([]pipeline.Event{
 		{V: 1, Seq: 2, Kind: pipeline.EventRunStarted},

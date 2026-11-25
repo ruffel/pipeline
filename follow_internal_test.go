@@ -45,6 +45,7 @@ func TestFollow_ARunnerThatStartsDuringTheLastCheckIsNotReportedGone(t *testing.
 
 	f := &follower{
 		reader: journalReader{path: path},
+		state:  newState(),
 		opts:   FollowOptions{Poll: time.Millisecond},
 		observers: []Observer{ObserverFunc(func(_ context.Context, e Event) {
 			mu.Lock()

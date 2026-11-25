@@ -84,7 +84,7 @@ func run(yes bool, format, journal, state, fail string) error {
 	defer release()
 
 	_, err = pipeline.Run(context.Background(), plan, j,
-		pipeline.WithObservers(view), pipeline.WithStopper(stopper), pipeline.WithRunLabels(pipeline.L{"operator": who()}),
+		pipeline.WithObservers(view), pipeline.WithStopper(stopper), pipeline.WithRunData(map[string]string{"operator": who()}),
 		pipeline.WithInputs(inputs{Cluster: file}))
 
 	switch {

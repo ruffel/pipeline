@@ -45,13 +45,6 @@ type FollowOptions struct {
 	// Poll is how often to look for new events. Zero means
 	// [DefaultFollowPoll].
 	Poll time.Duration
-	// Result, if set, is filled in when Follow returns with the journal
-	// replayed as far as Follow read it: what [Inspect] would have returned
-	// at that moment. A viewer that exits with the run's status reads the
-	// latest attempt's outcome from it, without reading the journal again.
-	// Every event counts towards it, whatever After and History leave out
-	// of what the observers are given.
-	Result *State
 }
 
 // Follow delivers the events in the journal file named by journal to the
@@ -59,39 +52,42 @@ type FollowOptions struct {
 // It reads without locking, so it works from any process and cannot disturb the
 // run. Observers get exactly the events the runner's own observers got.
 //
-// Follow returns:
+// It returns the journal replayed as far as it read it: what [Inspect] would
+// have returned at that moment. A viewer that exits with the run's status
+// reads the latest attempt's outcome from it, without reading the journal
+// again. Every event counts towards it, whatever After and History leave out
+// of what the observers are given. The state is returned with every error
+// below too, as far as the journal could be read, and is never nil.
+//
+// Its error is:
 //
 //   - nil, when it has delivered the end of the latest attempt and no process
 //     holds the journal. A journal with no attempts, or none yet, counts.
 //   - [ErrRunnerGone], when the latest attempt never finished and no process
 //     holds the journal. Everything written has been delivered.
 //   - the context's error, when ctx is done.
-//   - [ErrJournalCorrupt], for a journal that is damaged.
+//   - [ErrJournalCorrupt], for a journal that is damaged, or
+//     [ErrJournalTooNew], for one a newer release wrote.
 //
 // With KeepFollowing set, the first two cases wait for another attempt
 // instead.
 //
 // A panic in an observer ends Follow with an error.
-func Follow(ctx context.Context, journal string, opts FollowOptions, observers ...Observer) error {
+func Follow(ctx context.Context, journal string, opts FollowOptions, observers ...Observer) (*State, error) {
 	f := &follower{
 		reader:    journalReader{path: journal},
 		opts:      opts,
 		observers: observers,
 		locked:    journalLocked,
+		state:     newState(),
 	}
 
-	if opts.Result == nil {
-		return f.run(ctx)
-	}
-
-	f.state = newState()
 	err := f.run(ctx)
 
 	f.state.LastSeq = f.seq
 	f.state.Live = f.locked(journal)
-	*opts.Result = *f.state
 
-	return err
+	return f.state, err
 }
 
 // follower is one Follow call's progress through the journal.
@@ -109,8 +105,7 @@ type follower struct {
 	// attempt has started and not finished.
 	seq  int64
 	open bool
-	// state is the journal replayed so far, kept only if the caller asked
-	// for it.
+	// state is the journal replayed so far.
 	state *State
 }
 
@@ -208,9 +203,7 @@ func (f *follower) read(ctx context.Context) error {
 
 		f.seq = e.Seq
 
-		if f.state != nil {
-			f.state.apply(e)
-		}
+		f.state.apply(e)
 
 		switch e.Kind { //nolint:exhaustive // Only these two say whether an attempt is open.
 		case EventRunStarted:

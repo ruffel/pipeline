@@ -826,10 +826,7 @@ func TestOrderFrom_InspectAndFollow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"n3", "n1", "n2"}, state.Order("p/dc1"))
 
-	var (
-		followed pipeline.State
-		seen     []string
-	)
+	var seen []string
 
 	watch := pipeline.ObserverFunc(func(_ context.Context, e pipeline.Event) {
 		if e.Kind == pipeline.EventGroupStarted {
@@ -837,7 +834,8 @@ func TestOrderFrom_InspectAndFollow(t *testing.T) {
 		}
 	})
 
-	require.NoError(t, pipeline.Follow(t.Context(), path, pipeline.FollowOptions{Result: &followed}, watch))
+	followed, err := pipeline.Follow(t.Context(), path, pipeline.FollowOptions{}, watch)
+	require.NoError(t, err)
 	assert.Equal(t, []string{"n3", "n1", "n2"}, seen)
 	assert.Equal(t, []string{"n3", "n1", "n2"}, followed.Order("p/dc1"))
 }

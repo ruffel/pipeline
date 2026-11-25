@@ -35,6 +35,9 @@ type State struct {
 	Plan        *NodeSpec
 	Fingerprint string
 	// Labels are the run labels of the latest attempt.
+	//
+	// Deprecated: Use [WithRunData] in place of [WithRunLabels], and read
+	// each attempt's data from [AttemptState.Data].
 	Labels L
 	// Inputs is what the latest attempt was given with WithInputs, encoded,
 	// with every Secret left out. InputsDigest identifies it.
@@ -469,7 +472,7 @@ func (s *State) add(e Event) error {
 // follows checks an event's version and place in the sequence.
 func (s *State) follows(v int, seq int64) error {
 	if v > SchemaVersion {
-		return fmt.Errorf("pipeline: event %d: schema version %d is newer than this reader's %d", seq, v, SchemaVersion)
+		return fmt.Errorf("pipeline: event %d: %w", seq, &tooNewError{v: v})
 	}
 
 	if seq <= s.LastSeq {
