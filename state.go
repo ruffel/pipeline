@@ -35,6 +35,9 @@ type State struct {
 	Plan        *NodeSpec
 	Fingerprint string
 	// Labels are the run labels of the latest attempt.
+	//
+	// Deprecated: Use [WithRunData] in place of [WithRunLabels], and read
+	// each attempt's data from [AttemptState.Data].
 	Labels L
 	// Inputs is what the latest attempt was given with WithInputs, encoded,
 	// with every Secret left out. InputsDigest identifies it.

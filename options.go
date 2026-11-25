@@ -88,6 +88,11 @@ func WithObservers(observers ...Observer) Option {
 
 // WithRunLabels sets labels on the run, such as {"operation": "u-42"}. They
 // are recorded in the run.started event.
+//
+// Deprecated: Use [WithRunData], which records anything that encodes as JSON
+// with each attempt, and reads back for every attempt as [AttemptState.Data],
+// where run labels read back only for the latest, as [State.Labels]. Journals
+// that already have run labels are read as before.
 func WithRunLabels(l L) Option {
 	return func(c *config) {
 		c.labels = maps.Clone(l)

@@ -159,7 +159,7 @@ func run(args []string) error {
 	}
 
 	_, err = pipeline.Run(context.Background(), plan, j,
-		pipeline.WithObservers(view), pipeline.WithStopper(stopper), pipeline.WithRunLabels(pipeline.L{"operator": who()}))
+		pipeline.WithObservers(view), pipeline.WithStopper(stopper), pipeline.WithRunData(map[string]string{"operator": who()}))
 
 	if async != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
