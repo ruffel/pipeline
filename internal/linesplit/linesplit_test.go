@@ -1,4 +1,4 @@
-package linesplit_test
+package linesplit
 
 import (
 	"bufio"
@@ -8,26 +8,26 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/ruffel/pipeline/internal/linesplit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const limit = 64
 
-// scanned splits input with a bufio.Scanner, the path v1's OutputWriter uses.
-func scanned(t *testing.T, input string) []linesplit.Line {
+// scanned splits input with a bufio.Scanner, which reads it in windows of its
+// own: what a Writer gives must not depend on how its input was cut up.
+func scanned(t *testing.T, input string) []Line {
 	t.Helper()
 
-	s := linesplit.New(limit)
+	s := newSplitter(limit)
 	scanner := bufio.NewScanner(strings.NewReader(input))
 	scanner.Buffer(make([]byte, 0, limit), limit)
-	scanner.Split(s.Split)
+	scanner.Split(s.split)
 
-	var lines []linesplit.Line
+	var lines []Line
 
 	for scanner.Scan() {
-		lines = append(lines, linesplit.Line{Text: scanner.Text(), Warn: s.Warn(), Continued: s.Continued()})
+		lines = append(lines, Line{Text: scanner.Text(), Warn: s.warn, Continued: s.cont})
 	}
 
 	require.NoError(t, scanner.Err())
@@ -36,10 +36,10 @@ func scanned(t *testing.T, input string) []linesplit.Line {
 }
 
 // written splits input with a Writer, fed in chunks of the given sizes.
-func written(input string, sizes func() int) []linesplit.Line {
-	var lines []linesplit.Line
+func written(input string, sizes func() int) []Line {
+	var lines []Line
 
-	w := linesplit.NewWriter(limit, func(l linesplit.Line) { lines = append(lines, l) })
+	w := NewWriter(limit, func(l Line) { lines = append(lines, l) })
 
 	for rest := input; rest != ""; {
 		n := min(max(sizes(), 1), len(rest))
@@ -98,7 +98,7 @@ func TestWriter_MarksLongLines(t *testing.T) {
 
 	lines := written(x(2*limit+1)+"\nshort\n", func() int { return 1000 })
 
-	assert.Equal(t, []linesplit.Line{
+	assert.Equal(t, []Line{
 		{Text: x(limit)},
 		{Text: x(limit), Warn: true, Continued: true},
 		{Text: "x", Continued: true},
@@ -142,11 +142,11 @@ func TestWriter_IsSafeForConcurrentWrites(t *testing.T) {
 	t.Parallel()
 
 	var (
-		lines []linesplit.Line
+		lines []Line
 		done  = make(chan struct{})
 	)
 
-	w := linesplit.NewWriter(limit, func(l linesplit.Line) { lines = append(lines, l) })
+	w := NewWriter(limit, func(l Line) { lines = append(lines, l) })
 
 	for range 4 {
 		go func() {
@@ -189,9 +189,25 @@ func TestChunks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got := linesplit.Chunks(tc.text, limit)
+			got := Chunks(tc.text, limit)
 			assert.Equal(t, tc.want, got)
 			assert.Equal(t, tc.text, strings.Join(got, ""), "nothing is lost")
 		})
 	}
+}
+
+// One huge write must not be buffered whole, nor keep a large backing array
+// alive for the tail it leaves.
+func TestWriter_BoundsItsBuffer(t *testing.T) {
+	t.Parallel()
+
+	var lines int
+
+	w := NewWriter(limit, func(Line) { lines++ })
+
+	_, _ = w.Write(append(bytes.Repeat([]byte("x"), 1000*limit), "tail"...))
+
+	assert.Equal(t, 1000, lines)
+	assert.LessOrEqual(t, cap(w.buf), 4*limit)
+	assert.Equal(t, "tail", string(w.buf))
 }

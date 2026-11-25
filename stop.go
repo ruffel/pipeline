@@ -261,7 +261,12 @@ func (r *runner) watchStop(done <-chan struct{}) {
 // steps still start after the request. It is a message, and best-effort:
 // [State.Draining] is what a status command reads.
 func (r *runner) noteDrain(boundary *node) {
-	if _, said := r.draining.LoadOrStore(boundary.path, true); said {
+	r.drainMu.Lock()
+	said := r.draining[boundary.path]
+	r.draining = setPath(r.draining, boundary.path)
+	r.drainMu.Unlock()
+
+	if said {
 		return
 	}
 
