@@ -320,7 +320,9 @@ func TestDrain_AFailureEndsTheGroupAtOnce(t *testing.T) {
 }
 
 // A step is not tried again to get a group finished: a stop that comes
-// while it waits between tries ends the wait, and the step has failed.
+// while it waits between tries ends the wait, and the step has failed. It is
+// that failure the run ends with, as when the stop was already pending: the
+// run has failed, and is not reported as stopped.
 func TestDrain_AStepIsNotTriedAgainUnderAStop(t *testing.T) {
 	t.Parallel()
 
@@ -343,11 +345,12 @@ func TestDrain_AStepIsNotTriedAgainUnderAStop(t *testing.T) {
 
 	out := resumeOn(t, pipeline.MemoryJournal(), plan, pipeline.WithStopper(stopper), pipeline.WithObservers(retrying))
 
-	require.ErrorIs(t, out.err, pipeline.ErrStopped)
 	require.ErrorContains(t, out.err, "start failed")
-	assert.Equal(t, pipeline.OutcomeStopped, out.res.Outcome)
+	require.NotErrorIs(t, out.err, pipeline.ErrStopped, "when the stop came makes no difference")
+	assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome)
 	assert.Equal(t, 1, c.get("start"))
 	assert.Zero(t, c.get("verify"))
+	assert.Len(t, kinds(out.events, pipeline.EventStepRetry), 1, "the wait it ended was the first")
 	assert.Contains(t, trace(out.events), "group.finished p/node1 failed")
 }
 

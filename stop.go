@@ -28,6 +28,8 @@ const (
 //
 // A [GroupNode.DrainOnStop] group that has started is the exception: the
 // rest of it still starts, and the stop takes effect when the group ends.
+// If it ends in failure, the failure handlers of the groups around it run
+// first.
 //
 // It can also cancel the run, as [RequestStop] with [StopCancel] does from
 // another process.

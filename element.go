@@ -120,6 +120,11 @@ func (g GroupNode) ContinueOnError() GroupNode {
 // that fails or is interrupted is not run again on resume: the next attempt
 // carries on, and runs it again only if the group fails again.
 //
+// One failure is handled even once a stop has been requested: that of a
+// [GroupNode.DrainOnStop] group beneath this one. The stop waited for that
+// group to end, and its failure is handled as it would have been with no
+// stop pending. DrainOnStop says what that asks of the step.
+//
 // Because the group's record is left alone, a step of the group that the
 // handler reverses is still recorded as passed. If that step is an Effect
 // with no Check, a later attempt skips it: make it an Ensure step, or give it
@@ -146,6 +151,10 @@ func (g GroupNode) OnFailure(step StepNode) GroupNode {
 //
 // The reset is where the step starts: a stop requested after it, even by an
 // observer of the reset, lets the step finish, as it does any running step.
+//
+// Around a [GroupNode.DrainOnStop] group, a recovery step is what puts back
+// a unit that failed part-way. It runs even if a stop is pending, and a
+// later attempt starts the unit again from its first step.
 func (g GroupNode) RecoverOnFailure(step StepNode) GroupNode {
 	g.recovery = &step
 
@@ -171,8 +180,28 @@ func (g GroupNode) RecoverOnFailure(step StepNode) GroupNode {
 // process dying. [State.Draining] says which groups a stop is waiting for.
 //
 // A stop that comes while a step is waiting to be tried again ends the
-// wait, as it does in any group: the step has failed, and the run is
-// stopped, with that failure in its error.
+// wait, and the step has failed in the same way. When the stop came makes
+// no difference: the group has failed, and so has the run. A stop that ends
+// such a wait in any other group leaves the run stopped, with the failure
+// in its error.
+//
+// A group that fails is handled as it would be with no stop pending: the
+// failure handlers of the groups around it run, the nearest first. So a
+// [GroupNode.RecoverOnFailure] step around the group puts back a unit that
+// failed, where the stop would otherwise leave it as it fell, and a later
+// attempt starts it again from its first step. The stop waits for those
+// handlers as it waited for the group. Each of them needs a
+// [StepNode.Timeout], which [NewPlan] checks, and under a stop is not tried
+// again, however many tries it has left. A cancel keeps them from starting,
+// as it does any step. Only this failure is handled under a stop: a step
+// outside the group that fails once a stop has been requested is handled as
+// in any group, which is not at all.
+//
+// The stop still holds for what would come next. Where every group around
+// the failure stops at its first failure, nothing else starts and the run
+// finishes as failed. A group that carries on past failures has its next
+// child kept from starting, and the run finishes as stopped, with the
+// failure in its error.
 //
 // Nothing in the group may keep a stop waiting for ever, or end the group
 // early as passed. So the group, and every group in it, is sequential and
