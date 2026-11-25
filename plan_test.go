@@ -39,6 +39,7 @@ func TestNewPlan_PathsAndInheritedLabels(t *testing.T) {
 		pipeline.Group("region1",
 			pipeline.Group("DC1",
 				pipeline.Effect("packages", noop()).Labels(pipeline.L{"node": "n1", "dc": "override"}),
+				pipeline.Gate("approve", pipeline.GateOptions{}).Labels(pipeline.L{"node": "n2"}),
 			).Labels(pipeline.L{"dc": "DC1"}),
 		).Labels(pipeline.L{"region": "r1"}),
 	)
@@ -61,6 +62,7 @@ func TestNewPlan_PathsAndInheritedLabels(t *testing.T) {
 	assert.Equal(t, pipeline.L{"region": "r1"}, region.Labels)
 	assert.Equal(t, pipeline.L{"region": "r1", "dc": "DC1"}, dc.Labels)
 	assert.Equal(t, pipeline.L{"region": "r1", "dc": "override", "node": "n1"}, step.Labels, "own value wins")
+	assert.Equal(t, pipeline.L{"region": "r1", "dc": "DC1", "node": "n2"}, dc.Children[1].Labels, "a gate's too")
 }
 
 func TestNewPlan_ReportsEveryProblemWithItsPath(t *testing.T) {

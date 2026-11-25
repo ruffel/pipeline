@@ -571,3 +571,33 @@ func TestObserver_AChangedPlan(t *testing.T) {
 	assert.Contains(t, out, "± the plan has changed; added upgrade/hotfix; removed upgrade/old, upgrade/older\n")
 	assert.Contains(t, out, "± the plan has changed\n", "a reordered plan adds and removes nothing")
 }
+
+// A palette's icons replace the default ones wherever an outcome is shown.
+func TestObserver_WithPaletteChangesTheIcons(t *testing.T) {
+	t.Parallel()
+
+	p := terminal.DefaultPalette()
+	p.SuccessIcon, p.ErrorIcon, p.SkipIcon = "OK", "NO", "--"
+
+	var buf bytes.Buffer
+
+	obs := terminal.New(&buf, terminal.WithPalette(p))
+	for _, e := range []pipeline.Event{
+		{Kind: pipeline.EventRunStarted, Path: "upgrade", Plan: upgrade()},
+		{Kind: pipeline.EventStepFinished, Path: "upgrade/backup", Outcome: pipeline.OutcomeSkipped, Reason: pipeline.ReasonDone},
+		{
+			Kind: pipeline.EventStepFinished, Path: "upgrade/apply", Outcome: pipeline.OutcomeFailed,
+			Error: &pipeline.ErrorInfo{Kind: pipeline.ErrorPlain, Message: "exit status 1"},
+		},
+		{Kind: pipeline.EventItem, Path: "upgrade/apply", Item: "node1", ItemStatus: pipeline.ItemPassed},
+	} {
+		obs.OnEvent(t.Context(), e)
+	}
+
+	out := buf.String()
+	assert.Contains(t, out, "-- backup — done")
+	assert.Contains(t, out, "NO apply — exit status 1")
+	assert.Contains(t, out, "OK node1")
+	assert.NotContains(t, out, "✓")
+	assert.NotContains(t, out, "✗")
+}

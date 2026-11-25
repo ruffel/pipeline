@@ -67,3 +67,11 @@ func TestFileApprover_AFileAlreadyThereApprovesOneGate(t *testing.T) {
 	assert.Equal(t, "p/second", released[1].Path)
 	assert.Equal(t, "bob", released[1].Who)
 }
+
+// The stdin approver is named for what released a gate, without reading
+// anything: reading starts only once a gate asks.
+func TestStdinApprover_IsNamedStdin(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "stdin", pipeline.StdinApprover().Name())
+}
