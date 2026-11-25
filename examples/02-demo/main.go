@@ -154,16 +154,19 @@ func compile(service string) pipeline.StepFunc {
 func applySchema(_ context.Context, sc *pipeline.StepContext) error {
 	out, errOut := sc.Stdout(), sc.Stderr()
 
-	sc.Info("starting database migrations...")
-	sleep()
+	// say writes a line of output, a moment after the last.
+	say := func(w io.Writer, line string) {
+		sleep()
 
-	fmt.Fprintln(out, "--> applying 001_initial_schema.sql")
-	sleep()
-	fmt.Fprintln(out, "--> applying 002_add_user_indexes.sql")
-	sleep()
-	fmt.Fprintln(errOut, "WARNING: index 'idx_email' already exists, skipping")
-	sleep()
-	fmt.Fprintln(out, "--> applying 003_drop_legacy_tables.sql")
+		_, _ = fmt.Fprintln(w, line)
+	}
+
+	sc.Info("starting database migrations...")
+
+	say(out, "--> applying 001_initial_schema.sql")
+	say(out, "--> applying 002_add_user_indexes.sql")
+	say(errOut, "WARNING: index 'idx_email' already exists, skipping")
+	say(out, "--> applying 003_drop_legacy_tables.sql")
 
 	sc.Info("database migrations complete")
 
@@ -204,7 +207,8 @@ func unitTests(_ context.Context, sc *pipeline.StepContext) error {
 		"--- PASS: TestOrderService (0.2s)",
 		"PASS",
 	} {
-		fmt.Fprintln(sc.Stdout(), line)
+		_, _ = fmt.Fprintln(sc.Stdout(), line)
+
 		sleep()
 	}
 
@@ -251,6 +255,7 @@ func lint(_ context.Context, sc *pipeline.StepContext) error {
 // its work is done, so that it is never done twice.
 type namespace struct{}
 
+//nolint:unparam // A pipeline.Checker returns an error; this one never needs to.
 func (namespace) Check(_ context.Context, sc *pipeline.StepContext) (bool, error) {
 	sc.Info("namespace app already exists")
 
@@ -262,5 +267,5 @@ func (namespace) Run(context.Context, *pipeline.StepContext) error {
 }
 
 func sleep() {
-	time.Sleep(200 * time.Millisecond) //nolint:mnd // Slow enough to watch.
+	time.Sleep(200 * time.Millisecond) // Slow enough to watch.
 }
