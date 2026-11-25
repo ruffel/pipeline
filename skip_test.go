@@ -272,15 +272,21 @@ func TestSkipRun_AfterAFailureInAContinuingGroup(t *testing.T) {
 func TestSkipGroup_SignalAfterAFailureStoppedAdmission(t *testing.T) {
 	t.Parallel()
 
-	failed := make(chan struct{})
+	// The failure waits for the step that signals to have started: one that
+	// came first would keep that step from starting at all, and nothing
+	// would signal.
+	signalling, failed := make(chan struct{}), make(chan struct{})
 
 	out := runPlan(t, t.Context(), mustPlan(t, pipeline.Group("g",
 		pipeline.Effect("broken", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
 			defer close(failed)
 
+			<-signalling
+
 			return errors.New("boom")
 		})),
 		pipeline.Effect("signal", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			close(signalling)
 			<-failed
 
 			return pipeline.ErrSkipGroup
