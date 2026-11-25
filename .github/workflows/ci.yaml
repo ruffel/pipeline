@@ -53,6 +53,10 @@ jobs:
       - name: Verify Submodules Build Standalone
         run: just build-standalone
 
+      # Neither runner is Windows, so nothing else compiles for it.
+      - name: Compile for Windows
+        run: just vet-windows
+
       - name: Verify Clean State
         run: just check-clean
 

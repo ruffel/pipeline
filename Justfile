@@ -53,6 +53,11 @@ sync-submodules:
         (cd "$mod" && GOWORK=off go get "github.com/ruffel/pipeline@${sha}")
     done
 
+# Compile the packages and their tests for Windows, without running them.
+# File journals are unsupported there, but the package must still build.
+vet-windows:
+    GOOS=windows go vet ./... $(for mod in {{MODULES}}; do echo "./$mod/..."; done)
+
 # Build the examples and run their tests (they are not covered by `test`)
 build-examples:
     cd examples && go build ./... && go test ./...
