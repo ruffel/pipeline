@@ -274,34 +274,49 @@ func TestDrain_AHandlerIsNotTriedAgainUnderAStop(t *testing.T) {
 	assert.Equal(t, 1, r.c.get("cleanup"), "a handler further out runs whatever became of the one before")
 }
 
-// A stop that comes while a step of the group waits to be tried again ends
-// the wait, and the run is stopped, as in any group. The group has failed
-// all the same, and its failure is handled.
-func TestDrain_AStopBetweenTriesLeavesTheFailureHandled(t *testing.T) {
+// When the stop comes makes no difference. One that arrives while a step of
+// the group, or a handler of its failure, is waiting to be tried again ends
+// the wait, and what follows is what follows a failure under a stop already
+// pending: the failure is handled, and the run has failed.
+func TestDrain_AStopBetweenTriesIsHandledTheSame(t *testing.T) {
 	t.Parallel()
 
-	stopper := pipeline.NewStopper()
-	retrying := pipeline.ObserverFunc(func(_ context.Context, e pipeline.Event) {
-		if e.Kind == pipeline.EventStepRetry {
-			stopper.Stop("alice")
-		}
-	})
+	for name, tc := range map[string]struct {
+		waits   string
+		failing map[string]bool
+	}{
+		"a step of the group waits": {waits: "install", failing: map[string]bool{"install": true}},
+		"a handler waits":           {waits: "rollback", failing: map[string]bool{"install": true, "rollback": true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	r := &rolling{
-		failing: map[string]bool{"install": true},
-		shape: map[string]func(pipeline.StepNode) pipeline.StepNode{
-			"install": func(s pipeline.StepNode) pipeline.StepNode { return s.Retry(3, time.Hour) },
-		},
+			stopper := pipeline.NewStopper()
+			retrying := pipeline.ObserverFunc(func(_ context.Context, e pipeline.Event) {
+				if e.Kind == pipeline.EventStepRetry {
+					stopper.Stop("alice")
+				}
+			})
+
+			r := &rolling{
+				failing: tc.failing,
+				shape: map[string]func(pipeline.StepNode) pipeline.StepNode{
+					tc.waits: func(s pipeline.StepNode) pipeline.StepNode { return s.Retry(3, time.Hour) },
+				},
+			}
+
+			out := resumeOn(t, pipeline.MemoryJournal(), r.plan(t), pipeline.WithStopper(stopper), pipeline.WithObservers(retrying))
+
+			require.ErrorContains(t, out.err, "install failed")
+			require.NotErrorIs(t, out.err, pipeline.ErrStopped)
+			assert.Equal(t, pipeline.OutcomeFailed, out.res.Outcome)
+			assert.Len(t, kinds(out.events, pipeline.EventStepRetry), 1, "the wait the stop ended was the first")
+			assert.Equal(t, 1, r.c.get(tc.waits), "it is not tried again")
+			assert.Equal(t, 1, r.c.get("rollback"))
+			assert.Equal(t, 1, r.c.get("cleanup"))
+			assert.Zero(t, r.c.get("next"))
+		})
 	}
-
-	out := resumeOn(t, pipeline.MemoryJournal(), r.plan(t), pipeline.WithStopper(stopper), pipeline.WithObservers(retrying))
-
-	require.ErrorContains(t, out.err, "install failed")
-	require.ErrorIs(t, out.err, pipeline.ErrStopped, "the stop kept the step from being tried again")
-	assert.Equal(t, pipeline.OutcomeStopped, out.res.Outcome)
-	assert.Equal(t, 1, r.c.get("install"))
-	assert.Equal(t, 1, r.c.get("rollback"))
-	assert.Equal(t, 1, r.c.get("cleanup"))
 }
 
 // The stop still holds for whatever would come next. In a group that

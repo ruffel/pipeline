@@ -986,9 +986,13 @@ func (r *runner) lastTry(ctx context.Context, n *node, try int) bool {
 		return true
 	}
 
-	awaited := n.boundary != nil || (n.handles != nil && r.failedDraining(n.handles))
+	return r.awaited(n) && r.stopping()
+}
 
-	return awaited && r.stopping()
+// awaited reports whether a stop waits for n: it is a step in a DrainOnStop
+// group, or the failure handler of a group around one that has failed.
+func (r *runner) awaited(n *node) bool {
+	return n.boundary != nil || (n.handles != nil && r.failedDraining(n.handles))
 }
 
 // failedDraining reports whether a DrainOnStop group beneath n has failed in
@@ -1019,19 +1023,30 @@ func (r *runner) backoff(ctx context.Context, n *node, err error) error {
 		}
 
 		r.noteStop()
-		r.halt()
+		r.untried(n)
 
 		return err
 	case <-r.clock.After(n.backoff):
 		// The stop may have come at the same moment, and select picks either
 		// of two ready cases: never start another try after one.
 		if r.stopping() {
-			r.halt()
+			r.untried(n)
 
 			return err
 		}
 
 		return nil
+	}
+}
+
+// untried records that a stop kept n from being tried again, unless the
+// stop waits for n. Then the step has failed as it would have with the stop
+// already pending, when it is not tried again either: whether the stop came
+// before the try failed or during the wait after it, the failure is what
+// the run ends with, and the run has failed.
+func (r *runner) untried(n *node) {
+	if !r.awaited(n) {
+		r.halt()
 	}
 }
 
