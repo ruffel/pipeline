@@ -370,11 +370,13 @@ type runner struct {
 	stopNoted   sync.Once
 	halted      atomic.Bool
 	cancelNoted sync.Once
-	// draining are the DrainOnStop groups that have carried on past a stop,
-	// by path: each says so once. drainFailed are those that have failed, by
-	// path: a stop does not hold back the handling of their failure.
-	draining    sync.Map
-	drainFailed sync.Map
+	// drainMu guards draining, the DrainOnStop groups that have carried on
+	// past a stop, each of which says so once, and drainFailed, those that
+	// have failed: a stop does not hold back the handling of their failure.
+	// Both are by path, and made on first use.
+	drainMu     sync.Mutex
+	draining    map[string]bool
+	drainFailed map[string]bool
 
 	// gates are the gates waiting for approval through the control
 	// directory, by path.
@@ -619,7 +621,9 @@ func (r *runner) group(ctx context.Context, n *node) error {
 		outcome = OutcomeFailed
 
 		if n.drain {
-			r.drainFailed.Store(n.path, true)
+			r.drainMu.Lock()
+			r.drainFailed = setPath(r.drainFailed, n.path)
+			r.drainMu.Unlock()
 		}
 	}
 
@@ -1135,16 +1139,27 @@ func (r *runner) awaited(n *node) bool {
 // failedDraining reports whether a DrainOnStop group beneath n has failed in
 // this attempt.
 func (r *runner) failedDraining(n *node) bool {
-	failed := false
+	r.drainMu.Lock()
+	defer r.drainMu.Unlock()
 
-	r.drainFailed.Range(func(path, _ any) bool {
-		p, _ := path.(string)
-		failed = strings.HasPrefix(p, n.path+"/")
+	for path := range r.drainFailed {
+		if strings.HasPrefix(path, n.path+"/") {
+			return true
+		}
+	}
 
-		return !failed
-	})
+	return false
+}
 
-	return failed
+// setPath adds path to set, making the set if it has none yet.
+func setPath(set map[string]bool, path string) map[string]bool {
+	if set == nil {
+		set = map[string]bool{}
+	}
+
+	set[path] = true
+
+	return set
 }
 
 // backoff waits before the step's next try. If a cancel or stop cuts the
