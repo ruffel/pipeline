@@ -129,6 +129,7 @@ linters:
       linters:
         - forbidigo         # It's a CLI example, we want to print to STDOUT.
         - gochecknoglobals  # CLI flags and styles are pragmatic globals here
+        - mnd               # Paces, sleeps and file modes read better as numbers in a demo.
     - path: '(.+)_test\.go'
       linters:
         - forcetypeassert

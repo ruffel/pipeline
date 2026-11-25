@@ -47,6 +47,14 @@ jobs:
           args: --timeout=5m
           working-directory: observers/terminal
 
+      # The examples are what people copy, so they are held to the same rules.
+      - name: golangci-lint (examples)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: "v2.15.0"
+          args: --timeout=5m
+          working-directory: examples
+
       # Workspace OFF: proves the submodule builds against the core version its
       # go.mod actually requires — the way a consumer resolves it. The workspace
       # would mask a stale require by supplying HEAD core instead.

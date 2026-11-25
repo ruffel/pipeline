@@ -43,26 +43,32 @@ func preflight() pipeline.GroupNode {
 	).Description("Read-only checks, safe to run again")
 }
 
+// The failover moves the primary from one database node to the other.
+const (
+	oldPrimary = "db1"
+	newPrimary = "db2"
+)
+
 // failover changes the cluster. fail names a step whose Run fails.
 func failover(c *cluster, fail string) pipeline.GroupNode {
 	return pipeline.Group("failover",
 		pipeline.Effect("demote-primary", change{
 			c: c, fail: fail == "demote-primary",
-			done:  func(s *clusterState) bool { return slices.Contains(s.ReadOnly, "db1") },
-			apply: func(s *clusterState) { s.ReadOnly = append(s.ReadOnly, "db1") },
-			msg:   "db1 set read-only",
+			done:  func(s *clusterState) bool { return slices.Contains(s.ReadOnly, oldPrimary) },
+			apply: func(s *clusterState) { s.ReadOnly = append(s.ReadOnly, oldPrimary) },
+			msg:   oldPrimary + " set read-only",
 		}).Description("Sets the current primary read-only"),
 		pipeline.Effect("promote-replica", change{
 			c: c, fail: fail == "promote-replica",
-			done:  func(s *clusterState) bool { return s.Primary == "db2" },
-			apply: func(s *clusterState) { s.Primary = "db2" },
-			msg:   "db2 promoted to primary",
+			done:  func(s *clusterState) bool { return s.Primary == newPrimary },
+			apply: func(s *clusterState) { s.Primary = newPrimary },
+			msg:   newPrimary + " promoted to primary",
 		}).Description("Promotes the replica to primary"),
 		pipeline.Effect("update-dns", change{
 			c: c, fail: fail == "update-dns",
-			done:  func(s *clusterState) bool { return s.DNS == "db2" },
-			apply: func(s *clusterState) { s.DNS = "db2" },
-			msg:   "db.internal points at db2",
+			done:  func(s *clusterState) bool { return s.DNS == newPrimary },
+			apply: func(s *clusterState) { s.DNS = newPrimary },
+			msg:   "db.internal points at " + newPrimary,
 		}).Description("Repoints db.internal at the new primary"),
 	).Description("Changes the cluster; each step asks it whether its change is made")
 }
@@ -166,7 +172,7 @@ type clusterState struct {
 func (c *cluster) load() (clusterState, error) {
 	b, err := os.ReadFile(c.file)
 	if errors.Is(err, os.ErrNotExist) {
-		return clusterState{Primary: "db1", DNS: "db1"}, nil
+		return clusterState{Primary: oldPrimary, DNS: oldPrimary}, nil
 	}
 
 	if err != nil {
@@ -217,7 +223,7 @@ func (c *cluster) save(st clusterState) error {
 	}
 
 	// Sync the directory too, so the rename survives a power cut.
-	d, err := os.Open(dir)
+	d, err := os.Open(dir) //nolint:gosec // The mock cluster's own state directory.
 	if err != nil {
 		return err
 	}

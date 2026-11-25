@@ -12,6 +12,7 @@ test:
 # Run linters
 lint:
     golangci-lint run ./... $(for mod in {{MODULES}}; do echo "./$mod/..."; done)
+    cd examples && golangci-lint run ./...
 
 # Clean build artifacts
 clean:

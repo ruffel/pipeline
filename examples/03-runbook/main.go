@@ -36,6 +36,7 @@ func main() {
 	journal := flag.String("journal", "runbook.jsonl", "the run's journal, which is also its audit log")
 	state := flag.String("state", ".runbook-state", "directory for the mock cluster's state")
 	fail := flag.String("fail", "", "a failover step whose Run fails, such as update-dns")
+
 	flag.Parse()
 
 	if err := run(*yes, *format, *journal, *state, *fail); err != nil {

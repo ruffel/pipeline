@@ -270,22 +270,7 @@ func status(args []string) error {
 		fmt.Printf("attempt %d  %-8s  %s\n", a.Attempt, what, outcome)
 	}
 
-	last := st.Attempts[len(st.Attempts)-1]
-
-	switch {
-	case st.Live:
-		fmt.Println("\na migrate is working on it now")
-	case last.Rollback && last.Outcome == pipeline.OutcomePassed:
-		fmt.Println("\nrolled back; run applies the migrations again")
-	case last.Rollback:
-		fmt.Println("\nthe rollback did not finish; run rollback again")
-	case last.Outcome == pipeline.OutcomePassed:
-		fmt.Println("\nfinished; rollback undoes it")
-	default:
-		fmt.Println("\nunfinished; run carries on, rollback undoes it")
-	}
-
-	fmt.Println()
+	fmt.Printf("\n%s\n\n", next(st))
 
 	if st.Plan != nil {
 		show(st, *st.Plan)
@@ -306,6 +291,25 @@ func status(args []string) error {
 	fmt.Printf("\ndatabase: version %d (%s), maintenance mode %v\n", len(s.Applied), applied, s.Maintenance)
 
 	return nil
+}
+
+// next says what an operator can do next, which depends only on the latest
+// attempt.
+func next(st *pipeline.State) string {
+	last := st.Attempts[len(st.Attempts)-1]
+
+	switch {
+	case st.Live:
+		return "a migrate is working on it now"
+	case last.Rollback && last.Outcome == pipeline.OutcomePassed:
+		return "rolled back; run applies the migrations again"
+	case last.Rollback:
+		return "the rollback did not finish; run rollback again"
+	case last.Outcome == pipeline.OutcomePassed:
+		return "finished; rollback undoes it"
+	default:
+		return "unfinished; run carries on, rollback undoes it"
+	}
 }
 
 // show prints where everything beneath n stands. A step a rollback undid is

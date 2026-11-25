@@ -40,6 +40,7 @@ import (
 	"github.com/ruffel/pipeline/observers/terminal"
 )
 
+//nolint:dupword // A usage text names each command, then says what it does.
 const usage = `usage: detached <command> [flags]
 
 commands:
