@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -302,6 +303,11 @@ func (s *StepContext) Record(key string, value any) error {
 // that is recorded lasts as every recorded value does: through a forced
 // attempt, and until a rollback undoes the step or a recovery step resets
 // its group, after which RecordOnce records again.
+//
+// It goes by what the journal holds now. A reset forgets every value
+// beneath its group, the recovery step's own from an earlier attempt among
+// them, so a recovery step that runs again records again, though Recorded
+// still reads it what the attempt started with.
 func (s *StepContext) RecordOnce(key string, value any) (bool, error) {
 	return s.record(key, value, true)
 }
@@ -388,10 +394,8 @@ func (s *StepContext) record(key string, value any, once bool) (bool, error) {
 		return false, ErrStepReturned
 	}
 
-	if once {
-		if _, recorded := s.r.recalled(s.n.path, key); recorded {
-			return false, nil
-		}
+	if once && s.r.holds(s.n.path, key) {
+		return false, nil
 	}
 
 	if s.recorded+len(raw) > MaxRecordBytes {
@@ -589,6 +593,54 @@ func (r *runner) remember(path, key string, raw json.RawMessage) {
 	}
 
 	r.values[path][key] = raw
+
+	if r.standing == nil {
+		r.standing = map[string]map[string]bool{}
+	}
+
+	if r.standing[path] == nil {
+		r.standing[path] = map[string]bool{}
+	}
+
+	r.standing[path][key] = true
+}
+
+// forget notes that a recovery step has reset the group at path: the journal
+// no longer holds the values recorded beneath it, in this attempt or before.
+// Recorded still reads them, so that the recovery step can.
+func (r *runner) forget(path string) {
+	r.valuesMu.Lock()
+	defer r.valuesMu.Unlock()
+
+	if r.reset == nil {
+		r.reset = map[string]bool{}
+	}
+
+	r.reset[path] = true
+
+	maps.DeleteFunc(r.standing, func(p string, _ map[string]bool) bool { return strings.HasPrefix(p, path+"/") })
+}
+
+// holds reports whether the journal, as it is now, holds a value under path
+// and key: one recorded in this attempt that no reset has forgotten since,
+// or one from before it that no reset of this attempt has reached.
+func (r *runner) holds(path, key string) bool {
+	r.valuesMu.Lock()
+	defer r.valuesMu.Unlock()
+
+	if r.standing[path][key] {
+		return true
+	}
+
+	for group := range r.reset {
+		if strings.HasPrefix(path, group+"/") {
+			return false
+		}
+	}
+
+	_, ok := r.prev.Value(path, key)
+
+	return ok
 }
 
 // recalled returns the latest value recorded under path and key: from this

@@ -399,6 +399,13 @@ type runner struct {
 	// valuesMu guards values recorded during this attempt.
 	valuesMu sync.Mutex
 	values   map[string]map[string]json.RawMessage
+	// reset are the groups a recovery step has reset in this attempt, and
+	// standing the values recorded in it that no reset has forgotten since,
+	// both by path. Between them and prev they say what the journal holds
+	// now, which values and prev alone do not: those still have what a reset
+	// forgot, for a recovery step to read.
+	reset    map[string]bool
+	standing map[string]map[string]bool
 }
 
 func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
@@ -673,6 +680,8 @@ func (r *runner) handle(ctx context.Context, n *node) error {
 		if eerr := r.emit(Event{Kind: EventGroupReset, Path: n.path}); eerr != nil {
 			return eerr
 		}
+
+		r.forget(n.path)
 	}
 
 	herr := r.step(ctx, n.handler, true)

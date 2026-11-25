@@ -3,6 +3,7 @@ package pipeline_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -265,4 +266,59 @@ func TestState_ValuesAreEveryKeyOfAStep(t *testing.T) {
 
 	assert.NotNil(t, out.state.Values("p/nowhere"))
 	assert.Empty(t, out.state.Values("p/nowhere"))
+}
+
+// A recovery step's reset forgets what was recorded beneath its group, the
+// recovery step's own values of an earlier attempt among them. RecordOnce
+// goes by what the journal holds now, so a recovery step that runs again
+// records again, where Recorded still reads what the attempt started with.
+func TestRecordOnce_SeesAResetMadeInThisAttempt(t *testing.T) {
+	t.Parallel()
+
+	type call struct {
+		before   string
+		found    bool
+		recorded []bool
+	}
+
+	var calls []call
+
+	attempt := 0
+	restore := pipeline.Effect("restore", pipeline.StepFunc(func(_ context.Context, s *pipeline.StepContext) error {
+		var c call
+
+		found, err := s.Recorded(s.Path(), "restored", &c.before)
+		if err != nil {
+			return err
+		}
+
+		c.found = found
+
+		for range 2 {
+			recorded, err := s.RecordOnce("restored", fmt.Sprintf("attempt %d", attempt))
+			if err != nil {
+				return err
+			}
+
+			c.recorded = append(c.recorded, recorded)
+		}
+
+		calls = append(calls, c)
+
+		return nil
+	}))
+	plan := mustPlan(t, pipeline.Group("node", pipeline.Effect("a", fail("boom"))).RecoverOnFailure(restore))
+	j := pipeline.MemoryJournal()
+
+	for attempt = 1; attempt <= 3; attempt++ {
+		require.ErrorContains(t, resumeOn(t, j, plan).err, "boom")
+		assert.Equal(t, fmt.Sprintf(`"attempt %d"`, attempt), valueOf(t, j, "p/node/restore", "restored"),
+			"the journal holds what this attempt's recovery recorded")
+	}
+
+	assert.Equal(t, []call{
+		{recorded: []bool{true, false}},
+		{before: "attempt 1", found: true, recorded: []bool{true, false}},
+		{before: "attempt 2", found: true, recorded: []bool{true, false}},
+	}, calls)
 }
