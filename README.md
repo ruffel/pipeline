@@ -1163,7 +1163,8 @@ The `StepContext` is the step's way into the run:
 - `Info`, `Warn`, `Progress`, `Stdout` and `Stderr` report what it is doing.
   They are best-effort: a crash can lose the last of them, and output past a
   step's allowance is dropped. Nothing a later attempt or an `Undo` needs
-  goes here.
+  goes here. Each `Progress` report says when its task was first reported, so
+  a viewer that joins late can show how long it has run.
 - `Record` stores a small value durably, and `Recorded` reads it from a later
   step, a later attempt or an `Undo`. `RecordOnce` stores one only if the step
   has none under that key yet, for a value that must be the first one seen,
@@ -1172,7 +1173,9 @@ The `StepContext` is the step's way into the run:
   host, and `PreviousItems` reads them back on a later attempt. It is a record
   and no more: the run doesn't know which targets a step has, a failed item
   doesn't fail the step, and what to do about each target next time is the
-  step's to decide.
+  step's to decide. `ItemWith` adds small data of the step's own to a result,
+  such as the host it is about, so that a viewer need not parse it out of the
+  ID or the message.
 - `Inputs` returns what the run was given with `WithInputs`.
 - `Attempt`, `Path` and `Labels` say which attempt this is, and the step's own
   path and labels.
@@ -1182,7 +1185,7 @@ The `StepContext` is the step's way into the run:
 Only the secrets among the inputs are known to the run. One that a step makes
 or reads while it runs, such as a generated password or a token in a command's
 output, is masked only where the `WithRedactor` function catches it: in
-messages, output, errors and custom events. A value given to `Record`, an
+messages, output, errors, custom events and the data of an item. A value given to `Record`, an
 item's ID, a label and a path are stored as they are, so none of them may be
 secret.
 

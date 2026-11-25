@@ -266,13 +266,16 @@ type Event struct {
 	Message    string     `json:"message,omitempty"`
 	Current    int        `json:"current,omitempty"`
 	Total      int        `json:"total,omitempty"`
+	// Started is when the step first reported progress on the task named
+	// Key: every progress event of the task carries it.
+	Started time.Time `json:"started,omitzero"`
 
 	// output. Continued marks every piece of a split long line but the first.
 	Stream    string `json:"stream,omitempty"`
 	Line      string `json:"line,omitempty"`
 	Continued bool   `json:"continued,omitempty"`
 
-	// custom.
+	// custom, and an item recorded with ItemWith: the step's own data.
 	Type string          `json:"type,omitempty"`
 	Data json.RawMessage `json:"data,omitempty"`
 

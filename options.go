@@ -255,8 +255,8 @@ func WithStrictUndo() Option {
 
 // WithRedactor sets a function that removes secrets from text. It is applied
 // to every message, output line, error message and panic stack, and to every
-// string inside a custom event's data, before the event is written to the
-// journal or given to an observer. So secrets a step prints never reach
+// string inside the data of a custom event or an item, before the event is
+// written to the journal or given to an observer. So secrets a step prints never reach
 // either.
 //
 // Every error [Run] returns carries a redacted message too, and still

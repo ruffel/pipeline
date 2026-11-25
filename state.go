@@ -155,7 +155,9 @@ type ElementState struct {
 type ItemState struct {
 	Status  ItemStatus
 	Message string
-	Run     string
+	// Data is what the step gave with [StepContext.ItemWith], if anything.
+	Data json.RawMessage
+	Run  string
 }
 
 // Replay computes the state recorded by events, which must be in journal
@@ -432,7 +434,7 @@ func (s *State) apply(e Event) {
 			s.items[e.Path] = map[string]ItemState{}
 		}
 
-		s.items[e.Path][e.Item] = ItemState{Status: e.ItemStatus, Message: e.Message, Run: e.Run}
+		s.items[e.Path][e.Item] = ItemState{Status: e.ItemStatus, Message: e.Message, Data: e.Data, Run: e.Run}
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry, EventPlanChanged:
 		// Best-effort chatter: viewers render it, but it changes no state.
 		// So do they a change of plan, which run.started has applied.

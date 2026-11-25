@@ -50,9 +50,9 @@ one can't be written. The rest are best-effort: a crash can lose the last few.
 | `gate.waiting`   | yes     | a gate       | `prompt`, `deadline`                                                                                                       |
 | `gate.released`  | yes     | a gate       | `by`, `who`, `uid`, `policy`                                                                                               |
 | `value`          | yes     | a step       | `key`, `value`                                                                                                             |
-| `item`           | yes     | a step       | `item`, `itemStatus`, `message`                                                                                            |
+| `item`           | yes     | a step       | `item`, `itemStatus`, `message`, `data`                                                                                    |
 | `message`        | no      | a step       | `level`, `message`                                                                                                         |
-| `progress`       | no      | a step       | `key`, `message`, `current`, `total`                                                                                       |
+| `progress`       | no      | a step       | `key`, `message`, `current`, `total`, `started`                                                                            |
 | `output`         | no      | a step       | `stream`, `line`, `continued`                                                                                              |
 | `custom`         | no      | a step       | `type`, `data`                                                                                                             |
 | `stop.requested` | yes     | the root     | `mode`, `by`, `who`, `uid`                                                                                                 |
@@ -88,6 +88,12 @@ What each one means:
 - **`gate.waiting`** and **`gate.released`** bracket a gate's wait. A gate that
   a stop interrupts is never released.
 - **`value`** is a `Record`, and **`item`** a result for one target of a step.
+  An item's `data` is JSON of the step's own about that result, if it gave
+  any. The latest `item` for a target replaces the one before, `data` and all.
+- **`progress`** reports on the task its `key` names. `started` is when the
+  step first reported on that task in this attempt, and every report of the
+  task repeats it: a viewer that joins late shows how long the task has run
+  from the one report it sees.
 - **`message`** is an `Info` or a `Warn`. A warning from the run itself, such as
   an observer being dropped, has no `path`. One at a group's `path` is the run
   saying that the group, a `drainOnStop` one, is finishing before a stop.

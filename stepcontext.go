@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"sync"
+	"time"
 
 	"github.com/ruffel/pipeline/internal/linesplit"
 )
@@ -19,6 +20,8 @@ const (
 	MaxRecordBytes = 64 << 10
 	// MaxCustomBytes caps the encoded data of one custom event.
 	MaxCustomBytes = 64 << 10
+	// MaxItemDataBytes caps the encoded data of one item.
+	MaxItemDataBytes = 4 << 10
 	// MaxOutputLine is the longest output line recorded as one event. Longer
 	// lines are recorded in pieces, all but the first marked Continued.
 	MaxOutputLine = 16 << 10
@@ -48,6 +51,8 @@ type StepContext struct {
 	mu       sync.Mutex
 	closed   bool
 	recorded int
+	// tasks is when the step first reported progress on each task, by key.
+	tasks map[string]time.Time
 
 	// Output writers, created on first use, and the step's output so far.
 	stdout, stderr *linesplit.Writer
@@ -104,8 +109,32 @@ func (s *StepContext) Warn(msg string) {
 // Progress reports progress on the task named key. A total of zero means the
 // total is unknown. It is best-effort, and viewers keep only the latest value
 // for each key.
+//
+// Every report says when the step first reported on the task, in this
+// attempt, so a viewer that joins late can say how long the task has run
+// from the one report it sees. A step that does one thing after another
+// gives each its own key.
 func (s *StepContext) Progress(key, msg string, current, total int) {
-	_ = s.emit(Event{Kind: EventProgress, Key: key, Message: msg, Current: current, Total: total})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.r == nil {
+		return
+	}
+
+	started, reported := s.tasks[key]
+	if !reported {
+		if s.tasks == nil {
+			s.tasks = map[string]time.Time{}
+		}
+
+		started = s.r.clock.Now().UTC()
+		s.tasks[key] = started
+	}
+
+	_ = s.emitLocked(Event{
+		Kind: EventProgress, Key: key, Message: msg, Current: current, Total: total, Started: started,
+	})
 }
 
 // Item records the step's result for one target, such as one host of a call
@@ -119,6 +148,21 @@ func (s *StepContext) Progress(key, msg string, current, total int) {
 // decide, from PreviousItems. The latest result for a target replaces the
 // one before.
 func (s *StepContext) Item(id string, status ItemStatus, msg string) error {
+	return s.ItemWith(id, status, msg, nil)
+}
+
+// ItemWith is Item, with data of the step's own about the result: small and
+// structured, for whatever reads the journal to show or act on, such as the
+// host a check ran against, or a fingerprint an operator is to verify. It
+// saves putting such things in the id or the message, to be parsed out
+// again.
+//
+// The data is encoded as JSON when ItemWith is called, and kept with the
+// item in [ItemState], until the target's next result replaces both. Nil is
+// no data. ItemWith returns an error, and records nothing, if the data
+// can't be encoded or is larger than [MaxItemDataBytes]. Strings in it are
+// redacted, as a message is.
+func (s *StepContext) ItemWith(id string, status ItemStatus, msg string, data any) error {
 	if id == "" {
 		return errors.New("pipeline: item id is empty")
 	}
@@ -129,7 +173,21 @@ func (s *StepContext) Item(id string, status ItemStatus, msg string) error {
 		return fmt.Errorf("pipeline: unknown item status %q", status)
 	}
 
-	return s.emit(Event{Kind: EventItem, Item: id, ItemStatus: status, Message: msg})
+	var raw json.RawMessage
+
+	if data != nil {
+		var err error
+
+		if raw, err = encodeEmbeddable(data); err != nil {
+			return fmt.Errorf("pipeline: item %q: %w", id, err)
+		}
+
+		if len(raw) > MaxItemDataBytes {
+			return fmt.Errorf("pipeline: item %q: data is %d bytes, over the %d limit", id, len(raw), MaxItemDataBytes)
+		}
+	}
+
+	return s.emit(Event{Kind: EventItem, Item: id, ItemStatus: status, Message: msg, Data: raw})
 }
 
 // PreviousItems returns the results this step recorded for each target in
