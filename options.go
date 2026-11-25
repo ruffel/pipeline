@@ -222,6 +222,12 @@ const MatchByPath PlanChange = 1
 //
 // A step that moved to another path is one removed and one added.
 //
+// A group that has settled an order, as a [GroupNode.OrderFrom] group does,
+// must still have the children the order names, whether or not the plan
+// still has the option. An attempt whose plan adds one, or no longer has
+// one, is refused with an error that matches ErrPlanChanged and names the
+// group.
+//
 // A rollback can't undo a removed step, because its Undo went with it. If
 // such a step ran and had an Undo, Rollback refuses with an error that
 // matches ErrPlanChanged and names it.

@@ -22,7 +22,7 @@ Every event has these fields:
 
 | Field  | Meaning                                                                    |
 | ------ | -------------------------------------------------------------------------- |
-| `v`    | The schema version it was written as: 1 or 2, see [Reading one](#reading-one) |
+| `v`    | The schema version it was written as: 1, 2 or 3, see [Reading one](#reading-one) |
 | `seq`  | A number that only increases through the file                              |
 | `ts`   | When it was written, in UTC                                                |
 | `kind` | What it records, from the table below                                      |
@@ -40,7 +40,7 @@ one can't be written. The rest are best-effort: a crash can lose the last few.
 | ---------------- | ------- | ------------ | -------------------------------------------------------------------------------------------------------------------------- |
 | `run.started`    | yes     | the root     | `attempt`, `plan`, `fingerprint`, `labels`, `inputs`, `inputsDigest`, `inputsChanged`, `forced`, `rollback`, `pid`, `host` |
 | `run.finished`   | yes     | the root     | `outcome`, `error`, `ms`                                                                                                   |
-| `group.started`  | yes     | a group      |                                                                                                                            |
+| `group.started`  | yes     | a group      | `order`                                                                                                                    |
 | `group.finished` | yes     | a group      | `outcome`, `reason`, `error`, `ms`                                                                                         |
 | `group.reset`    | yes     | a group      |                                                                                                                            |
 | `step.started`   | yes     | a step, gate |                                                                                                                            |
@@ -70,6 +70,14 @@ What each one means:
   when a resume accepted a change.
 - **`run.finished`** closes it. An attempt with no `run.finished` is still
   running, or its process died.
+- **`group.started`** has an `order` for a group whose node has `orderFrom`:
+  the names of its children, in the order they run in. The group settles it
+  the first time it starts, and every later start of the group repeats it,
+  until the group goes back to never started: by a reset, a forced attempt, or
+  a rollback that undoes everything in it. It then settles one afresh. The
+  order is the journal's: a start repeats it even if the attempt's `plan` no
+  longer has `orderFrom` on the group. A start with no `order` runs the
+  children as the plan lists them, as a group with no children always does.
 - **`group.reset`** is a recovery handler starting: everything in the group goes
   back to never started.
 - **`step.running`** means `Check` found the work not done and `Run` is about to
@@ -142,6 +150,7 @@ with an error of kind `cancelled`.
 | `failure`                | groups | `stop`, `cancel` or `continue`: what a failing child does          |
 | `onFailure`, `recovers`  | groups | The failure handler's node, and whether it resets the group first  |
 | `drainOnStop`            | groups | Whether a graceful stop lets the group finish once it has started  |
+| `orderFrom`              | groups | Where the group's order comes from: a step's `path` and its `key`  |
 | `check`, `undo`          | steps  | Whether the step has a `Check` and an `Undo`                       |
 | `irreversible`           | steps  | Whether the step is marked `Irreversible`: no rollback once it ran |
 | `tries`, `backoff`       | steps  | How many tries, and the wait between them, in nanoseconds          |
@@ -157,19 +166,25 @@ with an error of kind `cancelled`.
   an older reader can pass over. A change that an older reader would get wrong
   raises `v`, and a reader should refuse a `v` newer than it knows.
 - **`v` is each attempt's own.** An attempt is written as the oldest version
-  that says everything about it, so one journal can hold both. Version 2 has
-  the events of version 1. It marks an attempt whose `plan` has a `drainOnStop`
-  group: a program that doesn't know the option must not carry on from it,
-  because its own plan would let a stop end such a group half-way.
+  that says everything about it, so one journal can hold several. Version 2
+  has the events of version 1. It marks an attempt whose `plan` has a
+  `drainOnStop` group: a program that doesn't know the option must not carry
+  on from it, because its own plan would let a stop end such a group half-way.
+  Version 3 marks an attempt whose `plan` has a group with `orderFrom`, or
+  that carries on in an `order` settled earlier, and adds `order` to that
+  group's `group.started`: a program that doesn't know the option would carry
+  on in the plan's own order.
 - **An attempt is the events sharing a `run`,** from its `run.started` to its
   `run.finished`. Later attempts append to the same file.
 - **The latest event about a path wins,** with five exceptions:
   - a `group.reset` forgets everything beneath the group, except that an
-    `irreversible` step with a `step.running` has run;
+    `irreversible` step with a `step.running` has run. It forgets the `order`
+    of the group and of the groups beneath it too;
   - an `undo.finished` with outcome `undone` takes its step back to never
     started;
   - a rollback that passes makes every gate wait again;
-  - a `run.started` with `forced` means nothing done before it counts as done;
+  - a `run.started` with `forced` means nothing done before it counts as done,
+    and no `order` before it counts as settled;
   - a `run.started` whose `plan` has paths the one before it lacked means the
     groups around each new path are no longer finished. Paths it no longer
     has keep what they had.

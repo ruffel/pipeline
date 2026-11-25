@@ -686,7 +686,6 @@ func TestDrain_AnAttemptThatNeedsItIsWrittenAsVersion2(t *testing.T) {
 
 	// A rollback's attempt is written as its plan needs, too.
 	assert.Equal(t, []int{2}, versions(resumeRollback(t, j, plan(true)).events))
-	assert.Equal(t, 2, pipeline.SchemaVersion)
 
 	state, err := j.State()
 	require.NoError(t, err)

@@ -77,6 +77,14 @@ type State struct {
 	// step recorded as skipped because its group or the run ended before
 	// reaching it has not begun.
 	begun map[string]bool
+	// orders are the orders that OrderFrom groups have settled, by path:
+	// the names of each one's children, as its start recorded them. A group
+	// that goes back to never started forgets its order.
+	orders map[string][]string
+	// ranIn is the order each such group's children last ran in, by path.
+	// Unlike orders, a forced attempt does not forget it: like RunCalled, it
+	// is what a rollback goes by, and the steps that ran are still to undo.
+	ranIn map[string][]string
 }
 
 // noReturn is a step's Run called while the step was irreversible.
@@ -176,6 +184,8 @@ func newState() *State {
 		ran:      map[string]int{},
 		noReturn: map[string]noReturn{},
 		begun:    map[string]bool{},
+		orders:   map[string][]string{},
+		ranIn:    map[string][]string{},
 	}
 }
 
@@ -203,6 +213,15 @@ func (s *State) Items(path string) map[string]ItemState {
 	maps.Copy(out, s.items[path])
 
 	return out
+}
+
+// Order returns the order in which the children of the group at path run,
+// by name, if it is a [GroupNode.OrderFrom] group that has settled one: it
+// has started, and has not gone back to never started since. Otherwise it
+// returns nil, and the group's children run in the plan's order. A group
+// with no children has no order to settle.
+func (s *State) Order(path string) []string {
+	return slices.Clone(s.orders[path])
 }
 
 // DecodeInputs decodes into v the inputs the latest attempt recorded, and
@@ -419,6 +438,18 @@ func (s *State) start(e Event) {
 	if e.Kind == EventStepStarted {
 		s.begun[e.Path] = true
 	}
+
+	// Every start of a group that runs in a settled order says the order.
+	// One that says none runs in the plan's, whatever the group ran in
+	// before a reset or a forced attempt.
+	if e.Kind == EventGroupStarted {
+		if len(e.Order) > 0 {
+			s.orders[e.Path], s.ranIn[e.Path] = e.Order, e.Order
+		} else {
+			delete(s.orders, e.Path)
+			delete(s.ranIn, e.Path)
+		}
+	}
 }
 
 // running applies a step's Run being called. What the step was when it ran
@@ -617,21 +648,25 @@ func (s *State) unsettle(path string) {
 
 // startOver applies a forced attempt: it does everything again, so nothing
 // done before it counts as done after it, whether or not the forced attempt
-// got that far. Element completion, signals and item results are forgotten.
-// Recorded values are kept, and so is the fact that a step's Run was once
-// called, which rollback needs.
+// got that far. Element completion, signals, item results and the orders
+// that groups settled are forgotten. Recorded values are kept, and so are the
+// fact that a step's Run was once called and the order a group's children
+// ran in, which rollback needs.
 func (s *State) startOver() {
 	for path, el := range s.elements {
 		s.elements[path] = ElementState{Status: StatusNotReached, RunCalled: el.RunCalled}
 	}
 
 	clear(s.items)
+	clear(s.orders)
 }
 
 // reset applies a group's reset: everything beneath it goes back to never
 // started, as if no attempt had touched it. Unlike a forced attempt, it also
 // forgets that Runs were called and the values they recorded, so a later
-// rollback leaves the group to its recovery handler.
+// rollback leaves the group to its recovery handler. The group has nothing
+// left of what it did, so the order it settled goes too, with those of the
+// groups beneath it: each reads its order again when it next starts.
 func (s *State) reset(path string) {
 	beneath := func(p string) bool { return strings.HasPrefix(p, path+"/") }
 
@@ -639,6 +674,11 @@ func (s *State) reset(path string) {
 	maps.DeleteFunc(s.values, func(p string, _ map[string]json.RawMessage) bool { return beneath(p) })
 	maps.DeleteFunc(s.items, func(p string, _ map[string]ItemState) bool { return beneath(p) })
 	maps.DeleteFunc(s.begun, func(p string, _ bool) bool { return beneath(p) })
+
+	within := func(p string, _ []string) bool { return p == path || beneath(p) }
+
+	maps.DeleteFunc(s.orders, within)
+	maps.DeleteFunc(s.ranIn, within)
 }
 
 // gate applies a gate waiting or being released.

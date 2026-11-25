@@ -15,7 +15,9 @@ import (
 // that Run passed, failed or was interrupted, and that no rollback has undone
 // since. A step that Check found already done was never Run, and is not
 // taken. In reverse plan order, one at a time, it calls each one's Undo,
-// bounded by the step's Timeout and not retried. A step without an Undo is
+// bounded by the step's Timeout and not retried. The steps of a
+// [GroupNode.OrderFrom] group are undone in the reverse of the order they ran
+// in. A step without an Undo is
 // recorded as skipped, with reason [ReasonNoUndo], and keeps its outcome.
 //
 // An Undo can read what the step's Run recorded, with
@@ -76,7 +78,8 @@ func (r *runner) undoAll(ctx context.Context) error {
 
 // toUndo returns the Effect and Ensure steps whose Run an attempt called,
 // and no rollback has undone since, in reverse plan order: a group's
-// failure handler after its children.
+// failure handler after its children, and the children of an OrderFrom group
+// in the order they ran in.
 func (r *runner) toUndo() []*node {
 	return toUndo(r.prior, r.plan)
 }
@@ -84,7 +87,20 @@ func (r *runner) toUndo() []*node {
 func toUndo(prior *State, plan *Plan) []*node {
 	var steps []*node
 
-	plan.root.walk(func(n *node) {
+	// The children of a group that settled an order ran in it, whatever
+	// the plan says of the group now, and whether or not a forced attempt
+	// has unsettled it since.
+	ranIn := func(n *node) []*node {
+		if names, ok := prior.ranIn[n.path]; ok {
+			if order, err := n.arranged(names); err == nil {
+				return order
+			}
+		}
+
+		return n.children
+	}
+
+	plan.root.walkIn(ranIn, func(n *node) {
 		if (n.kind == KindEffect || n.kind == KindEnsure) && prior.Element(n.path).RunCalled {
 			steps = append(steps, n)
 		}

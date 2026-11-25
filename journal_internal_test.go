@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -138,7 +139,7 @@ func TestJournal_RefusesANewerSchemaVersion(t *testing.T) {
 	mem.data = append(mem.data, []byte(`{"v":99,"seq":2,"kind":"run.finished"}`))
 
 	_, err = j.Events()
-	require.ErrorContains(t, err, "journal line 2: schema version 99 is newer than this reader's 2")
+	require.ErrorContains(t, err, fmt.Sprintf("journal line 2: schema version 99 is newer than this reader's %d", SchemaVersion))
 }
 
 func TestJournal_StateReplaysWhatWasAppended(t *testing.T) {

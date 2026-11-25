@@ -261,6 +261,50 @@ half-way through a node. An attempt whose plan has such a group is therefore
 written as schema version 2, which those builds refuse. Other attempts stay
 at version 1, so journals that don't use the option stay readable by them.
 
+## A Group's Order Can Be Decided During the Run
+
+**Decision:** A group made with `OrderFrom` runs its children in an order that
+a step recorded. The children are the plan's. The order is settled when the
+group first starts, on the event that records the start, and stands until the
+group goes back to never started.
+
+The plan is data, fixed before anything runs, and everything that reads a
+journal relies on that: the fingerprint, a rollback, a changed plan, a viewer
+drawing the tree. Some work has an order that is only known part-way through,
+because earlier steps decide it. Letting a step build elements would have given
+all of that up for the sake of an order. So the set stays in the plan, where it
+is validated, fingerprinted and drawn like any other, and only the order waits.
+
+It is settled once so that an operation does not change course between
+attempts: what a resume does next follows from the journal, not from what the
+step would say today. It is recorded on the group's start, not in an event of
+its own, so that no group has started without an order, and a crash on either
+side of that write leaves the order settled or not yet read. It is forgotten
+exactly when the group has nothing left of what it did, after a reset, a forced
+attempt, or a rollback that undoes all of it: the order belonged to that run of
+the group, and the next may find a different system. Nothing has to track the
+step the order came from.
+
+A settled order belongs to the journal, not to the option that asked for it. A
+later build that drops the option has a plan of the same shape, and nothing
+refuses it. If the group then finished in the plan's order, what a resume did
+would depend on the build and not on the record, so the order stands until the
+group is back at never started, and the group's children may not change under
+it. How the group ran is kept apart from the order it has settled: a forced
+attempt forgets the second, because it does everything again, and not the
+first, because the steps that ran are still there to undo, the way they ran.
+
+`NewPlan` checks that the step will have run, which coming earlier in the plan
+does not settle. It looks at the group where the step and the ordered group
+part ways: that group has to run the step's side first every time, so it may
+not be parallel, and may not take its own order from a step.
+
+A group with no order it can use fails before it starts, and its own failure
+handler does not run: a handler puts back what the group did, and it did
+nothing. A program built before the option would resume such a journal in the
+plan's own order, so an attempt whose plan has such a group is written as
+schema version 3.
+
 ## Control Requests Are Acknowledged Through the Journal
 
 **Decision:** `RequestStop` and `Approve` write a request into a directory beside

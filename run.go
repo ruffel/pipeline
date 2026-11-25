@@ -254,8 +254,25 @@ func changedInputsAccepted(prev *State, plan *Plan, in *inputs, cfg config) ([]s
 
 // admit checks that an attempt may be made against a journal that stands at
 // prev, and returns what it decides which work is already done from: prev,
-// or, for a forced run, nothing, though earlier values stay readable.
+// or, for a forced run, nothing, though earlier values stay readable. The
+// children of a group that has settled its order must still be those the
+// order names.
 func admit(prev *State, plan *Plan, cfg config, rollback bool) (*State, error) {
+	prior, err := admitted(prev, plan, cfg, rollback)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := misordered(prior, plan); err != nil {
+		return nil, err
+	}
+
+	return prior, nil
+}
+
+// admitted is admit, before the plan is held against the orders that the
+// journal's groups have settled.
+func admitted(prev *State, plan *Plan, cfg config, rollback bool) (*State, error) {
 	n := len(prev.Attempts)
 	if n == 0 {
 		return prev, nil
@@ -277,6 +294,32 @@ func admit(prev *State, plan *Plan, cfg config, rollback bool) (*State, error) {
 	default:
 		return prev, nil
 	}
+}
+
+// misordered returns why plan can't carry on from the orders that the
+// journal's groups have settled, or nil: the first group whose children are
+// not those its order names, or that would now run them at once. An order
+// stands until its group goes back to never started, whether or not the plan
+// still asks for one. Only a later build can bring either about: the order
+// named every child of a sequential group when it was settled.
+func misordered(prior *State, plan *Plan) error {
+	var err error
+
+	plan.root.walk(func(n *node) {
+		names, settled := prior.orders[n.path]
+		if err != nil || !settled {
+			return
+		}
+
+		switch _, bad := n.arranged(names); {
+		case bad != nil:
+			err = fmt.Errorf("%w: the children of %s are no longer those its order names", ErrPlanChanged, n.path)
+		case n.parallel:
+			err = fmt.Errorf("%w: %s has settled the order of its children, and may not now be parallel", ErrPlanChanged, n.path)
+		}
+	})
+
+	return err
 }
 
 // runner holds one attempt's state.
@@ -363,6 +406,12 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	spec := r.plan.Spec()
 	r.version = r.plan.version()
 
+	// An attempt that carries on in an order the journal has settled says so
+	// on the group's start, whatever its own plan asks for.
+	if len(r.prior.orders) > 0 {
+		r.version = max(r.version, schemaOrder)
+	}
+
 	err := r.emit(Event{
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
 		Plan: &spec, Fingerprint: r.plan.Fingerprint(), Labels: labels,
@@ -431,7 +480,7 @@ func (r *runner) work(ctx context.Context) error {
 	if r.rollingBack {
 		err = r.undoAll(ctx)
 	} else {
-		err = r.children(ctx, r.plan.root)
+		err = r.children(ctx, r.plan.root, r.plan.root.children)
 		if err != nil && !onlyStopped(err) {
 			err = errors.Join(err, r.handle(ctx, r.plan.root))
 		}
@@ -498,13 +547,26 @@ func (r *runner) group(ctx context.Context, n *node) error {
 		return nil
 	}
 
+	order, settled, err := r.order(n)
+	if err != nil {
+		// The group has not started: none of its children ran, so its
+		// failure handler has nothing to handle.
+		if ferr := r.emit(Event{
+			Kind: EventGroupFinished, Path: n.path, Outcome: OutcomeFailed, Error: errorInfo(err),
+		}); ferr != nil {
+			return ferr
+		}
+
+		return &StepError{Path: n.path, Err: err}
+	}
+
 	start := r.clock.Now()
 
-	if err := r.emit(Event{Kind: EventGroupStarted, Path: n.path}); err != nil {
+	if err := r.emit(Event{Kind: EventGroupStarted, Path: n.path, Order: settled}); err != nil {
 		return err
 	}
 
-	err := r.children(ctx, n)
+	err = r.children(ctx, n, order)
 
 	var herr error
 	if err != nil && !onlyStopped(err) {
@@ -533,6 +595,42 @@ func (r *runner) group(ctx context.Context, n *node) error {
 	}
 
 	return errors.Join(err, herr)
+}
+
+// order returns the children of n in the order they run in. For an OrderFrom
+// group it also returns that order by name, for the group's start to record:
+// the one an earlier attempt settled, whatever has been recorded since, or
+// else the one the group's step has recorded, which must name every child
+// exactly once.
+func (r *runner) order(n *node) ([]*node, []string, error) {
+	// An order that an earlier attempt settled stands until the group goes
+	// back to never started, even if the plan no longer asks for one.
+	names, from := r.prior.Order(n.path), "an earlier attempt settled"
+
+	if names == nil {
+		if n.order == nil {
+			return n.children, nil, nil
+		}
+
+		raw, ok := r.recalled(n.order.Path, n.order.Key)
+		if !ok {
+			return nil, nil, fmt.Errorf("pipeline: %s has recorded no %q for the group's order", n.order.Path, n.order.Key)
+		}
+
+		if err := json.Unmarshal(raw, &names); err != nil {
+			return nil, nil, fmt.Errorf("pipeline: what %s recorded as %q is not a list of names: %w",
+				n.order.Path, n.order.Key, err)
+		}
+
+		from = fmt.Sprintf("%s recorded as %q", n.order.Path, n.order.Key)
+	}
+
+	order, err := n.arranged(names)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pipeline: the order %s %w", from, err)
+	}
+
+	return order, names, nil
 }
 
 // handle runs a failed group's failure handler, if it has one and nothing
@@ -588,12 +686,13 @@ func (r *runner) handle(ctx context.Context, n *node) error {
 	return herr
 }
 
-// children runs a group's children under its failure policy. Children not
-// started because of a failure, a cancel or a stop get no events: replay
+// children runs a group's children under its failure policy, in the order
+// given: the plan's, unless the group takes its order from a step. Children
+// not started because of a failure, a cancel or a stop get no events: replay
 // reports them as not reached. A group cut short by a cancel returns the
 // context's error, and one cut short by a stop returns ErrStopped, even if
 // no child failed.
-func (r *runner) children(ctx context.Context, n *node) error {
+func (r *runner) children(ctx context.Context, n *node, order []*node) error {
 	if n.parallel {
 		return r.parallel(ctx, n)
 	}
@@ -606,9 +705,9 @@ func (r *runner) children(ctx context.Context, n *node) error {
 	drains := n.boundary != nil
 
 children:
-	for i, c := range n.children {
+	for i, c := range order {
 		if !drains && r.skipRun.Load() {
-			errs = append(errs, r.skipRest(n.children[i:], ReasonRunSkipped))
+			errs = append(errs, r.skipRest(order[i:], ReasonRunSkipped))
 
 			break
 		}
@@ -637,7 +736,7 @@ children:
 		switch {
 		case err == nil:
 		case errors.Is(err, ErrSkipGroup):
-			errs = append(errs, r.skipRest(n.children[i+1:], ReasonGroupSkipped))
+			errs = append(errs, r.skipRest(order[i+1:], ReasonGroupSkipped))
 
 			break children
 		case errors.Is(err, ErrSkipRun):
@@ -649,7 +748,7 @@ children:
 				// A run-wide skip signalled inside the failed child (after an
 				// earlier failure there) still applies to the rest.
 				if r.skipRun.Load() {
-					errs = append(errs, r.skipRest(n.children[i+1:], ReasonRunSkipped))
+					errs = append(errs, r.skipRest(order[i+1:], ReasonRunSkipped))
 				}
 
 				break children
