@@ -596,13 +596,172 @@ func TestOrderFrom_AChangedPlanKeepsTheChildrenTheOrderNames(t *testing.T) {
 	})
 }
 
+// The journal's order outlives the setting. A later build that takes the
+// option off a group does not unsettle it: the group carries on, and is
+// rolled back, in the order it settled, and its children must still be
+// those the order names. Nor may the group now run them at once.
+func TestOrderFrom_ASettledOrderStandsWithoutTheOption(t *testing.T) {
+	t.Parallel()
+
+	start := func(t *testing.T) (*datacenter, *pipeline.Journal, func(nodes ...string) pipeline.GroupNode) {
+		t.Helper()
+
+		d := &datacenter{order: names("n3", "n1", "n2"), failing: map[string]bool{"n1": true}}
+		j := pipeline.MemoryJournal()
+
+		require.ErrorContains(t, resumeOn(t, j, d.plan(t)).err, "n1 failed")
+		assert.Equal(t, []string{"n3", "n1"}, d.took())
+
+		d.failing = nil
+
+		// The same group, as a build without the option has it.
+		plain := func(nodes ...string) pipeline.GroupNode {
+			children := make([]pipeline.Element, 0, len(nodes))
+			for _, name := range nodes {
+				children = append(children, pipeline.Effect(name, node{d: d, name: name}))
+			}
+
+			return pipeline.Group("dc1", children...)
+		}
+
+		return d, j, plain
+	}
+
+	t.Run("a resume and a rollback keep to it", func(t *testing.T) {
+		t.Parallel()
+
+		d, j, plain := start(t)
+		plan := mustPlan(t, d.decide(), plain("n1", "n2", "n3"))
+
+		require.Equal(t, d.plan(t).Fingerprint(), plan.Fingerprint(), "nothing refuses the build")
+
+		out := resumeOn(t, j, plan)
+
+		require.NoError(t, out.err)
+		assert.Equal(t, []string{"n1", "n2"}, d.took(), "not n2 before n1, as the plan lists them")
+		assert.Equal(t, []string{"n3", "n1", "n2"}, orderOf(t, out.events, "p/dc1"))
+		assert.Equal(t, []string{"n3", "n1", "n2"}, stateOf(t, j).Order("p/dc1"))
+
+		require.NoError(t, resumeRollback(t, j, plan).err)
+		assert.Equal(t, []string{"undo n2", "undo n1", "undo n3"}, d.took())
+
+		// Back at never started, the group is what the plan now says.
+		require.NoError(t, resumeOn(t, j, plan).err)
+		assert.Equal(t, []string{"n1", "n2", "n3"}, d.took())
+		assert.Nil(t, stateOf(t, j).Order("p/dc1"))
+	})
+
+	// A forced attempt unsettles the order. With the option gone, the group
+	// then runs in the plan's order, and that is the way back too.
+	t.Run("a forced attempt without it runs in the plan's order", func(t *testing.T) {
+		t.Parallel()
+
+		d, j, plain := start(t)
+		plan := mustPlan(t, d.decide(), plain("n1", "n2", "n3"))
+
+		out := resumeOn(t, j, plan, pipeline.Force())
+
+		require.NoError(t, out.err)
+		assert.Equal(t, []string{"n1", "n2", "n3"}, d.took())
+		assert.Nil(t, orderOf(t, out.events, "p/dc1"))
+
+		require.NoError(t, resumeRollback(t, j, plan).err)
+		assert.Equal(t, []string{"undo n3", "undo n2", "undo n1"}, d.took())
+	})
+
+	t.Run("its children must still be those it names", func(t *testing.T) {
+		t.Parallel()
+
+		d, j, plain := start(t)
+
+		out := resumeOn(t, j, mustPlan(t, d.decide(), plain("n1", "n2", "n3", "n4")), matchByPath())
+
+		require.ErrorIs(t, out.err, pipeline.ErrPlanChanged)
+		require.ErrorContains(t, out.err, "the children of p/dc1 are no longer those its order names")
+		assert.Empty(t, out.events)
+	})
+
+	t.Run("it may not become parallel", func(t *testing.T) {
+		t.Parallel()
+
+		d, j, plain := start(t)
+
+		out := resumeOn(t, j, mustPlan(t, d.decide(), plain("n1", "n2", "n3").Parallel(0)))
+
+		require.ErrorIs(t, out.err, pipeline.ErrPlanChanged)
+		require.ErrorContains(t, out.err, "p/dc1 has settled the order of its children, and may not now be parallel")
+		assert.Empty(t, out.events)
+		assert.Empty(t, d.took())
+	})
+}
+
+// A forced attempt unsettles the order, and forgets nothing that a rollback
+// needs: the steps that ran are still to undo, the way they ran.
+func TestOrderFrom_ARollbackAfterAForcedAttemptStillGoesBackTheWayItRan(t *testing.T) {
+	t.Parallel()
+
+	fails := false
+	d := &datacenter{order: names("n3", "n1", "n2")}
+	plan := mustPlan(t,
+		pipeline.Effect("prepare", pipeline.StepFunc(func(context.Context, *pipeline.StepContext) error {
+			if fails {
+				return errors.New("prepare failed")
+			}
+
+			return nil
+		})),
+		d.decide(),
+		d.dc("p/decide", "n1", "n2", "n3"),
+	)
+	j := pipeline.MemoryJournal()
+
+	require.NoError(t, resumeOn(t, j, plan).err)
+	assert.Equal(t, []string{"n3", "n1", "n2"}, d.took())
+
+	fails = true
+
+	require.ErrorContains(t, resumeOn(t, j, plan, pipeline.Force()).err, "prepare failed")
+	assert.Nil(t, stateOf(t, j).Order("p/dc1"), "the forced attempt never reached the group")
+
+	require.NoError(t, resumeRollback(t, j, plan).err)
+	assert.Equal(t, []string{"undo n2", "undo n1", "undo n3"}, d.took(), "not the reverse of the plan's order")
+}
+
+// A group with no children has nothing to run in any order, so it settles
+// none. Nothing in it stands, and an order lasts only while something does:
+// when a later build gives it children, it reads its order then.
+func TestOrderFrom_AGroupWithNoChildrenSettlesNoOrder(t *testing.T) {
+	t.Parallel()
+
+	fails := true
+	order := []string{}
+	d := &datacenter{order: func() any { return order }}
+	after := pipeline.Effect("after", counted(&calls{}, "after", &fails))
+	j := pipeline.MemoryJournal()
+
+	out := resumeOn(t, j, mustPlan(t, d.decide(), d.dc("p/decide"), after))
+
+	require.ErrorContains(t, out.err, "after failed")
+	assert.Contains(t, trace(out.events), "group.finished p/dc1 passed", "an empty list is the order of no children")
+	assert.Nil(t, orderOf(t, out.events, "p/dc1"))
+	assert.Nil(t, stateOf(t, j).Order("p/dc1"))
+
+	fails, order = false, []string{"n2", "n1"}
+	out = resumeOn(t, j, mustPlan(t, d.decide(), d.dc("p/decide", "n1", "n2"), after), matchByPath())
+
+	require.NoError(t, out.err)
+	assert.Equal(t, []string{"n2", "n1"}, d.took())
+	assert.Equal(t, []string{"n2", "n1"}, stateOf(t, j).Order("p/dc1"))
+}
+
 // An attempt whose plan has an OrderFrom group is written as version 3,
-// which a program built before the option refuses. Any other attempt, in the
-// same journal or not, is written as the oldest version that will do.
+// which a program built before the option refuses. So is one that carries on
+// in an order the journal has settled, whatever its own plan asks for. Any
+// other attempt is written as the oldest version that will do.
 func TestOrderFrom_AnAttemptThatNeedsItIsWrittenAsVersion3(t *testing.T) {
 	t.Parallel()
 
-	d := &datacenter{order: names("n3", "n1", "n2"), failing: map[string]bool{"n1": true}}
+	d := &datacenter{order: names("n3", "n1", "n2")}
 	plan := func(ordered, drain bool) *pipeline.Plan {
 		dc := pipeline.Group("dc1",
 			bounded(pipeline.Effect("n1", node{d: d, name: "n1"})),
@@ -631,16 +790,22 @@ func TestOrderFrom_AnAttemptThatNeedsItIsWrittenAsVersion3(t *testing.T) {
 		return events[0].V
 	}
 
-	j := pipeline.MemoryJournal()
-
-	assert.Equal(t, 1, version(resumeOn(t, j, plan(false, false)).events))
-	assert.Equal(t, 3, version(resumeOn(t, j, plan(true, false)).events))
-	assert.Equal(t, 2, version(resumeOn(t, j, plan(false, true)).events))
-	assert.Equal(t, 3, version(resumeOn(t, j, plan(true, true)).events), "the newest that any of its groups needs")
-	assert.Equal(t, 3, version(resumeRollback(t, j, plan(true, false)).events), "a rollback's attempt too")
+	assert.Equal(t, 1, version(resumeOn(t, pipeline.MemoryJournal(), plan(false, false)).events))
+	assert.Equal(t, 2, version(resumeOn(t, pipeline.MemoryJournal(), plan(false, true)).events))
+	assert.Equal(t, 3, version(resumeOn(t, pipeline.MemoryJournal(), plan(true, false)).events))
+	assert.Equal(t, 3, version(resumeOn(t, pipeline.MemoryJournal(), plan(true, true)).events), "the newest any group needs")
 	assert.Equal(t, 3, pipeline.SchemaVersion)
 
-	assert.Len(t, stateOf(t, j).Attempts, 5, "this reader reads them all")
+	// One journal holds attempts of several versions.
+	j := pipeline.MemoryJournal()
+	d.failing = map[string]bool{"n1": true}
+
+	assert.Equal(t, 1, version(resumeOn(t, j, plan(false, false)).events), "the plan's own order, and no order settled")
+	assert.Equal(t, 3, version(resumeOn(t, j, plan(true, false)).events))
+	assert.Equal(t, 3, version(resumeOn(t, j, plan(false, false)).events), "it carries on in the settled order, and says so")
+	assert.Equal(t, 3, version(resumeRollback(t, j, plan(true, false)).events), "a rollback's attempt too")
+
+	assert.Len(t, stateOf(t, j).Attempts, 4, "this reader reads them all")
 }
 
 // A viewer in another process reads the order from a file journal.
@@ -685,7 +850,11 @@ func TestNewPlan_OrderFrom(t *testing.T) {
 	decide := pipeline.Observe("decide", ok())
 	dc := pipeline.Group("dc1", pipeline.Effect("n1", ok()), pipeline.Effect("n2", ok()))
 
-	const notBefore = ", which its order is to come from, is not a step that comes before it in the plan"
+	const (
+		notAStep  = ", which is not a step in the plan"
+		notBefore = ", which does not come before it"
+		notYet    = ", which may not have run when it starts: "
+	)
 
 	for name, tc := range map[string]struct {
 		elems []pipeline.Element
@@ -705,29 +874,49 @@ func TestNewPlan_OrderFrom(t *testing.T) {
 		},
 		"a path the plan does not have": {
 			elems: []pipeline.Element{decide, dc.OrderFrom("p/elsewhere", "dc1")},
-			want:  "p/dc1: p/elsewhere" + notBefore,
+			want:  "p/dc1: its order is to come from p/elsewhere" + notAStep,
 		},
 		"a step after it": {
 			elems: []pipeline.Element{dc.OrderFrom("p/decide", "dc1"), decide},
-			want:  "p/dc1: p/decide" + notBefore,
+			want:  "p/dc1: its order is to come from p/decide" + notBefore,
 		},
 		"a step inside it": {
 			elems: []pipeline.Element{pipeline.Group("dc1", decide, pipeline.Effect("n1", ok())).OrderFrom("p/dc1/decide", "dc1")},
-			want:  "p/dc1: p/dc1/decide" + notBefore,
+			want:  "p/dc1: its order is to come from p/dc1/decide" + notBefore,
 		},
 		"a group": {
 			elems: []pipeline.Element{pipeline.Group("prepare", decide), dc.OrderFrom("p/prepare", "dc1")},
-			want:  "p/dc1: p/prepare" + notBefore,
+			want:  "p/dc1: its order is to come from p/prepare" + notAStep,
 		},
 		"a gate": {
 			elems: []pipeline.Element{pipeline.Gate("go", pipeline.GateOptions{}), dc.OrderFrom("p/go", "dc1")},
-			want:  "p/dc1: p/go" + notBefore,
+			want:  "p/dc1: its order is to come from p/go" + notAStep,
 		},
 		"the failure handler of a group around it": {
 			elems: []pipeline.Element{
 				pipeline.Group("region", dc.OrderFrom("p/region/cleanup", "dc1")).OnFailure(pipeline.Effect("cleanup", ok())),
 			},
-			want: "p/region/dc1: p/region/cleanup" + notBefore,
+			want: "p/region/dc1: its order is to come from p/region/cleanup" + notBefore,
+		},
+		// Coming earlier in the plan is not enough: the group that holds
+		// both has to run the step's side first, every time.
+		"a step alongside it in a parallel group": {
+			elems: []pipeline.Element{pipeline.Group("region", decide, dc.OrderFrom("p/region/decide", "dc1")).Parallel(0)},
+			want:  "p/region/dc1: its order is to come from p/region/decide" + notYet + "p/region runs its children at once",
+		},
+		"a step in another branch of a parallel group": {
+			elems: []pipeline.Element{pipeline.Group("region",
+				pipeline.Group("prepare", decide),
+				pipeline.Group("nodes", dc.OrderFrom("p/region/prepare/decide", "dc1")),
+			).Parallel(2)},
+			want: "p/region/nodes/dc1: its order is to come from p/region/prepare/decide" + notYet + "p/region runs its children at once",
+		},
+		"a step alongside it in a group whose own order is decided later": {
+			elems: []pipeline.Element{
+				pipeline.Observe("first", ok()),
+				pipeline.Group("region", decide, dc.OrderFrom("p/region/decide", "dc1")).OrderFrom("p/first", "region"),
+			},
+			want: "p/region/dc1: its order is to come from p/region/decide" + notYet + "p/region takes its own order from a step",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -740,7 +929,22 @@ func TestNewPlan_OrderFrom(t *testing.T) {
 
 	_, err := pipeline.NewPlanFromGroup(pipeline.Group("p", pipeline.Effect("n1", ok())).OrderFrom("p/decide", "dc1"))
 	require.ErrorContains(t, err, "p: the plan's root may not take its order from a step")
-	require.NotContains(t, err.Error(), notBefore, "one problem is reported once")
+	require.NotContains(t, err.Error(), "its order is to come from", "one problem is reported once")
+
+	_, err = pipeline.NewPlanFromGroup(pipeline.Group("p", decide, dc.OrderFrom("p/decide", "dc1")).Parallel(0))
+	require.ErrorContains(t, err, "p/dc1: its order is to come from p/decide"+notYet+"p runs its children at once")
+
+	// What matters is the group where the two part ways. A parallel group
+	// further out, or one inside the step's side or the group's, changes
+	// nothing: the step's side has finished before the group's starts.
+	_, err = pipeline.NewPlan("p", pipeline.Group("regions",
+		pipeline.Group("region1",
+			pipeline.Group("prepare", decide, pipeline.Observe("other", ok())).Parallel(0),
+			pipeline.Group("nodes", dc.OrderFrom("p/regions/region1/prepare/decide", "dc1")).Parallel(0),
+		),
+		pipeline.Group("region2", pipeline.Effect("n1", ok())),
+	).Parallel(2))
+	require.NoError(t, err)
 
 	// The step may be anywhere before the group, the group may be one that a
 	// stop waits for, and one such group may be inside another. The option

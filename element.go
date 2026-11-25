@@ -244,9 +244,16 @@ type OrderSource struct {
 // last.
 //
 // The children are the plan's, as for any group: which they are does not
-// change. path names a step that comes before the group, and key the value
-// it records with [StepContext.Record]: a list of the children's names, each
-// of them once. The group runs them in that order.
+// change. path names a step, and key the value it records with
+// [StepContext.Record]: a list of the children's names, each of them once.
+// The group runs them in that order.
+//
+// The step has to have run by the time the group starts. So it comes before
+// the group in the plan, and the group that holds them both runs its side
+// first, every time: the step may not be alongside the group in a parallel
+// group, or in one whose own order is decided during the run. [NewPlan]
+// reports a step that may not have run, and a group that is parallel, or is
+// the plan's root.
 //
 // The order is read when the group first starts, and recorded with the
 // group's start, so it is settled from then on: a later attempt resumes in
@@ -254,24 +261,27 @@ type OrderSource struct {
 // when the group goes back to never started: when a recovery step resets it,
 // a forced attempt starts over, or a rollback undoes everything in it. The
 // group then reads the order again when it next starts. [State.Order] returns
-// the order a group has settled.
+// the order a group has settled. A group with no children settles none.
 //
 // If the step has recorded no such value, or one that is not a list naming
 // every child exactly once, the group fails without starting. None of its
 // children runs, and its own failure handler does not run either, there
 // being nothing to handle. [Rollback] undoes the group's steps in the reverse
-// of the order they ran in.
+// of the order they ran in, even after a forced attempt has unsettled it.
 //
-// The group may not be parallel, and may not be the plan's root. [NewPlan]
-// reports those, and a path that is not a step before the group. Under
-// [WithPlanChange], an attempt is refused if the group's children are no
-// longer those its settled order names.
+// A settled order is the journal's, and outlives the option. A later build
+// that takes the option off the group still carries on, and rolls back, in
+// the order the group settled, until it goes back to never started. While it
+// is settled, an attempt is refused with an error that matches
+// [ErrPlanChanged] if the group's children are no longer those the order
+// names, or the group has been made parallel.
 //
 // The order is no part of the plan's shape: [Plan.Fingerprint] covers the
 // children in the order the plan lists them, so list them the same way on
-// every attempt. An attempt whose plan has such a group is written as schema
-// version 3, so that a program built before the option existed refuses the
-// journal, and does not resume it in the plan's own order.
+// every attempt. An attempt whose plan has such a group, or that carries on
+// in an order one has settled, is written as schema version 3, so that a
+// program built before the option existed refuses the journal, and does not
+// resume it in the plan's own order.
 func (g GroupNode) OrderFrom(path, key string) GroupNode {
 	g.order = &OrderSource{Path: path, Key: key}
 

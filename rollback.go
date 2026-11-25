@@ -87,9 +87,11 @@ func (r *runner) toUndo() []*node {
 func toUndo(prior *State, plan *Plan) []*node {
 	var steps []*node
 
-	// The children of an OrderFrom group ran in the order it settled.
+	// The children of a group that settled an order ran in it, whatever
+	// the plan says of the group now, and whether or not a forced attempt
+	// has unsettled it since.
 	ranIn := func(n *node) []*node {
-		if names := prior.orders[n.path]; n.order != nil && names != nil {
+		if names, ok := prior.ranIn[n.path]; ok {
 			if order, err := n.arranged(names); err == nil {
 				return order
 			}

@@ -16,10 +16,11 @@ import (
 //     1. The number is there for programs built before the option existed:
 //     they refuse the journal, where they would otherwise resume it with a
 //     plan that a stop can cut short in the middle of such a group.
-//   - 3 is an attempt whose plan has a [GroupNode.OrderFrom] group. The
-//     start of such a group carries the order its children run in. Programs
-//     built before the option existed refuse the journal, where they would
-//     otherwise resume the group in the plan's own order.
+//   - 3 is an attempt whose plan has a [GroupNode.OrderFrom] group, or that
+//     carries on in an order such a group has settled. The start of the
+//     group carries the order its children run in. Programs built before
+//     the option existed refuse the journal, where they would otherwise
+//     resume the group in the plan's own order.
 //
 // Readers ignore event kinds and fields they don't know. So a new kind or
 // field that only informs viewers, which an older reader can pass over

@@ -285,6 +285,20 @@ attempt, or a rollback that undoes all of it: the order belonged to that run of
 the group, and the next may find a different system. Nothing has to track the
 step the order came from.
 
+A settled order belongs to the journal, not to the option that asked for it. A
+later build that drops the option has a plan of the same shape, and nothing
+refuses it. If the group then finished in the plan's order, what a resume did
+would depend on the build and not on the record, so the order stands until the
+group is back at never started, and the group's children may not change under
+it. How the group ran is kept apart from the order it has settled: a forced
+attempt forgets the second, because it does everything again, and not the
+first, because the steps that ran are still there to undo, the way they ran.
+
+`NewPlan` checks that the step will have run, which coming earlier in the plan
+does not settle. It looks at the group where the step and the ordered group
+part ways: that group has to run the step's side first every time, so it may
+not be parallel, and may not take its own order from a step.
+
 A group with no order it can use fails before it starts, and its own failure
 handler does not run: a handler puts back what the group did, and it did
 nothing. A program built before the option would resume such a journal in the

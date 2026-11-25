@@ -263,8 +263,8 @@ func admit(prev *State, plan *Plan, cfg config, rollback bool) (*State, error) {
 		return nil, err
 	}
 
-	if path := misordered(prior, plan); path != "" {
-		return nil, fmt.Errorf("%w: the children of %s are no longer those its order names", ErrPlanChanged, path)
+	if err := misordered(prior, plan); err != nil {
+		return nil, err
 	}
 
 	return prior, nil
@@ -296,24 +296,30 @@ func admitted(prev *State, plan *Plan, cfg config, rollback bool) (*State, error
 	}
 }
 
-// misordered returns the first OrderFrom group of plan whose children are
-// not those that the order it settled names, or "". Only a change of plan
-// can bring that about: the order named every child when it was settled.
-func misordered(prior *State, plan *Plan) string {
-	var path string
+// misordered returns why plan can't carry on from the orders that the
+// journal's groups have settled, or nil: the first group whose children are
+// not those its order names, or that would now run them at once. An order
+// stands until its group goes back to never started, whether or not the plan
+// still asks for one. Only a later build can bring either about: the order
+// named every child of a sequential group when it was settled.
+func misordered(prior *State, plan *Plan) error {
+	var err error
 
 	plan.root.walk(func(n *node) {
-		names := prior.orders[n.path]
-		if path != "" || n.order == nil || names == nil {
+		names, settled := prior.orders[n.path]
+		if err != nil || !settled {
 			return
 		}
 
-		if _, err := n.arranged(names); err != nil {
-			path = n.path
+		switch _, bad := n.arranged(names); {
+		case bad != nil:
+			err = fmt.Errorf("%w: the children of %s are no longer those its order names", ErrPlanChanged, n.path)
+		case n.parallel:
+			err = fmt.Errorf("%w: %s has settled the order of its children, and may not now be parallel", ErrPlanChanged, n.path)
 		}
 	})
 
-	return path
+	return err
 }
 
 // runner holds one attempt's state.
@@ -399,6 +405,12 @@ func (r *runner) run(ctx context.Context, labels L) (*Result, error) {
 	start := r.clock.Now()
 	spec := r.plan.Spec()
 	r.version = r.plan.version()
+
+	// An attempt that carries on in an order the journal has settled says so
+	// on the group's start, whatever its own plan asks for.
+	if len(r.prior.orders) > 0 {
+		r.version = max(r.version, schemaOrder)
+	}
 
 	err := r.emit(Event{
 		Kind: EventRunStarted, Path: r.plan.root.path, Attempt: r.attempt,
@@ -591,13 +603,15 @@ func (r *runner) group(ctx context.Context, n *node) error {
 // else the one the group's step has recorded, which must name every child
 // exactly once.
 func (r *runner) order(n *node) ([]*node, []string, error) {
-	if n.order == nil {
-		return n.children, nil, nil
-	}
-
+	// An order that an earlier attempt settled stands until the group goes
+	// back to never started, even if the plan no longer asks for one.
 	names, from := r.prior.Order(n.path), "an earlier attempt settled"
 
 	if names == nil {
+		if n.order == nil {
+			return n.children, nil, nil
+		}
+
 		raw, ok := r.recalled(n.order.Path, n.order.Key)
 		if !ok {
 			return nil, nil, fmt.Errorf("pipeline: %s has recorded no %q for the group's order", n.order.Path, n.order.Key)

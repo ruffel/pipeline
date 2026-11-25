@@ -747,11 +747,16 @@ pipeline.Group("dc1", node(c, "node1"), node(c, "node2"), node(c, "node3")).
   children runs, and its own failure handler has nothing to handle.
 - **A rollback goes back the way the group ran,** not the way the plan lists
   it.
+- **A settled order is the journal's.** A later build that takes the option
+  off the group still carries on in it, until the group is back at never
+  started. Meanwhile the group's children may not change, and it may not
+  become parallel.
 - **The journal is schema version 3** for an attempt whose plan has such a
   group, which v0.5 and earlier refuse to read. Before a tool starts using
   `OrderFrom`, upgrade everything else that reads its journal.
 
-`NewPlan` refuses one that is parallel, or whose step does not come before it.
+`NewPlan` refuses one that is parallel, or whose step may not have run when
+it starts: a step after it, or alongside it in a parallel group.
 
 ### Gates
 

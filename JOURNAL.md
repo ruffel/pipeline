@@ -74,7 +74,10 @@ What each one means:
   the names of its children, in the order they run in. The group settles it
   the first time it starts, and every later start of the group repeats it,
   until the group goes back to never started: by a reset, a forced attempt, or
-  a rollback that undoes everything in it. It then settles one afresh.
+  a rollback that undoes everything in it. It then settles one afresh. The
+  order is the journal's: a start repeats it even if the attempt's `plan` no
+  longer has `orderFrom` on the group. A start with no `order` runs the
+  children as the plan lists them, as a group with no children always does.
 - **`group.reset`** is a recovery handler starting: everything in the group goes
   back to never started.
 - **`step.running`** means `Check` found the work not done and `Run` is about to
@@ -167,9 +170,10 @@ with an error of kind `cancelled`.
   has the events of version 1. It marks an attempt whose `plan` has a
   `drainOnStop` group: a program that doesn't know the option must not carry
   on from it, because its own plan would let a stop end such a group half-way.
-  Version 3 marks an attempt whose `plan` has a group with `orderFrom`, and
-  adds `order` to that group's `group.started`: a program that doesn't know
-  the option would carry on in the plan's own order.
+  Version 3 marks an attempt whose `plan` has a group with `orderFrom`, or
+  that carries on in an `order` settled earlier, and adds `order` to that
+  group's `group.started`: a program that doesn't know the option would carry
+  on in the plan's own order.
 - **An attempt is the events sharing a `run`,** from its `run.started` to its
   `run.finished`. Later attempts append to the same file.
 - **The latest event about a path wins,** with five exceptions:

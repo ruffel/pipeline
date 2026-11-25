@@ -73,8 +73,9 @@ type node struct {
 // of the group's children, or is one of two, a [GroupNode.DrainOnStop]
 // group with something in it that could keep a stop waiting or end the group
 // early, a failure handler without a timeout on a group around one, or a
-// [GroupNode.OrderFrom] group that is parallel, or whose order is not to
-// come from a step before it. Empty groups are allowed.
+// [GroupNode.OrderFrom] group that is parallel, or whose order is to come
+// from a step that may not have run when it starts. Empty groups are
+// allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
 	return NewPlanFromGroup(Group(name, elems...))
 }
@@ -432,23 +433,71 @@ func (b *builder) order(parent, n *node, g GroupNode) {
 }
 
 // orders checks, once the whole plan is built, that every OrderFrom group
-// names a step that comes before it. One whose step comes later, or is
-// inside it, would start with no order to read.
+// takes its order from a step that has run by the time the group starts.
 func (b *builder) orders(root *node) {
-	before := map[string]Kind{}
+	byPath := map[string]*node{}
+
+	root.walk(func(n *node) { byPath[n.path] = n })
 
 	root.walk(func(n *node) {
-		defer func() { before[n.path] = n.kind }()
-
 		// The root and a group with no path to name have been reported.
 		if n.order == nil || n == root || n.order.Path == "" || n.order.Key == "" {
 			return
 		}
 
-		if kind, ok := before[n.order.Path]; !ok || kind == KindGroup || kind == KindGate {
-			b.failf(n.path, "%s, which its order is to come from, is not a step that comes before it in the plan", n.order.Path)
+		if why := sourceProblem(byPath, n); why != "" {
+			b.failf(n.path, "its order is to come from %s, which %s", n.order.Path, why)
 		}
 	})
+}
+
+// sourceProblem says why the step that the order of n is to come from can't
+// be relied on to have run when n starts, or "".
+//
+// Coming earlier in the plan is not enough. What decides it is the group
+// where the two part ways, which holds the step in one of its children and
+// n in another: that group has to run the step's child first, every time.
+// One that runs its children at once does not, and nor does one whose own
+// order is decided during the run.
+func sourceProblem(byPath map[string]*node, n *node) string {
+	source, ok := byPath[n.order.Path]
+	if !ok || source.kind == KindGroup || source.kind == KindGate {
+		return "is not a step in the plan"
+	}
+
+	from, to := strings.Split(source.path, "/"), strings.Split(n.path, "/")
+
+	at := 0
+	for at < len(from) && at < len(to) && from[at] == to[at] {
+		at++
+	}
+
+	// The step is inside the group.
+	if at == len(from) || at == len(to) {
+		return "does not come before it"
+	}
+
+	fork := byPath[strings.Join(from[:at], "/")]
+
+	// A failure handler runs after every child of its group.
+	place := func(name string) int {
+		if fork.handler != nil && fork.handler.name == name {
+			return len(fork.children)
+		}
+
+		return slices.IndexFunc(fork.children, func(c *node) bool { return c.name == name })
+	}
+
+	switch {
+	case place(from[at]) > place(to[at]):
+		return "does not come before it"
+	case fork.parallel:
+		return fmt.Sprintf("may not have run when it starts: %s runs its children at once", fork.path)
+	case fork.order != nil:
+		return fmt.Sprintf("may not have run when it starts: %s takes its own order from a step", fork.path)
+	default:
+		return ""
+	}
 }
 
 // drain marks n as part of the DrainOnStop group boundary, and reports what
