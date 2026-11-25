@@ -31,6 +31,10 @@ func TestRunStep_ReturnsWhatTheStepRecorded(t *testing.T) {
 				return err
 			}
 
+			if err := sc.RecordWarning("the cache was not warmed"); err != nil {
+				return err
+			}
+
 			return sc.Record("version", "8.2")
 		})))
 
@@ -45,6 +49,8 @@ func TestRunStep_ReturnsWhatTheStepRecorded(t *testing.T) {
 	assert.Equal(t, []string{"line one", long}, r.Stdout())
 	assert.Equal(t, []string{"E: oops"}, r.Stderr())
 	assert.Equal(t, pipeline.ItemPassed, r.Items()["node1"].Status)
+	require.Len(t, r.Warnings(), 1)
+	assert.Equal(t, "the cache was not warmed", r.Warnings()[0].Message)
 
 	var version string
 

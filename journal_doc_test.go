@@ -47,7 +47,7 @@ func TestJournalDoc_MatchesTheEventModel(t *testing.T) {
 		pipeline.EventGroupStarted, pipeline.EventGroupFinished, pipeline.EventGroupReset,
 		pipeline.EventStepStarted, pipeline.EventStepRunning, pipeline.EventStepFinished, pipeline.EventStepRetry,
 		pipeline.EventGateWaiting, pipeline.EventGateReleased,
-		pipeline.EventValue, pipeline.EventItem,
+		pipeline.EventValue, pipeline.EventItem, pipeline.EventWarning,
 		pipeline.EventMessage, pipeline.EventProgress, pipeline.EventOutput, pipeline.EventCustom,
 		pipeline.EventStopRequested, pipeline.EventUndoStarted, pipeline.EventUndoFinished,
 		pipeline.EventPlanChanged,

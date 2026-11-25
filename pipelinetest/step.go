@@ -165,6 +165,12 @@ func (r *StepRun) Items() map[string]pipeline.ItemState {
 	return r.state.Items(r.Path)
 }
 
+// Warnings returns what the step recorded as wrong without failing: with
+// RecordWarning, and as items with the status warned.
+func (r *StepRun) Warnings() []pipeline.Warning {
+	return slices.DeleteFunc(r.state.Warnings(), func(w pipeline.Warning) bool { return w.Path != r.Path })
+}
+
 // Messages returns the messages the step recorded with Info and Warn.
 func (r *StepRun) Messages() []string {
 	var out []string

@@ -22,6 +22,9 @@ const (
 	MaxCustomBytes = 64 << 10
 	// MaxItemDataBytes caps the encoded data of one item.
 	MaxItemDataBytes = 4 << 10
+	// MaxWarningBytes caps the warnings one step records in one attempt
+	// with RecordWarning: the lengths of their messages, added up.
+	MaxWarningBytes = 64 << 10
 	// MaxOutputLine is the longest output line recorded as one event. Longer
 	// lines are recorded in pieces, all but the first marked Continued.
 	MaxOutputLine = 16 << 10
@@ -51,6 +54,7 @@ type StepContext struct {
 	mu       sync.Mutex
 	closed   bool
 	recorded int
+	warned   int
 	// tasks is when the step first reported progress on each task, by key.
 	tasks map[string]time.Time
 
@@ -101,9 +105,52 @@ func (s *StepContext) Info(msg string) {
 	_ = s.emit(Event{Kind: EventMessage, Level: LevelInfo, Message: msg})
 }
 
-// Warn records a warning. It is best-effort.
+// Warn records a warning. It is best-effort: a message for whoever is
+// watching, which a crash can lose and the state does not keep. For a
+// warning that anything is to act on, use RecordWarning.
 func (s *StepContext) Warn(msg string) {
 	_ = s.emit(Event{Kind: EventMessage, Level: LevelWarn, Message: msg})
+}
+
+// RecordWarning records that something is wrong which does not fail the
+// step, such as a task after the main work that could not be done. It is
+// durable, where Warn is best-effort: it is stored before RecordWarning
+// returns, and [State.Warnings] lists it, so a tool can tell a run that
+// passed from one that passed with warnings.
+//
+// It is a record, and the run takes no notice of it: the step passes or
+// fails by what its Run returns, and the run's outcome is the same either
+// way. A step's warnings stand until a later attempt calls its Run again,
+// which then says afresh what is wrong, and are forgotten with its other
+// records: when a rollback undoes the step, a recovery step resets its
+// group, or a forced attempt starts over. A warning about one target of
+// many is an item with status [ItemWarned].
+//
+// It returns an error, and records nothing, if the message is empty or
+// would take the step past [MaxWarningBytes] in this attempt.
+func (s *StepContext) RecordWarning(msg string) error {
+	if msg == "" {
+		return errors.New("pipeline: warning is empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.r == nil {
+		return ErrStepReturned
+	}
+
+	if s.warned+len(msg) > MaxWarningBytes {
+		return fmt.Errorf("pipeline: the step's recorded warnings would exceed %d bytes", MaxWarningBytes)
+	}
+
+	if err := s.emitLocked(Event{Kind: EventWarning, Message: msg}); err != nil {
+		return err
+	}
+
+	s.warned += len(msg)
+
+	return nil
 }
 
 // Progress reports progress on the task named key. A total of zero means the
@@ -147,6 +194,9 @@ func (s *StepContext) Progress(key, msg string, current, total int) {
 // returns. And what a later attempt does about each target is the step's to
 // decide, from PreviousItems. The latest result for a target replaces the
 // one before.
+//
+// A target that passed with something wrong is [ItemWarned], with the
+// message saying what. [State.Warnings] lists such items.
 func (s *StepContext) Item(id string, status ItemStatus, msg string) error {
 	return s.ItemWith(id, status, msg, nil)
 }
@@ -168,7 +218,7 @@ func (s *StepContext) ItemWith(id string, status ItemStatus, msg string, data an
 	}
 
 	switch status {
-	case ItemPassed, ItemFailed, ItemSkipped:
+	case ItemPassed, ItemFailed, ItemSkipped, ItemWarned:
 	default:
 		return fmt.Errorf("pipeline: unknown item status %q", status)
 	}

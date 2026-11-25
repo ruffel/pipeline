@@ -71,6 +71,10 @@ const (
 	EventValue EventKind = "value"
 	// EventItem is a step's result for one target.
 	EventItem EventKind = "item"
+	// EventWarning is something a step recorded as wrong that did not fail
+	// it, with RecordWarning. Unlike a message it is durable, and replayed
+	// into the state.
+	EventWarning EventKind = "warning"
 
 	EventOutput   EventKind = "output"
 	EventProgress EventKind = "progress"
@@ -98,7 +102,7 @@ const (
 func (k EventKind) Durable() bool {
 	switch k {
 	case EventRunStarted, EventRunFinished, EventGroupStarted, EventGroupFinished, EventGroupReset,
-		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem, EventStopRequested,
+		EventStepStarted, EventStepRunning, EventStepFinished, EventValue, EventItem, EventWarning, EventStopRequested,
 		EventGateWaiting, EventGateReleased, EventUndoStarted, EventUndoFinished, EventPlanChanged:
 		return true
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry:
@@ -201,6 +205,9 @@ const (
 	ItemPassed  ItemStatus = "passed"
 	ItemFailed  ItemStatus = "failed"
 	ItemSkipped ItemStatus = "skipped"
+	// ItemWarned is a target that passed with something wrong, which the
+	// item's message says. [State.Warnings] lists it.
+	ItemWarned ItemStatus = "warned"
 )
 
 // Event is one line of the journal, and what observers receive. Which fields

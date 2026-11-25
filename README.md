@@ -926,6 +926,12 @@ Three of them are easy to misread:
   failed keeps its status and has an `UndoError`, and a group around work that
   could not be undone reads `started`.
 
+A run that passed may still have something to say. `State.Warnings()` lists
+what its steps recorded as wrong without failing, with `RecordWarning` or as
+items with the status `warned`, so a tool can exit differently for a run that
+passed with warnings. A step that an earlier attempt finished with a warning
+still has it after the attempts that skipped it.
+
 `Inspect` gives the state. A tool that wants the events too, for a report or to
 show the messages and output that the state does not keep, calls
 `ReadEvents(path)`: it returns every event with the state they replay to, from
@@ -1176,6 +1182,10 @@ The `StepContext` is the step's way into the run:
   step's to decide. `ItemWith` adds small data of the step's own to a result,
   such as the host it is about, so that a viewer need not parse it out of the
   ID or the message.
+- `RecordWarning` records, durably, that something is wrong which does not
+  fail the step, and an item can have the status `ItemWarned`. The run takes
+  no notice of either. `State.Warnings()` lists those that stand, which is how
+  a tool tells a run that passed from one that passed with warnings.
 - `Inputs` returns what the run was given with `WithInputs`.
 - `Attempt`, `Path` and `Labels` say which attempt this is, and the step's own
   path and labels.

@@ -25,8 +25,8 @@ const (
 	// HistoryAll replays every event.
 	HistoryAll History = iota
 	// HistoryLifecycle replays only lifecycle events: runs, groups, steps,
-	// values and items. A viewer attaching late gets the plan and where
-	// everything stands, without hours of old output.
+	// values, items and recorded warnings. A viewer attaching late gets the
+	// plan and where everything stands, without hours of old output.
 	HistoryLifecycle
 )
 

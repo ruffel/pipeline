@@ -77,6 +77,9 @@ type State struct {
 	// step recorded as skipped because its group or the run ended before
 	// reaching it has not begun.
 	begun map[string]bool
+	// warnings are the warnings steps have recorded with RecordWarning, by
+	// path, in the order they were recorded.
+	warnings map[string][]stepWarning
 	// orders are the orders that OrderFrom groups have settled, by path:
 	// the names of each one's children, as its start recorded them. A group
 	// that goes back to never started forgets its order.
@@ -151,6 +154,24 @@ type ElementState struct {
 	Waiting bool
 }
 
+// stepWarning is a warning a step recorded, and the attempt that recorded it.
+type stepWarning struct {
+	message, run string
+}
+
+// Warning is something a step recorded as wrong that did not fail it: with
+// [StepContext.RecordWarning], or as an item with status [ItemWarned].
+type Warning struct {
+	// Path is the step that recorded it.
+	Path string
+	// Item is the target, for a warned item. It is empty for a warning of
+	// the step's own.
+	Item    string
+	Message string
+	// Run is the attempt that recorded it.
+	Run string
+}
+
 // ItemState is the latest result recorded for one target of a step.
 type ItemState struct {
 	Status  ItemStatus
@@ -188,6 +209,7 @@ func newState() *State {
 		begun:    map[string]bool{},
 		orders:   map[string][]string{},
 		ranIn:    map[string][]string{},
+		warnings: map[string][]stepWarning{},
 	}
 }
 
@@ -215,6 +237,69 @@ func (s *State) Value(path, key string) (json.RawMessage, bool) {
 func (s *State) Values(path string) map[string]json.RawMessage {
 	out := make(map[string]json.RawMessage, len(s.values[path]))
 	maps.Copy(out, s.values[path])
+
+	return out
+}
+
+// Warnings returns what steps have recorded as wrong without failing, and
+// that still stands: the warnings recorded with [StepContext.RecordWarning],
+// and the items with status [ItemWarned]. It is how a tool tells a run that
+// passed from one that passed with warnings, which the run's outcome does
+// not say.
+//
+// They come in plan order: for each step its own warnings, as it recorded
+// them, and then its warned items, by target. A step's own warnings stand
+// until a later attempt calls its Run again, and an item until its target's
+// next result. So a step that an earlier attempt finished with a warning
+// still has it after the attempts that skipped it as done. Both are
+// forgotten with the step's other records: when a rollback undoes it, a
+// recovery step resets its group, or a forced attempt starts over.
+func (s *State) Warnings() []Warning {
+	var (
+		paths []string
+		seen  = map[string]bool{}
+	)
+
+	add := func(path string) {
+		if !seen[path] {
+			seen[path] = true
+
+			paths = append(paths, path)
+		}
+	}
+
+	if s.Plan != nil {
+		for _, n := range flatten(*s.Plan) {
+			add(n.Path)
+		}
+	}
+
+	for _, n := range s.Removed {
+		add(n.Path)
+	}
+
+	// Only a journal without its plans has a step that neither names.
+	for _, path := range slices.Sorted(maps.Keys(s.warnings)) {
+		add(path)
+	}
+
+	for _, path := range slices.Sorted(maps.Keys(s.items)) {
+		add(path)
+	}
+
+	var out []Warning
+
+	for _, path := range paths {
+		for _, w := range s.warnings[path] {
+			out = append(out, Warning{Path: path, Message: w.message, Run: w.run})
+		}
+
+		for _, id := range slices.Sorted(maps.Keys(s.items[path])) {
+			if item := s.items[path][id]; item.Status == ItemWarned {
+				out = append(out, Warning{Path: path, Item: id, Message: item.Message, Run: item.Run})
+			}
+		}
+	}
 
 	return out
 }
@@ -409,7 +494,7 @@ func (s *State) apply(e Event) {
 	case EventGateWaiting, EventGateReleased:
 		s.gate(e)
 	case EventStepRunning:
-		s.running(e.Path)
+		s.running(e)
 	case EventGroupFinished, EventStepFinished:
 		s.finish(e)
 	case EventGroupReset:
@@ -435,6 +520,8 @@ func (s *State) apply(e Event) {
 		}
 
 		s.items[e.Path][e.Item] = ItemState{Status: e.ItemStatus, Message: e.Message, Data: e.Data, Run: e.Run}
+	case EventWarning:
+		s.warnings[e.Path] = append(s.warnings[e.Path], stepWarning{message: e.Message, run: e.Run})
 	case EventOutput, EventProgress, EventMessage, EventCustom, EventStepRetry, EventPlanChanged:
 		// Best-effort chatter: viewers render it, but it changes no state.
 		// So do they a change of plan, which run.started has applied.
@@ -467,10 +554,20 @@ func (s *State) start(e Event) {
 // running applies a step's Run being called. What the step was when it ran
 // is settled here, from the plan of the attempt that ran it, and not from
 // whatever plan a later attempt brings.
-func (s *State) running(path string) {
+func (s *State) running(e Event) {
+	path := e.Path
+
 	el := s.elements[path]
 	el.RunCalled = true
 	s.elements[path] = el
+
+	// The step is doing its work again, and says afresh what is wrong: what
+	// it warned of in earlier attempts no longer stands.
+	if kept := slices.DeleteFunc(s.warnings[path], func(w stepWarning) bool { return w.run != e.Run }); len(kept) > 0 {
+		s.warnings[path] = kept
+	} else {
+		delete(s.warnings, path)
+	}
 
 	attempt := len(s.Attempts)
 
@@ -660,8 +757,8 @@ func (s *State) unsettle(path string) {
 
 // startOver applies a forced attempt: it does everything again, so nothing
 // done before it counts as done after it, whether or not the forced attempt
-// got that far. Element completion, signals, item results and the orders
-// that groups settled are forgotten. Recorded values are kept, and so are the
+// got that far. Element completion, signals, item results, recorded warnings
+// and the orders that groups settled are forgotten. Recorded values are kept, and so are the
 // fact that a step's Run was once called and the order a group's children
 // ran in, which rollback needs.
 func (s *State) startOver() {
@@ -670,6 +767,7 @@ func (s *State) startOver() {
 	}
 
 	clear(s.items)
+	clear(s.warnings)
 	clear(s.orders)
 }
 
@@ -685,6 +783,7 @@ func (s *State) reset(path string) {
 	maps.DeleteFunc(s.elements, func(p string, _ ElementState) bool { return beneath(p) })
 	maps.DeleteFunc(s.values, func(p string, _ map[string]json.RawMessage) bool { return beneath(p) })
 	maps.DeleteFunc(s.items, func(p string, _ map[string]ItemState) bool { return beneath(p) })
+	maps.DeleteFunc(s.warnings, func(p string, _ []stepWarning) bool { return beneath(p) })
 	maps.DeleteFunc(s.begun, func(p string, _ bool) bool { return beneath(p) })
 
 	within := func(p string, _ []string) bool { return p == path || beneath(p) }
@@ -730,6 +829,7 @@ func (s *State) undone(e Event) {
 	delete(s.elements, path)
 	delete(s.values, path)
 	delete(s.items, path)
+	delete(s.warnings, path)
 	delete(s.ran, path)
 	delete(s.begun, path)
 	s.unwind(path)
