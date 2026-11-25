@@ -9,15 +9,40 @@ import (
 	"os"
 )
 
-// ErrJournalCorrupt is returned when a journal file holds a complete line
-// that is not a valid event. A half-written last line is not corruption: it
-// is what a crash leaves, and it is ignored or removed.
-var ErrJournalCorrupt = errors.New("pipeline: journal is corrupt")
+var (
+	// ErrJournalCorrupt is returned when a journal file holds a complete line
+	// that is not a valid event. A half-written last line is not corruption:
+	// it is what a crash leaves, and it is ignored or removed.
+	ErrJournalCorrupt = errors.New("pipeline: journal is corrupt")
+
+	// ErrJournalTooNew is returned when a journal holds an event written by
+	// a newer release of this package, in a schema version this one does not
+	// know: see [SchemaVersion]. The journal is not damaged, and nothing is
+	// changed in it. The program reading it needs upgrading, as everything
+	// that reads a journal must be before a tool uses a feature that raises
+	// the version.
+	ErrJournalTooNew = errors.New("pipeline: the journal was written by a newer release")
+)
+
+// tooNewError is an event in a schema version newer than this reader's. It
+// matches [ErrJournalTooNew].
+type tooNewError struct {
+	v int
+}
+
+func (e *tooNewError) Error() string {
+	return fmt.Sprintf("schema version %d is newer than this reader's %d", e.v, SchemaVersion)
+}
+
+func (e *tooNewError) Unwrap() error {
+	return ErrJournalTooNew
+}
 
 // scanJournal reads the journal file at path line by line, with no limit on
 // line length, calling fn with each complete line. It returns the offset just
 // past the last complete line: anything after it is a half-written line left
-// by a crash. A complete line that fn rejects is [ErrJournalCorrupt].
+// by a crash. A complete line that fn rejects is [ErrJournalCorrupt], or
+// [ErrJournalTooNew] for one a newer release wrote.
 func scanJournal(path string, fn func(line []byte) error) (int64, error) {
 	r := journalReader{path: path}
 	err := r.next(fn)
@@ -70,6 +95,11 @@ func (r *journalReader) next(fn func(line []byte) error) error {
 		if err := fn(line[:len(line)-1]); err != nil {
 			if h, ok := errors.AsType[*haltError](err); ok {
 				return h.err
+			}
+
+			// A newer release's journal is not a damaged one.
+			if errors.Is(err, ErrJournalTooNew) {
+				return fmt.Errorf("%w: %s line %d: %w", ErrJournalTooNew, r.path, r.line+1, err)
 			}
 
 			return fmt.Errorf("%w: %s line %d: %w", ErrJournalCorrupt, r.path, r.line+1, err)

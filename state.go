@@ -469,7 +469,7 @@ func (s *State) add(e Event) error {
 // follows checks an event's version and place in the sequence.
 func (s *State) follows(v int, seq int64) error {
 	if v > SchemaVersion {
-		return fmt.Errorf("pipeline: event %d: schema version %d is newer than this reader's %d", seq, v, SchemaVersion)
+		return fmt.Errorf("pipeline: event %d: %w", seq, &tooNewError{v: v})
 	}
 
 	if seq <= s.LastSeq {

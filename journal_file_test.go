@@ -179,12 +179,44 @@ func TestOpenJournal_RemovesAHalfWrittenLastLine(t *testing.T) {
 	assert.Equal(t, whole.Size(), repaired.Size(), "the torn line is gone from the file")
 }
 
+// A journal from a newer release is refused by every reader, as newer, not
+// as damaged: the operator's program needs upgrading, and the journal is
+// fine. Nothing is changed in it.
+func TestJournal_FromANewerReleaseIsNotCorrupt(t *testing.T) {
+	t.Parallel()
+
+	path := journalPath(t)
+	runToFile(t, path, mustPlan(t, pipeline.Effect("a", ok())))
+	appendBytes(t, path, fmt.Sprintf(`{"v":%d,"seq":100,"ts":"2026-11-25T09:00:00Z","kind":"run.started","run":"r2"}`+"\n",
+		pipeline.SchemaVersion+1))
+
+	before, err := os.ReadFile(path) //nolint:gosec // A file in the test's own temp dir.
+	require.NoError(t, err)
+
+	_, openErr := pipeline.OpenJournal(path)
+	_, inspectErr := pipeline.Inspect(path)
+	_, _, readErr := pipeline.ReadEvents(path)
+	followErr := pipeline.Follow(t.Context(), path, pipeline.FollowOptions{})
+
+	for name, err := range map[string]error{
+		"OpenJournal": openErr, "Inspect": inspectErr, "ReadEvents": readErr, "Follow": followErr,
+	} {
+		require.ErrorIs(t, err, pipeline.ErrJournalTooNew, name)
+		require.NotErrorIs(t, err, pipeline.ErrJournalCorrupt, name)
+		assert.Contains(t, err.Error(), fmt.Sprintf("line 6: schema version %d is newer than this reader's %d",
+			pipeline.SchemaVersion+1, pipeline.SchemaVersion), name)
+	}
+
+	after, err := os.ReadFile(path) //nolint:gosec // A file in the test's own temp dir.
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "the journal is left as it was")
+}
+
 func TestOpenJournal_RefusesACorruptJournal(t *testing.T) {
 	t.Parallel()
 
 	for name, bad := range map[string]string{
 		"not an event":          "this is not json\n",
-		"newer schema version":  `{"v":99,"seq":100,"kind":"run.started"}` + "\n",
 		"sequence goes back":    `{"v":1,"seq":1,"kind":"run.finished"}` + "\n",
 		"damage before the end": "garbage\n" + `{"v":1,"seq":100,"kind":"run.finished"}` + "\n",
 	} {

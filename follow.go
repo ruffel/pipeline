@@ -66,7 +66,8 @@ type FollowOptions struct {
 //   - [ErrRunnerGone], when the latest attempt never finished and no process
 //     holds the journal. Everything written has been delivered.
 //   - the context's error, when ctx is done.
-//   - [ErrJournalCorrupt], for a journal that is damaged.
+//   - [ErrJournalCorrupt], for a journal that is damaged, or
+//     [ErrJournalTooNew], for one a newer release wrote.
 //
 // With KeepFollowing set, the first two cases wait for another attempt
 // instead.
