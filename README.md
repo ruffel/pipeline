@@ -52,8 +52,9 @@ The styled terminal view is a separate module, so its dependencies stay opt-in:
 go get github.com/ruffel/pipeline/observers/terminal
 ```
 
-It needs Go 1.26. File journals need Linux, macOS or a BSD; elsewhere
-`OpenJournal` returns an error.
+It needs Go 1.26, and is for Linux, macOS and the BSDs. It builds on Windows,
+but `OpenJournal` returns an error there, so a run can only use a
+`MemoryJournal`.
 
 ## A first pipeline
 
@@ -638,6 +639,11 @@ A group runs its children in order, or `Parallel(n)` at most `n` at a time.
 `Parallel(0)` sets no limit, and a child that is itself a group counts as one.
 Groups nest to any depth.
 
+The plan itself is a group: `NewPlan` makes a sequential one. To give the
+root settings of its own, such as running its children in parallel or a
+failure handler for the whole run, build it with `Group` and pass it to
+`NewPlanFromGroup`.
+
 When a child fails, a group starts nothing new and lets running children
 finish. `CancelOnError` cancels them too, and `ContinueOnError` runs every
 child and fails at the end.
@@ -817,7 +823,8 @@ use what it returns: `g.Parallel(2)` on a line of its own changes nothing.
 
 - **`Stopper`** stops a run gracefully: running steps finish and nothing new
   starts. `HandleSignals` wires it to Ctrl-C: the first stops, the second
-  cancels the running steps.
+  cancels the running steps. `Stopper.Cancel` cancels from code, and unlike
+  cancelling the context, records who asked.
 - **`RequestStop`** does either from another process.
 - **Cancelling the context** cancels the running steps.
 
@@ -1195,6 +1202,9 @@ The `StepContext` is the step's way into the run:
 - `Inputs` returns what the run was given with `WithInputs`.
 - `Attempt`, `Path` and `Labels` say which attempt this is, and the step's own
   path and labels.
+- `Prior(path)` says where a group or step stood when this attempt started,
+  for a step that brings the system in line with how far an earlier attempt
+  got, such as restoring a setting on the nodes already finished.
 - `Custom` sends an event of your own to observers, best-effort like a
   message.
 
@@ -1232,6 +1242,8 @@ The `pipelinetest` package tests steps and plans without a real system:
 - **`CrashAfter`** simulates a crash at any point of a run.
 - **`FakeClock`** moves time on by hand, so retry backoffs and gate timeouts
   don't sleep.
+- **`Trace`** renders a run's events as short lines, such as
+  `step.finished upgrade/backup passed`, so a test can compare the sequence.
 
 `CheckIdempotent` and `CrashAfter` crash a run by making its journal refuse
 every write after a chosen event. That finds the hazard that matters most, a
@@ -1278,6 +1290,34 @@ journal's format carries a schema version: a release reads journals written by
 every earlier schema version, and refuses a newer one. An attempt is written
 as the oldest version that can say everything about it, so a journal that uses
 nothing new stays readable by older releases.
+
+## Upgrading from v0.5
+
+v0.6.0 changes what happens when a `DrainOnStop` group fails under a stop,
+and adds a schema version:
+
+- **The failure handlers around the group now run.** In v0.5, when a step of
+  a draining group failed while a stop was pending, the handlers of the
+  groups around it were held back by the stop, and the run ended stopped. Now
+  they run, the nearest first, and the run ends failed, unless a group around
+  it carries on past failures: its next child is still kept from starting,
+  and the run ends stopped. A `RecoverOnFailure` step around the group puts
+  the unit back, and a later attempt starts it again from its first step.
+- **`NewPlan` needs a `Timeout` on such a handler.** The stop waits for it,
+  so a plan with a failure handler that has no `Timeout`, on a group around a
+  `DrainOnStop` group, is refused. Give the handler one.
+- **A stop that ends a wait between tries leaves the run failed.** In v0.5, a
+  stop that came while a step of a `DrainOnStop` group waited to be tried
+  again left the run stopped. It now leaves it failed, as a step that fails
+  once a stop is pending already did. Anywhere else, such a stop still leaves
+  the run stopped.
+- **A journal can be schema version 3.** An attempt whose plan has an
+  `OrderFrom` group is written as version 3, which v0.5 and earlier refuse to
+  read. Before a tool starts using `OrderFrom`, upgrade everything else that
+  reads its journal.
+
+Nothing was removed from the API, and journals written by v0.5 are read as
+before.
 
 ## Upgrading from v0.4
 
