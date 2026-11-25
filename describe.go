@@ -100,6 +100,10 @@ func describeNotes(n *node) []string {
 		if n.drain {
 			notes = append(notes, "finishes before a stop")
 		}
+
+		if n.order != nil {
+			notes = append(notes, fmt.Sprintf("in the order %s records as %q", n.order.Path, n.order.Key))
+		}
 	case KindEffect, KindEnsure, KindObserve:
 		notes = append(notes, string(n.kind))
 

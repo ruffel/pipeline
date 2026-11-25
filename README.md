@@ -719,6 +719,40 @@ every try of the step, and a key recorded again is counted again. A `Record`
 that would go past it returns an error and stores nothing. Record where a
 large result is kept, not the result.
 
+### An order decided during the run
+
+A plan is fixed when it is built, and sometimes the order of part of it is not
+known until some of it has run: which node holds a service's master, and so
+goes last, can depend on what earlier steps did. `OrderFrom` runs a group's
+children in an order that a step records:
+
+```go
+pipeline.Effect("order", pipeline.StepFunc(func(_ context.Context, sc *pipeline.StepContext) error {
+	// The node that holds the master goes last.
+	return sc.Record("dc1", []string{"node2", "node3", "node1"})
+})),
+pipeline.Group("dc1", node(c, "node1"), node(c, "node2"), node(c, "node3")).
+	OrderFrom("upgrade/order", "dc1"),
+```
+
+- **The children are the plan's.** The step decides only their order: a list
+  of their names, each once. The fingerprint covers them as the plan lists
+  them, so list them the same way on every attempt.
+- **The order is settled when the group first starts,** and recorded with its
+  start. A resume carries on in it, whatever the step has recorded since, and
+  `State.Order` returns it.
+- **A group back at never started reads it again:** after a recovery step
+  resets it, a forced attempt, or a rollback that undoes everything in it.
+- **With no order it can use, the group fails without starting.** None of its
+  children runs, and its own failure handler has nothing to handle.
+- **A rollback goes back the way the group ran,** not the way the plan lists
+  it.
+- **The journal is schema version 3** for an attempt whose plan has such a
+  group, which v0.5 and earlier refuse to read. Before a tool starts using
+  `OrderFrom`, upgrade everything else that reads its journal.
+
+`NewPlan` refuses one that is parallel, or whose step does not come before it.
+
 ### Gates
 
 A `Gate` waits for an approval before the run goes on, as `continue` does
@@ -1057,6 +1091,8 @@ interrupted, and calls each one's `Undo`, one at a time, in reverse plan order.
 - A step whose `Run` no attempt called isn't undone: one that `Check` found
   already done when it was first reached, for example. A step that an earlier
   attempt ran is undone, even if a later attempt skipped it as done.
+- The steps of an `OrderFrom` group are undone in the reverse of the order
+  they ran in, which is not the order the plan lists them in.
 - A step with no `Undo` is skipped and reported, and the rollback still passes.
   The step stays done, so a later `Run` doesn't do it again. `Describe` shows
   which steps have an `Undo`, before anything runs.

@@ -2,6 +2,7 @@ package pipeline_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -231,7 +232,7 @@ func TestReplay_RefusesBadJournals(t *testing.T) {
 	t.Parallel()
 
 	_, err := pipeline.Replay([]pipeline.Event{{V: pipeline.SchemaVersion + 1, Seq: 1, Kind: pipeline.EventRunStarted}})
-	require.ErrorContains(t, err, "schema version 3 is newer")
+	require.ErrorContains(t, err, fmt.Sprintf("schema version %d is newer", pipeline.SchemaVersion+1))
 
 	_, err = pipeline.Replay([]pipeline.Event{
 		{V: 1, Seq: 2, Kind: pipeline.EventRunStarted},

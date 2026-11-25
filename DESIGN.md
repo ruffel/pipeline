@@ -261,6 +261,36 @@ half-way through a node. An attempt whose plan has such a group is therefore
 written as schema version 2, which those builds refuse. Other attempts stay
 at version 1, so journals that don't use the option stay readable by them.
 
+## A Group's Order Can Be Decided During the Run
+
+**Decision:** A group made with `OrderFrom` runs its children in an order that
+a step recorded. The children are the plan's. The order is settled when the
+group first starts, on the event that records the start, and stands until the
+group goes back to never started.
+
+The plan is data, fixed before anything runs, and everything that reads a
+journal relies on that: the fingerprint, a rollback, a changed plan, a viewer
+drawing the tree. Some work has an order that is only known part-way through,
+because earlier steps decide it. Letting a step build elements would have given
+all of that up for the sake of an order. So the set stays in the plan, where it
+is validated, fingerprinted and drawn like any other, and only the order waits.
+
+It is settled once so that an operation does not change course between
+attempts: what a resume does next follows from the journal, not from what the
+step would say today. It is recorded on the group's start, not in an event of
+its own, so that no group has started without an order, and a crash on either
+side of that write leaves the order settled or not yet read. It is forgotten
+exactly when the group has nothing left of what it did, after a reset, a forced
+attempt, or a rollback that undoes all of it: the order belonged to that run of
+the group, and the next may find a different system. Nothing has to track the
+step the order came from.
+
+A group with no order it can use fails before it starts, and its own failure
+handler does not run: a handler puts back what the group did, and it did
+nothing. A program built before the option would resume such a journal in the
+plan's own order, so an attempt whose plan has such a group is written as
+schema version 3.
+
 ## Control Requests Are Acknowledged Through the Journal
 
 **Decision:** `RequestStop` and `Approve` write a request into a directory beside

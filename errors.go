@@ -94,7 +94,9 @@ func (e *PanicError) Error() string {
 }
 
 // StepError is a failed step's error, with the step's path. The error
-// returned by [Run] joins one for each failed step.
+// returned by [Run] joins one for each failed step. A group that fails
+// without starting, for want of an order to run in, is reported in one too,
+// with the group's path: see [GroupNode.OrderFrom].
 type StepError struct {
 	Path string
 	Err  error

@@ -68,6 +68,9 @@ type GroupNode struct {
 	children    []Element
 	// drain makes the group one unit to a graceful stop.
 	drain bool
+	// order is where the order of the group's children is recorded, if a
+	// step decides it.
+	order *OrderSource
 
 	// The failure handler, if any: cleanup or recovery.
 	cleanup  *StepNode
@@ -222,6 +225,55 @@ func (g GroupNode) RecoverOnFailure(step StepNode) GroupNode {
 // and does not resume it with a plan that stops in the middle of the group.
 func (g GroupNode) DrainOnStop() GroupNode {
 	g.drain = true
+
+	return g
+}
+
+// OrderSource says where the order of a [GroupNode.OrderFrom] group's
+// children is recorded: the path of the step that records it, and the key it
+// records it under.
+type OrderSource struct {
+	Path string `json:"path"`
+	Key  string `json:"key"`
+}
+
+// OrderFrom runs the group's children in an order that is decided during the
+// run, not when the plan is built: the order a step has recorded. It is for
+// work whose order depends on what earlier steps find or change, such as the
+// nodes of a datacenter, upgraded with the one that holds a service's master
+// last.
+//
+// The children are the plan's, as for any group: which they are does not
+// change. path names a step that comes before the group, and key the value
+// it records with [StepContext.Record]: a list of the children's names, each
+// of them once. The group runs them in that order.
+//
+// The order is read when the group first starts, and recorded with the
+// group's start, so it is settled from then on: a later attempt resumes in
+// the same order, whatever the step has recorded since. It is forgotten only
+// when the group goes back to never started: when a recovery step resets it,
+// a forced attempt starts over, or a rollback undoes everything in it. The
+// group then reads the order again when it next starts. [State.Order] returns
+// the order a group has settled.
+//
+// If the step has recorded no such value, or one that is not a list naming
+// every child exactly once, the group fails without starting. None of its
+// children runs, and its own failure handler does not run either, there
+// being nothing to handle. [Rollback] undoes the group's steps in the reverse
+// of the order they ran in.
+//
+// The group may not be parallel, and may not be the plan's root. [NewPlan]
+// reports those, and a path that is not a step before the group. Under
+// [WithPlanChange], an attempt is refused if the group's children are no
+// longer those its settled order names.
+//
+// The order is no part of the plan's shape: [Plan.Fingerprint] covers the
+// children in the order the plan lists them, so list them the same way on
+// every attempt. An attempt whose plan has such a group is written as schema
+// version 3, so that a program built before the option existed refuses the
+// journal, and does not resume it in the plan's own order.
+func (g GroupNode) OrderFrom(path, key string) GroupNode {
+	g.order = &OrderSource{Path: path, Key: key}
 
 	return g
 }

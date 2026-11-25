@@ -43,6 +43,8 @@ type node struct {
 	drain       bool
 	boundary    *node
 	aroundDrain bool
+	// order is where the order of an OrderFrom group's children is recorded.
+	order *OrderSource
 
 	// Step fields.
 	step     Step
@@ -70,8 +72,9 @@ type node struct {
 // a group's failure handler that is not an Effect step, is named like one
 // of the group's children, or is one of two, a [GroupNode.DrainOnStop]
 // group with something in it that could keep a stop waiting or end the group
-// early, or a failure handler without a timeout on a group around one. Empty
-// groups are allowed.
+// early, a failure handler without a timeout on a group around one, or a
+// [GroupNode.OrderFrom] group that is parallel, or whose order is not to
+// come from a step before it. Empty groups are allowed.
 func NewPlan(name string, elems ...Element) (*Plan, error) {
 	return NewPlanFromGroup(Group(name, elems...))
 }
@@ -85,6 +88,7 @@ func NewPlan(name string, elems ...Element) (*Plan, error) {
 func NewPlanFromGroup(root GroupNode) (*Plan, error) {
 	b := &builder{}
 	n := b.group(nil, root)
+	b.orders(n)
 
 	if err := errors.Join(b.errs...); err != nil {
 		return nil, err
@@ -157,6 +161,9 @@ type NodeSpec struct {
 	// DrainOnStop marks a group that a graceful stop lets finish. See
 	// [GroupNode.DrainOnStop].
 	DrainOnStop bool `json:"drainOnStop,omitempty"`
+	// OrderFrom is where the order of the group's children is recorded, for
+	// a group that takes it from a step. See [GroupNode.OrderFrom].
+	OrderFrom *OrderSource `json:"orderFrom,omitempty"`
 
 	// Step fields: whether the step implements [Checker] and [Undoer], and its
 	// settings. Durations are in nanoseconds, as encoding/json writes them.
@@ -198,6 +205,11 @@ func (n *node) spec() NodeSpec {
 		s.Failure = n.failure
 		s.DrainOnStop = n.drain
 
+		if n.order != nil {
+			from := *n.order
+			s.OrderFrom = &from
+		}
+
 		for _, c := range n.children {
 			s.Children = append(s.Children, c.spec())
 		}
@@ -225,6 +237,62 @@ func (n *node) walk(visit func(*node)) {
 	}
 }
 
+// walkIn is walk, with each group's children in the order that order gives
+// them.
+func (n *node) walkIn(order func(*node) []*node, visit func(*node)) {
+	visit(n)
+
+	for _, c := range order(n) {
+		c.walkIn(order, visit)
+	}
+
+	if n.handler != nil {
+		n.handler.walkIn(order, visit)
+	}
+}
+
+// arranged returns the group's children in the order names gives them. It
+// reports what is wrong with an order that does not name each of them
+// exactly once, as the rest of a sentence about the order.
+func (n *node) arranged(names []string) ([]*node, error) {
+	left := make(map[string]*node, len(n.children))
+	for _, c := range n.children {
+		left[c.name] = c
+	}
+
+	out := make([]*node, 0, len(n.children))
+
+	for _, name := range names {
+		c, ok := left[name]
+
+		switch {
+		case ok:
+		case slices.ContainsFunc(n.children, func(c *node) bool { return c.name == name }):
+			return nil, fmt.Errorf("names %q twice", name)
+		default:
+			return nil, fmt.Errorf("names %q, which is not one of the group's children", name)
+		}
+
+		delete(left, name)
+
+		out = append(out, c)
+	}
+
+	if len(left) == 0 {
+		return out, nil
+	}
+
+	missing := make([]string, 0, len(left))
+
+	for _, c := range n.children {
+		if _, ok := left[c.name]; ok {
+			missing = append(missing, c.name)
+		}
+	}
+
+	return nil, fmt.Errorf("leaves out %s", strings.Join(missing, ", "))
+}
+
 // version returns the schema version an attempt at the plan is written as:
 // the oldest that says everything about it.
 func (p *Plan) version() int {
@@ -232,7 +300,11 @@ func (p *Plan) version() int {
 
 	p.root.walk(func(n *node) {
 		if n.drain {
-			version = schemaDrain
+			version = max(version, schemaDrain)
+		}
+
+		if n.order != nil {
+			version = max(version, schemaOrder)
 		}
 	})
 
@@ -322,6 +394,7 @@ func (b *builder) group(parent *node, g GroupNode) *node {
 	}
 
 	b.handler(n, g, seen)
+	b.order(parent, n, g)
 
 	if g.drain {
 		n.drain = true
@@ -334,6 +407,48 @@ func (b *builder) group(parent *node, g GroupNode) *node {
 	}
 
 	return n
+}
+
+// order notes where an OrderFrom group's order is to come from, and reports
+// a group that can't take its order from a step.
+func (b *builder) order(parent, n *node, g GroupNode) {
+	if g.order == nil {
+		return
+	}
+
+	from := *g.order
+	n.order = &from
+
+	switch {
+	case parent == nil:
+		b.failf(n.path, "the plan's root may not take its order from a step: no step comes before it")
+	case from.Path == "" || from.Key == "":
+		b.failf(n.path, "OrderFrom needs the path of a step, and the key it records the order under")
+	}
+
+	if g.parallel {
+		b.failf(n.path, "a group that takes its order from a step may not be parallel")
+	}
+}
+
+// orders checks, once the whole plan is built, that every OrderFrom group
+// names a step that comes before it. One whose step comes later, or is
+// inside it, would start with no order to read.
+func (b *builder) orders(root *node) {
+	before := map[string]Kind{}
+
+	root.walk(func(n *node) {
+		defer func() { before[n.path] = n.kind }()
+
+		// The root and a group with no path to name have been reported.
+		if n.order == nil || n == root || n.order.Path == "" || n.order.Key == "" {
+			return
+		}
+
+		if kind, ok := before[n.order.Path]; !ok || kind == KindGroup || kind == KindGate {
+			b.failf(n.path, "%s, which its order is to come from, is not a step that comes before it in the plan", n.order.Path)
+		}
+	})
 }
 
 // drain marks n as part of the DrainOnStop group boundary, and reports what
