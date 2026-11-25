@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"strings"
 	"sync"
 	"time"
 
@@ -324,7 +323,7 @@ func (s *StepContext) Recorded(path, key string, v any) (bool, error) {
 		return false, ErrStepReturned
 	}
 
-	raw, ok := s.r.recalled(path, key)
+	raw, ok := s.r.recorded.recalled(path, key)
 	if !ok {
 		return false, nil
 	}
@@ -394,7 +393,7 @@ func (s *StepContext) record(key string, value any, once bool) (bool, error) {
 		return false, ErrStepReturned
 	}
 
-	if once && s.r.holds(s.n.path, key) {
+	if once && s.r.recorded.holds(s.n.path, key) {
 		return false, nil
 	}
 
@@ -407,7 +406,7 @@ func (s *StepContext) record(key string, value any, once bool) (bool, error) {
 	}
 
 	s.recorded += len(raw)
-	s.r.remember(s.n.path, key, raw)
+	s.r.recorded.remember(s.n.path, key, raw)
 
 	return true, nil
 }
@@ -581,80 +580,6 @@ func (s *StepContext) close() {
 	}
 
 	s.closed = true
-}
-
-// remember keeps a value recorded in this attempt, for Recorded.
-func (r *runner) remember(path, key string, raw json.RawMessage) {
-	r.valuesMu.Lock()
-	defer r.valuesMu.Unlock()
-
-	if r.values[path] == nil {
-		r.values[path] = map[string]json.RawMessage{}
-	}
-
-	r.values[path][key] = raw
-
-	if r.standing == nil {
-		r.standing = map[string]map[string]bool{}
-	}
-
-	if r.standing[path] == nil {
-		r.standing[path] = map[string]bool{}
-	}
-
-	r.standing[path][key] = true
-}
-
-// forget notes that a recovery step has reset the group at path: the journal
-// no longer holds the values recorded beneath it, in this attempt or before.
-// Recorded still reads them, so that the recovery step can.
-func (r *runner) forget(path string) {
-	r.valuesMu.Lock()
-	defer r.valuesMu.Unlock()
-
-	if r.reset == nil {
-		r.reset = map[string]bool{}
-	}
-
-	r.reset[path] = true
-
-	maps.DeleteFunc(r.standing, func(p string, _ map[string]bool) bool { return strings.HasPrefix(p, path+"/") })
-}
-
-// holds reports whether the journal, as it is now, holds a value under path
-// and key: one recorded in this attempt that no reset has forgotten since,
-// or one from before it that no reset of this attempt has reached.
-func (r *runner) holds(path, key string) bool {
-	r.valuesMu.Lock()
-	defer r.valuesMu.Unlock()
-
-	if r.standing[path][key] {
-		return true
-	}
-
-	for group := range r.reset {
-		if strings.HasPrefix(path, group+"/") {
-			return false
-		}
-	}
-
-	_, ok := r.prev.Value(path, key)
-
-	return ok
-}
-
-// recalled returns the latest value recorded under path and key: from this
-// attempt if there is one, otherwise from the journal as it was at the start.
-func (r *runner) recalled(path, key string) (json.RawMessage, bool) {
-	r.valuesMu.Lock()
-	raw, ok := r.values[path][key]
-	r.valuesMu.Unlock()
-
-	if ok {
-		return raw, true
-	}
-
-	return r.prev.Value(path, key)
 }
 
 // encodeEmbeddable encodes v as JSON, and checks it still parses one level

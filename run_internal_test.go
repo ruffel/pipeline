@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -258,37 +257,4 @@ func TestParallelGroup_AStoppedChildIsNotAFailure(t *testing.T) {
 		assert.False(t, g.stopped, "%v: a stop is not a failure", policy)
 		assert.True(t, onlyStopped(g.err()), policy)
 	}
-}
-
-// holds says what the journal holds now, which is the journal as the attempt
-// found it, less what a reset in this attempt has forgotten, plus what the
-// attempt has recorded since. A reset reaches only what is beneath its group.
-func TestRunner_HoldsFollowsTheResetsOfItsAttempt(t *testing.T) {
-	t.Parallel()
-
-	prev, err := Replay([]Event{
-		{V: 1, Seq: 1, Kind: EventValue, Path: "p/node/a", Key: "prior", Value: json.RawMessage(`1`)},
-		{V: 1, Seq: 2, Kind: EventValue, Path: "p/node2/a", Key: "prior", Value: json.RawMessage(`1`)},
-	})
-	require.NoError(t, err)
-
-	r := &runner{prev: prev, values: map[string]map[string]json.RawMessage{}}
-
-	assert.True(t, r.holds("p/node/a", "prior"), "an earlier attempt recorded it")
-	assert.False(t, r.holds("p/node/a", "other"))
-
-	r.remember("p/node/b", "prior", json.RawMessage(`2`))
-	assert.True(t, r.holds("p/node/b", "prior"), "this attempt recorded it")
-
-	r.forget("p/node")
-
-	assert.False(t, r.holds("p/node/a", "prior"), "the reset forgot what was there before the attempt")
-	assert.False(t, r.holds("p/node/b", "prior"), "and what the attempt had recorded")
-	assert.True(t, r.holds("p/node2/a", "prior"), "a group whose name only begins the same is not beneath it")
-
-	_, read := r.recalled("p/node/b", "prior")
-	assert.True(t, read, "Recorded still reads what the reset forgot")
-
-	r.remember("p/node/restore", "prior", json.RawMessage(`3`))
-	assert.True(t, r.holds("p/node/restore", "prior"), "what is recorded after the reset stands")
 }

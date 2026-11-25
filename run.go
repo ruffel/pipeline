@@ -157,7 +157,7 @@ func attempt(ctx context.Context, plan *Plan, j *Journal, opts []Option, rollbac
 		controlPoll:   cfg.controlPoll,
 		forced:        cfg.force && !rollback && len(prev.Attempts) > 0,
 		rollingBack:   rollback,
-		values:        map[string]map[string]json.RawMessage{},
+		recorded:      recorded{prev: prev},
 		budget:        cfg.outputBudget,
 	}
 
@@ -398,16 +398,8 @@ type runner struct {
 	// budget caps each step's output, in bytes.
 	budget int
 
-	// valuesMu guards values recorded during this attempt.
-	valuesMu sync.Mutex
-	values   map[string]map[string]json.RawMessage
-	// reset are the groups a recovery step has reset in this attempt, and
-	// standing the values recorded in it that no reset has forgotten since,
-	// both by path. Between them and prev they say what the journal holds
-	// now, which values and prev alone do not: those still have what a reset
-	// forgot, for a recovery step to read.
-	reset    map[string]bool
-	standing map[string]map[string]bool
+	// recorded is what the attempt knows of recorded values.
+	recorded recorded
 }
 
 func (r *runner) run(ctx context.Context, labels L, given any) (*Result, error) {
@@ -652,7 +644,7 @@ func (r *runner) order(n *node) ([]*node, []string, error) {
 			return n.children, nil, nil
 		}
 
-		raw, ok := r.recalled(n.order.Path, n.order.Key)
+		raw, ok := r.recorded.recalled(n.order.Path, n.order.Key)
 		if !ok {
 			return nil, nil, fmt.Errorf("pipeline: %s has recorded no %q for the group's order", n.order.Path, n.order.Key)
 		}
@@ -714,7 +706,7 @@ func (r *runner) handle(ctx context.Context, n *node) error {
 			return eerr
 		}
 
-		r.forget(n.path)
+		r.recorded.forget(n.path)
 	}
 
 	herr := r.step(ctx, n.handler, true)
