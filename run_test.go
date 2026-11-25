@@ -112,6 +112,9 @@ func trace(events []pipeline.Event, kinds ...pipeline.EventKind) []string {
 	return out
 }
 
+// followErr is Follow's error, for a test that has no use for its state.
+func followErr(_ *pipeline.State, err error) error { return err }
+
 func ok() pipeline.Step { return noop() }
 
 func fail(msg string) pipeline.Step {

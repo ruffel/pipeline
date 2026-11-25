@@ -196,10 +196,10 @@ func TestJournal_FromANewerReleaseIsNotCorrupt(t *testing.T) {
 	_, openErr := pipeline.OpenJournal(path)
 	_, inspectErr := pipeline.Inspect(path)
 	_, _, readErr := pipeline.ReadEvents(path)
-	followErr := pipeline.Follow(t.Context(), path, pipeline.FollowOptions{})
+	_, viewErr := pipeline.Follow(t.Context(), path, pipeline.FollowOptions{})
 
 	for name, err := range map[string]error{
-		"OpenJournal": openErr, "Inspect": inspectErr, "ReadEvents": readErr, "Follow": followErr,
+		"OpenJournal": openErr, "Inspect": inspectErr, "ReadEvents": readErr, "Follow": viewErr,
 	} {
 		require.ErrorIs(t, err, pipeline.ErrJournalTooNew, name)
 		require.NotErrorIs(t, err, pipeline.ErrJournalCorrupt, name)

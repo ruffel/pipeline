@@ -876,9 +876,9 @@ it would otherwise resume it with a plan that stops in the middle of a node.
 Any process can read the journal while a run writes it:
 
 - **`Follow`** delivers its events to observers as they are written, like
-  `tail -f`. A viewer sees exactly what the runner's own observers saw. Set
-  `FollowOptions.Result` and it hands back the `State` when it returns, so a
-  viewer can exit with the run's outcome.
+  `tail -f`. A viewer sees exactly what the runner's own observers saw. It
+  returns the `State` as it read it, so a viewer can exit with the run's
+  outcome.
 - **`Inspect`** replays it into a `State`: every attempt, and where each
   element stands.
 

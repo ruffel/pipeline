@@ -39,7 +39,7 @@ func TestRecordWarning_IsReplayedToALateViewerAndRedacted(t *testing.T) {
 		}
 	})
 
-	require.NoError(t, pipeline.Follow(t.Context(), path, pipeline.FollowOptions{History: pipeline.HistoryLifecycle}, watch))
+	require.NoError(t, followErr(pipeline.Follow(t.Context(), path, pipeline.FollowOptions{History: pipeline.HistoryLifecycle}, watch)))
 	assert.Equal(t, []string{"warning: the token *** was left in place"}, seen)
 
 	state, err := pipeline.Inspect(path)

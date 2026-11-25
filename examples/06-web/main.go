@@ -160,7 +160,7 @@ func (v viewer) events(w http.ResponseWriter, r *http.Request) {
 	// a run writes, to any observer. The JSON observer writes each event as
 	// the journal stores it. KeepFollowing waits for the next attempt when
 	// one ends, so the page stays live across a resume or a rollback.
-	err := pipeline.Follow(r.Context(), v.journal,
+	_, err := pipeline.Follow(r.Context(), v.journal,
 		pipeline.FollowOptions{After: after, KeepFollowing: true},
 		pipeline.NewJSONObserver(stream))
 	if err != nil && r.Context().Err() == nil {
