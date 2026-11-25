@@ -126,3 +126,46 @@ func TestPeekEvent_ToleratesEnvelopeNamesInsideValues(t *testing.T) {
 		assert.True(t, env.chatter)
 	}
 }
+
+// Whenever peekEvent recognises a line, a full decode must agree with it, or
+// replay would pass over a line it should have applied. A line it accepts
+// that is not JSON at all is left alone: OpenJournal checks those, and
+// Inspect documents that it does not.
+func FuzzPeekEvent(f *testing.F) {
+	for _, seed := range []string{
+		`{"v":1,"seq":2,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"x"}`,
+		`{"v":1,"seq":2,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"x","kind":"run.finished"}`,
+		`{"v":1,"seq":2,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"x","KIND":"run.finished"}`,
+		`{"v":1,"seq":2,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"x","ſeq":9}`,
+		`{"v":1,"seq":2,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"x","kind":"run.finished"}`,
+		`{"v":1,"seq":2,"ts":"2026-11-11T09:00:00Z","kind":"output","line":"say \"hi\"","seq":9}`,
+		`{"v":1,"seq":2,"ts":"2026-11-11T09:00:00Z","kind":"custom","data":{"kind":"run.finished","seq":[9,{"v":7}],"s":"}]"}}`,
+		`{"v":1,"seq":2,"ts":"2026-11-11T09:00:00Z","kind":"output"}`,
+		`{"v":3,"seq":14,"ts":"2026-11-15T13:14:01.551714Z","kind":"value","run":"59fa","path":"m/b","key":"k","value":"/v"}`,
+	} {
+		f.Add([]byte(seed))
+	}
+
+	f.Fuzz(func(t *testing.T, line []byte) {
+		env, ok := peekEvent(line)
+		if !ok || !json.Valid(line) {
+			return
+		}
+
+		// The envelope as the decoder sees it, with the decoder's own rules
+		// for repeated, escaped and differently cased keys.
+		var got struct {
+			V    int       `json:"v"`
+			Seq  int64     `json:"seq"`
+			Kind EventKind `json:"kind"`
+		}
+
+		require.NoError(t, json.Unmarshal(line, &got), "%s", line)
+		assert.Equal(t, got.V, env.v, "version: %s", line)
+		assert.Equal(t, got.Seq, env.seq, "sequence number: %s", line)
+
+		if env.chatter {
+			assert.False(t, got.Kind.Durable(), "passed over a %s event: %s", got.Kind, line)
+		}
+	})
+}

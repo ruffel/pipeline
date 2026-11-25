@@ -271,6 +271,7 @@ func TestRollback_StrictUndo(t *testing.T) {
 
 	require.ErrorAs(t, back.err, &refused)
 	assert.Equal(t, []string{"p/c", "p/b"}, refused.Paths, "in the order a rollback reaches them")
+	require.EqualError(t, refused, "pipeline: a step that ran has no Undo: p/c, p/b")
 	assert.Zero(t, c.get("undo a"), "nothing is undone")
 
 	// Without the option the rollback passes, as it always did.
